@@ -1,11 +1,11 @@
 # Bridge development
 
-Read docs/IMPLEMENTATION-PLAN.md before architecture work. The current priority is
+Read Docs/IMPLEMENTATION-PLAN.md before architecture work. The current priority is
 human-auditable simplification: remove duplication, obsolete artifacts and unnecessary
 abstractions while preserving required behavior and financial invariants.
 
-Before operation, handler or interpreter changes, read docs/reference/Main.hs in full
-and docs/ARCHITECTURE.md. Main.hs is the user's exact architectural reference from
+Before operation, handler or interpreter changes, read Docs/reference/Main.hs in full
+and Docs/ARCHITECTURE.md. Main.hs is the user's exact architectural reference from
 “Add interactive environment prompts”, supplied 2026-10-02. Keep it unmodified and
 outside production builds. Preserve the typeclass/constrained-existential/GADT
 severity design; correct the sketch's incomplete or permissive types as explained
@@ -37,15 +37,15 @@ remain in the upstream ecx-solana-bridge repository; they are not included here.
 ## How to run and verify this project
 
 From this repository root, use GHC 9.14.1 and Cabal 3.16.1.0. Build prerequisites
-and GHC JavaScript/Solana FFI setup are in docs/LOCAL-DEVELOPMENT.md. One job only:
+and GHC JavaScript/Solana FFI setup are in Docs/LOCAL-DEVELOPMENT.md. One job only:
 
-- Build: `cabal build exe:ecx-bridge -w ghc-9.14.1 -j1`.
-- Test: `cabal test bridge-test -w ghc-9.14.1 -j1 --test-show-details=direct`.
+- Build: `cabal --project-dir=build build exe:ecx-bridge -w ghc-9.14.1 -j1`.
+- Test: `cabal --project-dir=build test bridge-test -w ghc-9.14.1 -j1 --test-show-details=direct`.
 - Focused wallet setup: append `--test-options=--configure-only` to that test command.
   It uses disposable fixture keys, real executable imports and terminal-driven
   startup preparation; it does not contact a chain or provision services.
-- Installer syntax: `sh -n install.sh src/install/toolchain src/install/source`.
-- Actual deployment: only `sudo ./install.sh /absolute/private/server.conf` on an
+- Installer syntax: `sh -n build/install.sh build/install/toolchain build/install/source`.
+- Actual deployment: only `sudo ./build/install.sh /absolute/private/server.conf` on an
   isolated Ubuntu 24.04 host after outstanding installer/config gates are resolved.
   A local build does not prove clean-install or funded acceptance.
 - Durable payout-round checks require the real disposable PostgreSQL contract;
@@ -53,9 +53,9 @@ and GHC JavaScript/Solana FFI setup are in docs/LOCAL-DEVELOPMENT.md. One job on
 - Layout/provenance: compare src/ to upstream server commit 6af7e73818c041669c5a5c1819f4c5c0be405d37,
   inspect staged files for private inputs, and confirm the original checkout is unchanged.
 - Publication: verify GitHub privacy and remote HEAD against the separately reviewed
-  commit. Record that verifier's exact scope and PASS/FAIL in DONE.md and .audit/.
+  commit. Record that verifier's exact scope and PASS/FAIL in Docs/DONE.md and Docs/.audit/.
 
 Wallet generation is restricted to interactive startup. Record-based setup must
 validate and preserve supplied ECX/Solana keys; never add missing-key generation
 fallbacks. Test mixed-mode and interrupted-import refusal when changing this flow.
-DONE.md is the authoritative acceptance checklist; pending checks stay FAIL.
+Docs/DONE.md is the authoritative acceptance checklist; pending checks stay FAIL.

@@ -1,8 +1,8 @@
 dist-newstyle/
 cabal.project.local
-solana-helper/target/
-web/node_modules
-web/dist/
+build/solana-helper/target/
+src/web/node_modules
+src/web/dist/
 *.sqlite*
 *.keypair.json
 secretKey
@@ -26,4 +26,4 @@ __pycache__/
 server.conf
 source-commit
 # Public test trust anchor; not a private key.
-!docs/development-release-public.pem
+!Docs/development-release-public.pem

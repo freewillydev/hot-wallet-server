@@ -14,7 +14,7 @@ import urllib.request
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('plan', type=Path)
-parser.add_argument('--freeze', type=Path, default=Path(__file__).resolve().parents[2] / 'cabal.project.freeze')
+parser.add_argument('--freeze', type=Path, default=Path(__file__).resolve().parents[2] / 'build/cabal.project.freeze')
 parser.add_argument('--cache', type=Path, required=True)
 parser.add_argument('--download', action='store_true', help='fetch missing pinned Hackage source archives')
 parser.add_argument('--report', type=Path, required=True)
@@ -84,7 +84,7 @@ report = dict(buildPlanSha256=hashlib.sha256(args.plan.read_bytes()).hexdigest()
               allConfiguredSourcesScanned=not missing, reachabilityProven=False,
               vulnerabilityFindingWaived=False)
 if args.ghc_source:
-    pins = json.loads((Path(__file__).resolve().parents[2] / 'build/toolchains.json').read_text())
+    pins = json.loads((Path(__file__).resolve().parents[2] / 'build/assets/toolchains.json').read_text())
     url, expected = pins['ghc-source']
     if plan['compiler-id'] not in url:
         raise ValueError('GHC source pin does not match compiler')

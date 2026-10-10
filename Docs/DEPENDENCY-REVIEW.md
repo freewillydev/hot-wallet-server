@@ -117,7 +117,7 @@ security/distribution approval remain open. See [final artifacts](RELEASE-REVIEW
 From the repository root (use the browser plan and its explicit `--freeze` for JS):
 
 ```sh
-src/scripts/check-readfloat-sources dist-newstyle/cache/plan.json \
+build/scripts/check-readfloat-sources build/dist-newstyle/cache/plan.json \
   --cache /path/to/source-cache --report /path/to/report.json
 ```
 
@@ -140,7 +140,7 @@ findings. Binary findings are not proof of reachable exploitation, but this bina
 must not be reused for the public release.
 
 A candidate built from checksum-verified upstream restic v0.19.1 with the retained
-`install/restic-security.patch`, Go 1.26.8 and no `selfupdate` tag resolves every
+`build/install/restic-security.patch`, Go 1.26.8 and no `selfupdate` tag resolves every
 fixable advisory reported in that scan. The remaining GO-2026-5932 OpenPGP wildcard
 report has no fixed version; the exact Linux/ARM64 selected import graph contains
 no OpenPGP or self-update package. Retain this evidence for reviewer confirmation,
@@ -160,7 +160,7 @@ the reviewed binary and passed clean installation/upgrade/cold-boot acceptance;
 see [release evidence](RELEASE-REVIEW.md). The paused pilot also uses the reviewed
 binary after the bridge integration check below.
 
-`build/toolchains.json` pins the upstream module checksum, compiler, patch and
+`build/assets/toolchains.json` pins the upstream module checksum, compiler, patch and
 reviewed candidate hash. Packaging now rejects the old binary before building.
 The x86-64 backup-tool candidate is also pinned (acceptance below). Go/restic notice-file collection now matches
 the actual ARM64 graph (118 files, 81 components); legal/platform distribution

@@ -1,14 +1,16 @@
-Done means: private hot-wallet-server repository with requested layout, typed record configuration, unattended install.sh, durable configurable customer payout rounds, accurate README and verified standalone checks plus independent PASS.
+Done means: hot-wallet-server repository with requested layout, typed record configuration, unattended install.sh, durable configurable customer payout rounds, accurate README and verified standalone checks plus independent PASS.
 
 All below currently PENDING/FAIL until evidence exists; do not mark finished early.
-- Scope/layout/provenance: serveronly src/docs, no token/pool executable, originalunchanged.
+- Scope/layout/provenance: server-only src/Docs/build, no token/pool executable, originalunchanged.
 - Config: bounded Read/Eq typedrecord, noShowsecrets/noeval, completevalidation, replaybinding.
 - Installer: noTTY/prompts, externalinputsmodularstrings, repeat-safe, Ubuntu sourcebootstrap.
 - Payouts: perassetnetthreshold+configurablehours, allreadyroundsnapshot, durablereplay,
   noquoterepricing/noeffect onsettlement orsignedattemptrecovery, customersseepolicy.
 - Tests: Cabal + realdisposablePGroundcontracts + scriptsyntax + nosecretfiles.
 - Review: separatefreshread-only verifier scopedPASS.
-- GitHub: private freewillydev/hot-wallet-server main matches finalreviewedcommit.
+- GitHub: PUBLIC freewillydev/hot-wallet-server main matches final reviewed commit.
+  Public source visibility was explicitly confirmed by the user on 2026-10-10;
+  this does not authorize public activation of an unfinished live server.
 
 This extraction does not certify production; existing security/manualwallet/alerts/
 release-trust/public-access gates remain open. No live deployment is authorized by
@@ -43,3 +45,21 @@ README simplification: scoped PASS by `/root/readme_simplify_review`, bound to
 SHA256 `a2b0ccbbcdba19faa703046487a87ad0c2316a343aaf4d8203e209958cc3f28a`. Configuration syntax,
 all six links and the single install command checked against source. No readiness
 gate changed and no new runtime acceptance is claimed.
+
+## Repository layout (2026-10-10)
+
+Scope: agent documentation and records under `Docs/`; Cabal, SDK/browser build
+metadata and installer support under `build/`; application source under `src/`.
+README links the moved agent instructions/checklist/resume; installation starts
+with `sudo ./build/install.sh /absolute/private/server.conf`.
+
+PASS: native executable and `bridge-test` built with `cabal --project-dir=build`;
+GHC JavaScript browser recompiled, SDK and local tests passed (session97911 exit0,
+`/tmp/hot-wallet-layout-test.log`). Shell/Python syntax, nine README links, exact
+path case, unchanged architectural reference and rebuilt browser manifest passed.
+A fresh Git archive resolves all Cabal targets with the pinned dependency (dry-run,
+session80273 exit0; `/tmp/hot-wallet-layout-archive-plan.log`). No standalone
+`cabal sdist` support is claimed; builds use the complete checkout/archive.
+Independent `/root/layout_final_verifier`: PASS for staged tree `12fa156b1dc0242b982eb86ed37ff3c11e978e10`.
+No blocking findings. This verdict covers the layout only; all broader installer,
+payout, PostgreSQL and production checks above remain PENDING/FAIL.

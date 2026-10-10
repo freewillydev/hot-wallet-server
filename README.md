@@ -6,7 +6,7 @@ in each direction**. Customers follow payment instructions; no wallet connection
 **Ubuntu 24.04 x86_64 · i3 or better · 8 GB RAM · 256 GB SSD · sudo · internet**
 
 **Under development:** unattended installation, payout scheduling and some config
-settings are unfinished. Keep public access off; see [remaining work](DONE.md).
+settings are unfinished. Keep public access off; see [remaining work](Docs/DONE.md).
 
 ## Configure
 
@@ -32,11 +32,13 @@ requires unused custody; existing custody needs ledger restoration.
 From the repository directory:
 
 ```sh
-sudo ./install.sh /absolute/private/server.conf
+sudo ./build/install.sh /absolute/private/server.conf
 ```
 
 Rerun the same command with unchanged configuration to resume. Keep independent
 ledger backups: wallet keys alone do not recover pending transfers.
 
-[Operations and recovery](docs/OPERATIONS.md) · [Architecture](docs/ARCHITECTURE.md) ·
-[Source builds](docs/LOCAL-DEVELOPMENT.md) · [License](LICENSE)
+[Operations and recovery](Docs/OPERATIONS.md) · [Architecture](Docs/ARCHITECTURE.md) ·
+[Source builds](Docs/LOCAL-DEVELOPMENT.md) · [License](LICENSE)
+
+[Agent instructions](Docs/AGENTS.md) · [Development status](Docs/DONE.md) · [Resume](Docs/RESUME.md)

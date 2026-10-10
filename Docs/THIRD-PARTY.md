@@ -3,7 +3,7 @@
 `third-party/secp256k1/COPYING` preserves the MIT license for the pinned
 Bitcoin Core libsecp256k1 v0.8.0 source (commit
 `6e2c8bc4ecdc6e71dbe7a368f360d8d453ce435d`). Its source checksum is in
-`build/toolchains.json`; `install/secp256k1` builds the static release prerequisite
+`build/assets/toolchains.json`; `build/install/secp256k1` builds the static release prerequisite
 with upstream tests enabled. Release builders must verify that the executable
 does not depend on a host-installed libsecp256k1 shared library.
 
@@ -35,7 +35,7 @@ the bridge ledger uses only PostgreSQL/Opaleye. Preserve these legal materials.
 The old release builder, notice collector and installed-library inventory wrapper
 were removed with the superseded deployment. Their source and prior reports remain
 in Git history at `eaf8358`. The current toolchain pins are in
-`../build/toolchains.json`; native/browser Cabal freeze files and Cargo.lock retain
+`../build/assets/toolchains.json`; native/browser Cabal freeze files and Cargo.lock retain
 application dependency selections. Before distributing binaries, verify the
 retained notices against that artifact's actual compiler/Cargo graphs, bundled
 native node and platform libraries. Review attribution, license choices,

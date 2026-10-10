@@ -3,7 +3,7 @@
 All commands below run from the repository root using the sole server executable:
 
 ```sh
-bridge() { cabal run -v0 exe:ecx-bridge -- "$@"; }
+bridge() { cabal --project-dir=build run -v0 exe:ecx-bridge -- "$@"; }
 ```
 
 For the installed package, use its matching data directory instead of Cabal:
@@ -573,7 +573,7 @@ Provider support draft — prepared only, not sent:
 > Are these endpoint, account, IP or upstream limits? No credentials are included.
 
 The published review installer has a SHA-256 checksum, not a production release
-signature or GitHub artifact attestation. The repository's `scripts/release-auth`
+signature or GitHub artifact attestation. The repository's `build/scripts/release-auth`
 can sign an immutable artifact index and verify it against a separately trusted
 Ed25519 public key. Existing development/acceptance keys do not authorize a public
 production release. The operator must designate the release-key owner and trusted

@@ -7,6 +7,7 @@ license = "MIT"
 rust-version = "1.97"
 
 [lib]
+path = "../../src/solana-helper/src/lib.rs"
 name = "ecx_solana_sdk"
 crate-type = ["cdylib", "rlib"]
 

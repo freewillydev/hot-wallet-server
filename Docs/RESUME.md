@@ -8,8 +8,9 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Implemented and checked
 
-- Server subtree extracted into `src/`, documentation into root `docs/`; root Cabal
-  project/freeze retained. Source/runtime packaging paths adjusted for new layout.
+- Server source is in `src/`; documentation and agent records are in `Docs/`.
+  Cabal metadata, asset hooks and installation support are in `build/`.
+  Run from the root with `cabal --project-dir=build`; install via `build/install.sh`.
 - Haskell `Read` configuration record and `configure-file` importer. Record contains
   no Show instance; private immutable files bind retries. Supplied ECX BIP-39 phrase
   and 64-byte base58 Solana keypair are mandatory and validated before publication.
@@ -23,7 +24,7 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 - A demonstrated existing backup timeout race is fixed: SIGKILL is followed by
   waitForProcess so the child is reaped before returning the failure.
 - Targeted Cabal configure contract PASS, session44193 exit0. Source/log hashes:
-  `.audit/wallet-mode-receipt.json`. Fresh `wallet_mode_verifier` scoped PASS.
+  `Docs/.audit/wallet-mode-receipt.json`. Fresh `wallet_mode_verifier` scoped PASS.
   This is source plus local execution evidence, not Ubuntu/production acceptance.
 - README now documents real state; AGENTS contains verification commands. Draft
   unattended install.sh/toolchain scripts pass shell syntax only.
@@ -59,17 +60,22 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 ## Build and evidence
 
 GHC9.14.1 / Cabal3.16.1.0; build directory `/tmp/hot-wallet-server-build`.
-Reuse the already built browser and FFI assets for local server-only edits:
+The layout change rebuilt the browser with GHC JavaScript and passed the full
+local suite (session97911 exit0), log `/tmp/hot-wallet-layout-test.log`:
 
-```
-ECX_BROWSER_PREBUILT=/tmp/ecx-path-log-build/build/aarch64-osx/ghc-9.14.1/ecx-build-assets-0.1.0.0/build/autogen/web
-CARGO_TARGET_DIR=/tmp/ecx-path-log-build/build/aarch64-osx/ghc-9.14.1/ecx-build-assets-0.1.0.0/build/autogen/cargo
+```sh
+env -u ECX_BROWSER_PREBUILT \
+  CARGO_TARGET_DIR=/tmp/ecx-path-log-build/build/aarch64-osx/ghc-9.14.1/ecx-build-assets-0.1.0.0/build/autogen/cargo \
+  ECX_BROWSER_BUILD_DIR=/tmp/hot-wallet-server-browser-build \
+  cabal --project-dir=build test bridge-test -j1 \
+    --builddir=/tmp/hot-wallet-server-build --test-show-details=direct
 ```
 
-Set those for the Cabal commands in AGENTS.md. Targeted test log:
-`/tmp/hot-wallet-wallet-mode-test.log`. Full extracted `bridge-test` suite also PASS, session69904 exit0, log
-`/tmp/hot-wallet-server-full-test.log`. No owned long-running processes remain.
-Neither test invokes the disposable PostgreSQL financial matrix or a real install.
+Do not reuse browser bundles from before the layout change: their source manifest
+paths differ. New bundles are under the build cache's ecx-build-assets autogen/web.
+The previous wallet-mode and full-suite receipts remain historical evidence.
+No owned long-running processes remain. These local tests do not invoke the
+separate PostgreSQL financial matrix or install Ubuntu services.
 
 Private development checkpoint published:
 https://github.com/freewillydev/hot-wallet-server (visibility PRIVATE verified).
@@ -77,7 +83,7 @@ Initial source commit `10e36ae6def507bb7ecb6ed04d992668f0c84f68` matches remote 
 its exact tree `9c2778f88db423b1b17fd4f096a7ced87f4840a6` received independent
 `server_extraction_review` PASS for unfinished source checkpoint publication only.
 All installer, payout and production gates remain pending. Publication evidence
-is recorded in .audit/extraction.tsv. Follow-up protocol-only commits do not change
+is recorded in Docs/.audit/extraction.tsv. Follow-up protocol-only commits do not change
 that reviewed implementation. Next implementation work is item1 above.
 
 ## Latest documentation change
@@ -88,3 +94,19 @@ install command and the incomplete/public-off status. Independent read-only
 `/root/readme_simplify_review` PASS for SHA256
 `a2b0ccbbcdba19faa703046487a87ad0c2316a343aaf4d8203e209958cc3f28a`. Six links and git diff --check verified; no build required for
 this documentation-only edit. Next implementation work remains payout rounds.
+
+## Current layout checkpoint
+
+Agent instructions/checklist/history now live entirely in `Docs/`, including
+`Docs/.audit/`. Cabal/install support is in `build/`; root README is the discovery
+entry point. The direct user request supersedes former root placement, without
+removing a gate or history. Controller protocol is currently suspended; do not
+message the coordinator. The original bridge checkout remains untouched.
+
+Local native/browser compilation and local suite pass; fresh Git archive resolves
+all Cabal targets. See Docs/DONE.md and Docs/.audit/layout.tsv for scoped evidence.
+No installation or live-chain operation was performed. Repository is now PUBLIC,
+explicitly confirmed by the user on 2026-10-10. Public server activation stays OFF.
+Independent `/root/layout_final_verifier` passed staged tree `12fa156b1dc0242b982eb86ed37ff3c11e978e10`.
+Only this verdict record was appended afterward. The layout change is ready for
+publication; next implementation work remains the durable payout-round plan above.

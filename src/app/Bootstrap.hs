@@ -267,7 +267,7 @@ initializeBackup directory=do
     executable<-fieldValue "restic" setup
     root<-fieldValue "sourceRoot" setup
     method<-fieldValue "method" setup :: IO String
-    let pinsPath=if method=="bundle" then root</>"share/toolchains.json" else root</>"src/build/toolchains.json"
+    let pinsPath=if method=="bundle" then root</>"share/toolchains.json" else root</>"build/assets/toolchains.json"
     pins<-B.readFile pinsPath >>= either (const $ reject "invalid_toolchain_pins") pure . eitherDecodeStrict'
     reviewed<-fieldValue "restic-reviewed" pins :: IO Value
     expected<-fieldValue (fromString arch) reviewed :: IO T.Text

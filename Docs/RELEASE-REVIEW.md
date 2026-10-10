@@ -1,7 +1,7 @@
 > **Upstream history only.** This document was copied from ecx-solana-bridge at
 > `6af7e73818c041669c5a5c1819f4c5c0be405d37`. Its deployed releases, funded tests
 > and review receipts do not certify hot-wallet-server. For this unfinished
-> extraction, use [DONE.md](../DONE.md) and [RESUME.md](../RESUME.md).
+> extraction, use [DONE.md](DONE.md) and [RESUME.md](RESUME.md).
 
 # Release review
 
@@ -27,8 +27,8 @@ paths since 8c18bd8 with no new findings. Unchanged dependency advisories remain
 Checked upgrade preserved the two original Paid orders, quotes, payout IDs and
 backed-up sequence 105. ECX requires six confirmations for new orders; saved terms
 remain unchanged. All services listen privately and public ingress remains OFF.
-Current acceptance criteria are in [DONE.md](../DONE.md), with exact evidence
-and continuation in [RESUME.md](../RESUME.md). Earlier records below are historical
+Current acceptance criteria are in [DONE.md](DONE.md), with exact evidence
+and continuation in [RESUME.md](RESUME.md). Earlier records below are historical
 and do not independently certify this candidate.
 
 ## Historical guided-console acceptance checklist

@@ -10,7 +10,7 @@ staging=$(mktemp -d /tmp/ecx-source-install-XXXXXXXX)
 trap 'rm -rf -- "$staging"' EXIT
 trap 'exit 1' HUP INT TERM
 cd "$root"
-sh src/install/package --local "$staging/candidate" "$4" "$1" "$2" "$3"
+sh build/install/package --local "$staging/candidate" "$4" "$1" "$2" "$3"
 artifact=$staging/candidate/ecx-bridge-ubuntu-24.04-$(uname -m).run
 # Execute only our root-private assembled copy; package checks OS/arch/restic pin.
 sh "$artifact" fresh "$5"

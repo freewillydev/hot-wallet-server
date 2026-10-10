@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/../.."
+cabal --project-dir=build build all -j1
+cabal --project-dir=build test all -j1 --test-show-details=direct

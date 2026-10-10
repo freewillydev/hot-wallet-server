@@ -1,5 +1,5 @@
 {
-  "provenance": "Captured finalized public Devnet transaction; see docs/evidence/solana-devnet-existing-payment.json",
+  "provenance": "Captured finalized public Devnet transaction; see Docs/evidence/solana-devnet-existing-payment.json",
   "signed": {
     "signedSolanaFeeEstimate": "5000",
     "signedSolanaPlan": {

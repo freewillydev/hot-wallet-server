@@ -25,11 +25,11 @@ sdkRules = rules (static ()) $ \PreBuildComponentInputs{targetInfo=target,localB
   when (componentName (targetComponent target) == CLibName LMainLibName) $ do
     let directory = autogenComponentModulesDir local (targetCLBI target)
         output name = Location directory (makeRelativePathEx name)
-        dependency name = FileDependency (Location (makeSymbolicPath "..") (makeRelativePathEx name))
+        dependency name = FileDependency (Location (makeSymbolicPath "../..") (makeRelativePathEx name))
     registerRule_ "solana-sdk" $ staticRule
       (mkCommand (static Dict) (static buildSdk) (getSymbolicPath directory, withOptimization local == MaximumOptimisation))
-      (map dependency ["solana-helper/Cargo.toml", "solana-helper/Cargo.lock",
-                       "solana-helper/src/lib.rs", "rust-toolchain.toml"])
+      (map dependency ["build/solana-helper/Cargo.toml", "build/solana-helper/Cargo.lock",
+                       "src/solana-helper/src/lib.rs", "build/rust-toolchain.toml"])
       (output "Bridge/SDKBuild.hs" :| [output sdkName])
     registerRule_ "browser" $ dynamicRule (static Dict)
       (mkCommand (static Dict) (static browserDependencies) ())
@@ -38,8 +38,8 @@ sdkRules = rules (static ()) $ \PreBuildComponentInputs{targetInfo=target,localB
       (output "Bridge/BrowserBuild.hs" :| map (output . ("web" </>)) (browserManifest : browserArtifacts))
 
 browserSources, browserArtifacts :: [FilePath]
-browserSources = ["web/Main.hs", "web/Browser.hs", "src/Bridge/Domain.hs", "src/Bridge/Wire.hs",
-  "web/ecx-browser.cabal", "web/cabal.project", "web/cabal.project.freeze", "web/index.html", "web/style.css"]
+browserSources = ["src/web/Main.hs", "src/web/Browser.hs", "src/src/Bridge/Domain.hs", "src/src/Bridge/Wire.hs",
+  "build/web/ecx-browser.cabal", "build/web/cabal.project", "build/web/cabal.project.freeze", "src/web/index.html", "src/web/style.css"]
 browserArtifacts = ["index.html", "style.css", "dist/wallet.js"]
 browserManifest :: FilePath
 browserManifest = "manifest.sha256"
@@ -88,7 +88,7 @@ buildBrowser directory bundle = do
   selected <- lookupEnv "ECX_BROWSER_PREBUILT"
   unless (selected==bundle) $ ioError $ userError "Browser bundle selection changed; use a separate Cabal build directory."
   destination <- makeAbsolute directory
-  root <- makeAbsolute ".."
+  root <- makeAbsolute "../.."
   let assets = destination </> "web"
   inputs <- browserDigests root browserSources
   let manifest path = do
@@ -117,6 +117,7 @@ buildBrowser directory bundle = do
 compileBrowser :: FilePath -> IO ()
 compileBrowser destination = do
   source <- makeAbsolute "../web"
+  web <- makeAbsolute "../../src/web"
   home <- getHomeDirectory
   compiler <- lookupEnv "ECX_GHC_JS" >>= maybe
     (findExecutable "javascript-unknown-ghcjs-ghc" >>= maybe
@@ -150,4 +151,4 @@ compileBrowser destination = do
   when (not complete) $ ioError $ userError "Browser linker did not produce all.js; discard only its incomplete local executable output and rebuild."
   createDirectoryIfMissing True (assets </> "dist")
   copyFile artifact (assets </> "dist/wallet.js")
-  mapM_ (\name -> copyFile (source </> name) (assets </> name)) ["index.html", "style.css"]
+  mapM_ (\name -> copyFile (web </> name) (assets </> name)) ["index.html", "style.css"]

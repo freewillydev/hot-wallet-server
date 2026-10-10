@@ -217,7 +217,7 @@ If database/services are missing, it asks whether to provision them, then offers
   those assets and repository installer files, then invokes the same installer.
   It does not compile as root. Local trust is explicit, not a claim of signed or
   reproducible provenance. Assembly requires Git, jq and standard Ubuntu tools.
-- **release:** enter the `src/scripts/release-auth` path, independently trusted public
+- **release:** enter the `build/scripts/release-auth` path, independently trusted public
   key path and signed candidate directory. Signature verification remains mandatory;
   failure never falls back to source installation. Older setup files retain this mode.
 
@@ -249,7 +249,7 @@ Older setup directories containing copied secrets are not automatically modified
 Build from a clean reviewed Git checkout on Ubuntu 24.04, as an unprivileged user:
 
 ```sh
-src/install/package /absolute/new-candidate /absolute/restic-0.19.1
+build/install/package /absolute/new-candidate /absolute/restic-0.19.1
 ```
 
 This invokes the existing Cabal build, packages its executable, SDK, GHC-JavaScript
@@ -257,7 +257,7 @@ assets, all migrations, retained notices and the supplied restic 0.19.1 client.
 It accepts only the reviewed restic hash for that architecture, checked before
 compilation. The earlier upstream Go 1.26.4 binary has open advisory findings and
 is refused. It creates a self-contained `.run` artifact and checksum. Artifact authentication
-uses the retained Ed25519 `src/scripts/release-auth` protocol; the trust key must arrive
+uses the retained Ed25519 `build/scripts/release-auth` protocol; the trust key must arrive
 through a separate reviewed channel. The format-2 index authenticates only the architectures actually built and reviewed;
 requesting an absent architecture is refused. Old format-1 indices are rejected.
 Signing an ARM64 candidate does not establish x86-64 acceptance. Final restic/platform
@@ -290,8 +290,8 @@ Keep the private key and a protected backup offline. Transfer the reviewed candi
 and checksum to that machine. Using a reviewed checkout, sign the exact directory:
 
 ```sh
-src/scripts/release-auth sign /offline/ecx-release-authority/private.pem /reviewed/candidate
-src/scripts/release-auth verify /offline/ecx-release-authority/public.pem /reviewed/candidate x86_64
+build/scripts/release-auth sign /offline/ecx-release-authority/private.pem /reviewed/candidate
+build/scripts/release-auth verify /offline/ecx-release-authority/public.pem /reviewed/candidate x86_64
 ```
 
 `sign` creates `release-index.json` and `release-index.sig`; it refuses existing
@@ -315,8 +315,8 @@ Use a previously reviewed verifier and an independently trusted public-key file.
 The candidate directory must contain the `.run`, signed index and signature:
 
 ```sh
-src/scripts/release-auth verify /trusted/release-public.pem /reviewed/candidate x86_64
-sudo src/scripts/release-auth install /trusted/release-public.pem /reviewed/candidate x86_64
+build/scripts/release-auth verify /trusted/release-public.pem /reviewed/candidate x86_64
+sudo build/scripts/release-auth install /trusted/release-public.pem /reviewed/candidate x86_64
 ```
 
 With no extra installer arguments, the authenticated installer enters the normal
@@ -348,7 +348,7 @@ Prepare `/root/ecx-material` as root-owned mode 0700, with regular mode-0600 fil
 For **genuinely new, unfunded custody only**, the authenticated one-command path is:
 
 ```sh
-sudo src/scripts/release-auth install /trusted/release-public.pem /reviewed/candidate x86_64 -- fresh /root/ecx-material
+sudo build/scripts/release-auth install /trusted/release-public.pem /reviewed/candidate x86_64 -- fresh /root/ecx-material
 ```
 
 Use `aarch64` only with a separately built and reviewed ARM64 artifact. Installation provisions PostgreSQL 16, separate
@@ -426,7 +426,7 @@ against network saturation; hosting/network protection remains external.
 
 The restic source is an external deployment dependency, not application code.
 Fetch `github.com/restic/restic@v0.19.1` using `go mod download -json` and verify its
-`Sum` against `build/toolchains.json`. Apply `install/restic-security.patch` to a
+`Sum` against `build/assets/toolchains.json`. Apply `build/install/restic-security.patch` to a
 separate writable copy of that verified source. From that copy, the reviewed ARM64
 candidate was built with:
 
@@ -448,14 +448,14 @@ release candidate with these security changes. See [dependency review](DEPENDENC
 From the repository root, follow [LOCAL-DEVELOPMENT.md](LOCAL-DEVELOPMENT.md):
 
 ```sh
-cabal build all -j1
-cabal test all -j1 --test-show-details=direct
-cabal list-bin ecx-bridge:exe:ecx-bridge
+cabal --project-dir=build build all -j1
+cabal --project-dir=build test all -j1 --test-show-details=direct
+cabal --project-dir=build list-bin ecx-bridge:exe:ecx-bridge
 ```
 
 Cabal hooks build the native SDK library and GHC-JavaScript browser. A deployed
 bundle must carry the resulting SDK/assets, configuration templates, all migrations
-and applicable dependency notices. `build/toolchains.json` retains toolchain pins;
+and applicable dependency notices. `build/assets/toolchains.json` retains toolchain pins;
 that file is not an installation command or release certificate.
 
 ## Required host configuration
@@ -516,8 +516,8 @@ For a genuinely new empty deployment, with local **database-owner** credentials
 configured (the worker must not own the schema):
 
 ```sh
-cabal run exe:ecx-bridge -- initialize-ledger /absolute/private/config.json
-cabal run exe:ecx-bridge -- adopt-ledger /absolute/private/config.json 0
+cabal --project-dir=build run exe:ecx-bridge -- initialize-ledger /absolute/private/config.json
+cabal --project-dir=build run exe:ecx-bridge -- adopt-ledger /absolute/private/config.json 0
 ```
 
 Initialization expects 001–008 already installed, creates deployment/custody/clock

@@ -3,7 +3,7 @@
 set -eu
 [ "$#" = 1 ] || { echo 'Usage: secp256k1 ABSOLUTE_BUILD_DIRECTORY' >&2; exit 1; }
 case "$1" in /*) ;; *) exit 1;; esac
-pins=$(CDPATH='' cd -- "$(dirname -- "$0")/../build" && pwd)/toolchains.json
+pins=$(CDPATH='' cd -- "$(dirname -- "$0")/../assets" && pwd)/toolchains.json
 mkdir -p "$1"
 cd "$1"
 url=$(jq -er '.secp256k1[0]' "$pins")

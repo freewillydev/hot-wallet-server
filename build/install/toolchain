@@ -16,7 +16,7 @@ if ! command -v rustup >/dev/null; then
   curl -fLsS --proto '=https' --tlsv1.2 https://sh.rustup.rs -o "$HOME/.cache/hot-wallet-server/rustup.sh"
   sh "$HOME/.cache/hot-wallet-server/rustup.sh" -y --no-modify-path --profile minimal
 fi
-sh src/install/secp256k1 "$HOME/.local/share/ecx-secp256k1"
+sh build/install/secp256k1 "$HOME/.local/share/ecx-secp256k1"
 export PKG_CONFIG_PATH="$HOME/.local/share/ecx-secp256k1/prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 if [ ! -d "$HOME/.local/share/ecx-emsdk/.git" ]; then
   git clone https://github.com/emscripten-core/emsdk.git "$HOME/.local/share/ecx-emsdk"
@@ -28,5 +28,5 @@ ghcup config add-release-channel cross
 emconfigure ghcup install ghc javascript-unknown-ghcjs-9.12.2
 export ECX_GHC_JS="$HOME/.ghcup/bin/javascript-unknown-ghcjs-ghc-9.12.2"
 export ECX_EMSDK="$HOME/.local/share/ecx-emsdk"
-ghcup run --ghc 9.14.1 --cabal 3.16.1.0 -- cabal update
-ghcup run --ghc 9.14.1 --cabal 3.16.1.0 -- cabal build exe:ecx-bridge -j1
+ghcup run --ghc 9.14.1 --cabal 3.16.1.0 -- cabal --project-dir=build update
+ghcup run --ghc 9.14.1 --cabal 3.16.1.0 -- cabal --project-dir=build build exe:ecx-bridge -j1

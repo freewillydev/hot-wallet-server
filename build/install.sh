@@ -3,13 +3,13 @@
 set -eu
 umask 077
 [ "$(id -u)" = 0 ] || { echo 'Run install.sh as root on the target Ubuntu server.' >&2; exit 1; }
-[ "$#" -eq 1 ] || { echo 'Usage: sudo ./install.sh /absolute/private/server.conf' >&2; exit 1; }
+[ "$#" -eq 1 ] || { echo 'Usage: sudo ./build/install.sh /absolute/private/server.conf' >&2; exit 1; }
 case "$1" in /*) config=$1;; *) echo 'Supply an absolute configuration path.' >&2; exit 1;; esac
 [ -f "$config" ] && [ ! -L "$config" ] || { echo 'Configuration must be a regular, non-symlink file.' >&2; exit 1; }
 [ "$(wc -c < "$config")" -le 8192 ] || { echo 'Configuration is too large.' >&2; exit 1; }
 . /etc/os-release
 [ "$ID:$VERSION_ID" = ubuntu:24.04 ] || { echo 'Ubuntu 24.04 is required.' >&2; exit 1; }
-root=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 state=/var/lib/hot-wallet-server
 install -d -m 0700 "$state"
 # Keep the caller's original. Refuse silently replacing a bound installation.
@@ -30,11 +30,11 @@ buildhome=$(getent passwd "$account" | cut -d: -f6)
 [ "$buildhome" = /var/lib/hot-wallet-build ] || { echo 'Unexpected build account home.' >&2; exit 1; }
 # Use an isolated copy; runtime data/private input are excluded even if accidentally nearby.
 install -d -o "$account" -g "$account" -m 0750 "$buildhome/source"
-git -c safe.directory="$root" -C "$root" archive --format=tar HEAD src docs cabal.project cabal.project.freeze LICENSE install.sh | tar -C "$buildhome/source" -xf -
+git -c safe.directory="$root" -C "$root" archive --format=tar HEAD src Docs build LICENSE | tar -C "$buildhome/source" -xf -
 git -c safe.directory="$root" -C "$root" rev-parse HEAD > "$buildhome/source/source-commit"
 chown -R "$account:$account" "$buildhome/source"
-runuser -u "$account" -- sh "$buildhome/source/src/install/toolchain"
-binary=$(runuser -u "$account" -- sh -c 'cd "$1"; export PATH="$HOME/.ghcup/bin:$HOME/.cargo/bin:$PATH"; ghcup run --ghc 9.14.1 --cabal 3.16.1.0 -- cabal list-bin exe:ecx-bridge' sh "$buildhome/source")
+runuser -u "$account" -- sh "$buildhome/source/build/install/toolchain"
+binary=$(runuser -u "$account" -- sh -c 'cd "$1"; export PATH="$HOME/.ghcup/bin:$HOME/.cargo/bin:$PATH"; ghcup run --ghc 9.14.1 --cabal 3.16.1.0 -- cabal --project-dir=build list-bin exe:ecx-bridge' sh "$buildhome/source")
 [ -x "$binary" ] || { echo 'Cabal did not produce the server executable.' >&2; exit 1; }
 "$binary" configure-file "$state/server.conf" "$state/.ecx-bridge" </dev/null
 "$binary" start "$state/.ecx-bridge" </dev/null

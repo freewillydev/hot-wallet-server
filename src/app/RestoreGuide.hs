@@ -89,7 +89,7 @@ restoreGuide=do
     require (walletName==C.nativeWallet c) "restore_wallet_result_mismatch"
     putStrLn $ "Staging complete. Paused database: "<>T.unpack name<>"; native wallet: "<>T.unpack walletName
     putStrLn $ "Journal retained at "<>root<>". Native autoload remains disabled; no server has been activated."
-    putStrLn "Before activation: independently verify old-host exclusion; install recovered keys/unlock files with service ownership; configure fresh credentials and the new database; explicitly adopt the custody fence; reconcile saved attempts and chain observations; then explicitly resume. See docs/OPERATIONS.md, recovery procedure."
+    putStrLn "Before activation: independently verify old-host exclusion; install recovered keys/unlock files with service ownership; configure fresh credentials and the new database; explicitly adopt the custody fence; reconcile saved attempts and chain observations; then explicitly resume. See Docs/OPERATIONS.md, recovery procedure."
 
 prepare :: IO Plan
 prepare=do

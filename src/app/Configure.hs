@@ -304,14 +304,14 @@ build generating directory=do
         putStrLn "Trust the local checkout and this executable. No release signature is claimed; start does not compile as root."
         defaultRoot<-canonicalizePath (sdkSourceDirectory</>"../..")
         root<-prompt "Path to trusted repository checkout" defaultRoot makeAbsolute
-        restic<-prompt "Path to reviewed restic backup executable (see docs/INSTALL.md)" "" $ \path->do
+        restic<-prompt "Path to reviewed restic backup executable (see Docs/INSTALL.md)" "" $ \path->do
           file<-makeAbsolute path
           exists<-doesFileExist file
           require exists "restic_executable_file_required"
           pure file
         pure(object ["existing" .= False,"method" .= method,"sourceRoot" .= root,"restic" .= restic])
        else do
-        auth<-prompt "Repository release-auth script path" "src/scripts/release-auth" makeAbsolute
+        auth<-prompt "Repository release-auth script path" "build/scripts/release-auth" makeAbsolute
         trust<-prompt "Path to trusted release PUBLIC key file (prefer absolute path; obtained independently of package)" "" makeAbsolute
         candidate<-prompt "Path to reviewed signed installer directory" "" makeAbsolute
         pure(object ["existing" .= False,"method" .= method,"installer" .= auth,"trustKey" .= trust,"candidate" .= candidate])
@@ -631,7 +631,7 @@ startUnlocked path=do
         root<-field "sourceRoot" value
         restic<-field "restic" value
         binaryPath<-getExecutablePath
-        execute "/bin/sh" [root</>"src/install/source",binaryPath,sdkLibraryPath,browserAssetsDirectory,restic,directory]
+        execute "/bin/sh" [root</>"build/install/source",binaryPath,sdkLibraryPath,browserAssetsDirectory,restic,directory]
       "bundle"->do
         root<-field "sourceRoot" value
         execute "/bin/sh" [root</>"install","fresh",directory]

@@ -1,4 +1,4 @@
-packages: src, src/build
+packages: ., assets
 index-state: 2026-09-17T20:21:20Z
 optimization: 1
 tests: True

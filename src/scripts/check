@@ -1,5 +1,0 @@
-#!/bin/sh
-set -eu
-cd "$(dirname "$0")/../.."
-cabal build all -j1
-cabal test all -j1 --test-show-details=direct

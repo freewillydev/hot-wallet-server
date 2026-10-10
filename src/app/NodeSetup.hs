@@ -83,7 +83,7 @@ provision directory=do
       method<-fieldValue "method" setup :: IO String
       require (method `elem` ["source","bundle"]) "managed_node_release_bootstrap_required"
       root<-fieldValue "sourceRoot" setup
-      let installer=if method=="bundle" then root</>"node" else root</>"src/install/node"
+      let installer=if method=="bundle" then root</>"node" else root</>"build/install/node"
       result<-rawSystem "/bin/sh" [installer]
       require (result==ExitSuccess) "managed_node_install_failed_retry_start"
     checkConfig path

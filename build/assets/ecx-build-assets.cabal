@@ -6,9 +6,10 @@ license: MIT
 license-file: ../LICENSE
 build-type: Hooks
 extra-source-files: ../solana-helper/Cargo.toml, ../solana-helper/Cargo.lock,
-  ../solana-helper/src/lib.rs, ../rust-toolchain.toml,
-  ../src/Bridge/Domain.hs, ../src/Bridge/Wire.hs,
-  ../web/*.hs, ../web/*.html, ../web/*.css, ../web/*.cabal, ../web/cabal.project*
+  ../../src/solana-helper/src/lib.rs, ../rust-toolchain.toml,
+  ../../src/src/Bridge/Domain.hs, ../../src/src/Bridge/Wire.hs,
+  ../../src/web/*.hs, ../../src/web/*.html, ../../src/web/*.css,
+  ../web/*.cabal, ../web/cabal.project*
 
 custom-setup
   setup-depends: base >=4.20 && <4.23, Cabal >=3.16 && <3.17, Cabal-hooks ==3.16,

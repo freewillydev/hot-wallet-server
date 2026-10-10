@@ -5,8 +5,10 @@ synopsis: ECX bridge with explicit payment funding
 license: MIT
 license-file: LICENSE
 build-type: Simple
+data-dir: ../src
 data-files: test/fixtures/*.json, migrations/*.sql
-extra-source-files: test/CapabilityCompile.hs, test/formal/*.tla, test/formal/*.cfg, install/install, install/toolchain, install/package, install/source, install/node, install/launch, install/monitor, install/restic-security.patch, chain/Bridge/bip39-english.txt
+extra-source-files: ../src/test/CapabilityCompile.hs, ../src/test/formal/*.tla, ../src/test/formal/*.cfg,
+  install.sh, install/*, scripts/*, ../src/chain/Bridge/bip39-english.txt
 
 common settings
   default-language: GHC2021
@@ -15,14 +17,14 @@ common settings
 
 library
   import: settings
-  hs-source-dirs: src
+  hs-source-dirs: ../src/src
   exposed-modules: Bridge.Domain, Bridge.Error, Bridge.Identity, Bridge.Wire, Bridge.Lifecycle, Bridge.Operation, Bridge.Operation.Internal
   build-depends: operation-capabilities ==0.1.0.0, base >=4.20 && <4.23, aeson >=2.2 && <2.4, text >=2.1 && <2.2, containers, bytestring, base16-bytestring, base58-bytestring, crypton >=1 && <1.2, ram >=0.22 && <0.23
 
 library customer-api
   import: settings
   visibility: private
-  hs-source-dirs: api
+  hs-source-dirs: ../src/api
   exposed-modules: Bridge.API
   build-depends: base, ecx-bridge, text,
     servant >=0.20 && <0.21, servant-server >=0.20 && <0.21
@@ -31,7 +33,7 @@ library customer-api
 library store
   import: settings
   visibility: private
-  hs-source-dirs: runtime
+  hs-source-dirs: ../src/runtime
   exposed-modules: Bridge.Store, Bridge.Fence
   other-modules: Bridge.Store.Schema, Bridge.Store.Catalog, Bridge.Store.Backup, Bridge.Store.Projection, Bridge.Store.Migration, Bridge.Store.Provision, Paths_ecx_bridge
   autogen-modules: Paths_ecx_bridge
@@ -42,20 +44,20 @@ library store
 library chain
   import: settings
   visibility: public
-  hs-source-dirs: chain
+  hs-source-dirs: ../src/chain
   other-modules: Bridge.NativeBackup
   exposed-modules: Bridge.NativeKey, Bridge.Wallet, Bridge.File, Bridge.AdminStatus, Bridge.AdminKey, Bridge.RPC, Bridge.Native, Bridge.NativeObservation, Bridge.NativePayment, Bridge.Solana, Bridge.SolanaObservation, Bridge.SolanaMessage, Bridge.SolanaHelper, Bridge.SolanaPayment, Bridge.SolanaDeposit, Bridge.PaymentObservation, Bridge.PaymentSource
   build-depends: base, ecx-bridge, aeson, bytestring, text, scientific,
     filepath, http-client, http-client-tls, http-types, binary, containers, base58-bytestring,
     base64-bytestring, crypton, ram, unix, template-haskell, transformers, network, directory, time
-  c-sources: cbits/native_key.c
+  c-sources: ../src/cbits/native_key.c
   pkgconfig-depends: libsecp256k1 >=0.4 && <0.9
 
 -- Shared closed token operations: setup creates an ATA; ecx-token administers tokens.
 library administration
   import: settings
   visibility: public
-  hs-source-dirs: administration
+  hs-source-dirs: ../src/administration
   exposed-modules: Token, Token.Signing, Token.Network, Token.Metadata, Token.Operation
   build-depends: base, ecx-bridge, ecx-bridge:chain, aeson, bytestring, text,
     binary, unix, filepath, crypton, ram, base64-bytestring, base58-bytestring, http-client
@@ -63,7 +65,7 @@ library administration
 library workflow
   import: settings
   visibility: private
-  hs-source-dirs: workflow
+  hs-source-dirs: ../src/workflow
   other-modules: Bridge.Credentials
   exposed-modules: Bridge.Observer, Bridge.Payment, Bridge.Signer, Bridge.Critical, Bridge.Reconciliation, Bridge.Admission, Bridge.Order, Bridge.Web, Bridge.Config, Bridge.Control, Bridge.Recovery
   build-depends: base, ecx-bridge, ecx-bridge:customer-api, ecx-bridge:store,
@@ -75,7 +77,7 @@ test-suite bridge-test
   import: settings
   ghc-options: -threaded -rtsopts -with-rtsopts=-N1
   type: exitcode-stdio-1.0
-  hs-source-dirs: test, app
+  hs-source-dirs: ../src/test, ../src/app
   main-is: Main.hs
   build-tool-depends: ecx-bridge:ecx-bridge
   other-modules: RestoreGuide, RestoreNative, RestoreGuideCheck, Configure, InstallConfig, Upgrade, Bootstrap, NodeSetup, SetupPaths, ConfigureCheck, ChainCheck, NativePaymentCheck, SolanaPaymentCheck, ObservationCheck, SigningTransportCheck, LifecycleCheck, Paths_ecx_bridge
@@ -86,7 +88,7 @@ test-suite bridge-test
 
 executable ecx-bridge
   import: settings
-  hs-source-dirs: app
+  hs-source-dirs: ../src/app
   main-is: Main.hs
   other-modules: RestoreActivate, RestoreGuide, RestoreNative, Menu, Configure, InstallConfig, Bootstrap, NodeSetup, SetupPaths, Upgrade, Paths_ecx_bridge
   autogen-modules: Paths_ecx_bridge
@@ -99,7 +101,7 @@ executable ecx-bridge
 executable ecx-store-check
   import: settings
   ghc-options: -threaded -rtsopts -with-rtsopts=-N1
-  hs-source-dirs: test, runtime, workflow
+  hs-source-dirs: ../src/test, ../src/runtime, ../src/workflow
   main-is: StoreCheck.hs
   other-modules: ProvisionCheck, Bridge.Fence, Bridge.Store, Bridge.Store.Schema, Bridge.Store.Catalog, Bridge.Store.Backup, Bridge.Store.Projection, Bridge.Store.Migration, Bridge.Store.Provision, Bridge.Observer, Bridge.Payment, Bridge.Signer, Bridge.Critical, Bridge.Reconciliation, Bridge.Admission, Bridge.Order, Bridge.Web, Bridge.Config, Bridge.Control, Bridge.Recovery, Bridge.Credentials, Paths_ecx_bridge
   autogen-modules: Paths_ecx_bridge
