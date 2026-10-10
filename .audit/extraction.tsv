@@ -1,0 +1,6 @@
+time_iso	phase	decision	reason	evidence	result
+2026-10-10	extract	Trackedserver6af7e73 tosrc docsroot	Explicituserrequest newprivatehot-wallet-server andlayout	standalonebuild /tmp/hot-wallet-server-build.log	BuildPASS; newconfiguration/schedulingfeaturesinprogress
+2026-10-10T21:29:29.640944+00:00	wallet-modes	Import supplied custody; generate only during interactive start	Latest direct user requirement	src/app/Configure.hs; src/app/InstallConfig.hs	Implemented; no live custody or services changed
+2026-10-10T21:29:29.641027+00:00	verification	Retain all contract assertions; diagnose named failures	No relaxed acceptance; Unicode validation and child-reaping failure fixed	.audit/wallet-mode-receipt.json	Cabal configure contract PASS; separate wallet_mode_verifier PASS
+2026-10-10T21:29:29.641029+00:00	documentation	Document extraction as unfinished development snapshot	No inherited release certification; only source checkpoint authorized	README.md; RESUME.md; AGENTS.md; DONE.md	Installer/payout/production gates remain FAIL
+2026-10-10T21:29:56.421920+00:00	full-local-suite	Retain source checkpoint as unfinished	Local full suite does not certify PG or Ubuntu	.audit/wallet-mode-receipt.json; /tmp/hot-wallet-server-full-test.log	PASS session69904 exit0; extraction source review PASS pending final tree binding

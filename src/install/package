@@ -1,0 +1,116 @@
+#!/bin/sh
+# Assemble a Cabal-built Ubuntu artifact. Sign both architectures with release-auth.
+set -eu
+umask 077
+fail() { echo "Packaging refused: $*" >&2; exit 1; }
+local_build=false
+if [ "${1:-}" = --local ]; then
+  local_build=true
+  shift
+  [ "$#" = 5 ] || fail 'usage: package --local OUTPUT RESTIC EXECUTABLE SDK_LIBRARY BROWSER_DIRECTORY'
+fi
+[ "$local_build" = true ] || [ "$#" = 2 ] || fail 'usage: package NEW_OUTPUT_DIRECTORY RESTIC_0_19_1_BINARY'
+output=$1; restic=$2
+for path in "$output" "$restic"; do
+  case "$path" in /*) ;; *) fail 'absolute output/restic paths required';; esac
+done
+[ ! -e "$output" ] || fail 'output already exists'
+[ "$(uname -s)" = Linux ] || fail 'build the native artifact on Ubuntu 24.04'
+# shellcheck source=/dev/null
+. /etc/os-release
+[ "$ID:$VERSION_ID" = ubuntu:24.04 ] || fail 'Ubuntu 24.04 required'
+arch=$(uname -m)
+case "$arch" in aarch64|x86_64) ;; *) fail 'unsupported architecture';; esac
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
+cd "$root"
+[ "$local_build" = true ] || [ -z "$(git status --porcelain)" ] || fail 'commit/review the exact source before packaging'
+# Version text alone also accepts upstream binaries with affected dependencies.
+expected=$(jq -er --arg arch "$arch" '."restic-reviewed"[$arch] // error("no reviewed restic for architecture")' src/build/toolchains.json)
+[ "$(sha256sum "$restic" | cut -d ' ' -f 1)" = "$expected" ] || fail 'unreviewed restic binary'
+"$restic" version | grep -q '^restic 0.19.1 ' || fail 'restic 0.19.1 required'
+# Compilation stays under the caller, through the existing sole Cabal entry point.
+if [ "$local_build" = true ]; then
+  binary=$3; sdk=$4; web=$5
+  for path in "$binary" "$sdk" "$web"; do
+    case "$path" in /*) ;; *) fail 'absolute local build paths required';; esac
+  done
+  [ -f "$binary" ] && [ -f "$sdk" ] && [ -f "$web/manifest.sha256" ] || fail 'build executable, SDK and browser with Cabal first'
+  # Refuse macOS/wrong-architecture artifacts before provisioning anything.
+  machine=62; [ "$arch" != aarch64 ] || machine=183
+  for path in "$binary" "$sdk"; do
+    [ "$(od -An -tx1 -N6 "$path" | tr -d ' \n')" = 7f454c460201 ] || fail '64-bit little-endian Linux ELF required'
+    [ "$(od -An -tu2 -j18 -N2 "$path" | tr -d ' \n')" = "$machine" ] || fail 'local build architecture differs'
+  done
+  [ "$(head -n 1 "$web/manifest.sha256")" = ecx-browser-sha256-v1 ] || fail 'invalid browser manifest'
+  (cd "$root/src" && sed -n 's/^source //p' "$web/manifest.sha256" | sha256sum -c - >/dev/null) || fail 'browser source changed; rebuild'
+  (cd "$web" && sed -n 's/^artifact //p' manifest.sha256 | sha256sum -c - >/dev/null) || fail 'browser assets changed; rebuild'
+else
+cabal build exe:ecx-bridge -j1
+binary=$(cabal list-bin exe:ecx-bridge)
+assets=$(jq -er '[."install-plan"[] | select(."pkg-name"=="ecx-build-assets" and .style=="local") | ."dist-dir"] | unique | if length==1 then .[0] else error("ambiguous assets") end' dist-newstyle/cache/plan.json)/build/autogen
+[ -f "$assets/libecx_solana_sdk.so" ] || fail 'missing Cabal SDK'
+  sdk=$assets/libecx_solana_sdk.so
+  web=$assets/web
+fi
+# The pinned library is a build prerequisite, never a host-selected runtime
+# dependency. Refuse a package that would silently use Ubuntu's older library.
+linkage=$(ldd "$binary") || fail 'cannot inspect executable linkage'
+case "$linkage" in *libsecp256k1*) fail 'build with the pinned static secp256k1 prefix';; esac
+mkdir -m 0700 "$output"
+staging=$(mktemp -d "$output/.bundle-XXXXXXXX")
+trap 'rm -rf -- "$staging"' EXIT
+trap 'exit 1' HUP INT TERM
+mkdir -p "$staging/bin" "$staging/lib" "$staging/share/web" "$staging/share/migrations" "$staging/share/notices"
+cp "$binary" "$staging/bin/ecx-bridge"
+cp "$restic" "$staging/bin/restic"
+cp src/install/monitor "$staging/monitor"
+cp "$sdk" "$staging/lib/libecx_solana_sdk.so"
+cp -R "$web/." "$staging/share/web/"
+cp src/migrations/*.sql "$staging/share/migrations/"
+cp src/install/install "$staging/install"
+cp src/install/node "$staging/node"
+cp src/install/native-backup "$staging/native-backup"
+cp src/install/launch "$staging/launch"
+cp src/build/toolchains.json "$staging/share/toolchains.json"
+printf '%s\n' "$arch" > "$staging/architecture"
+if [ "$local_build" = true ]; then
+  if [ -f "$root/source-commit" ]; then
+    source_commit=$(cat "$root/source-commit")
+    [ "${#source_commit}" = 40 ] || fail 'invalid source commit'
+    case "$source_commit" in *[!0-9a-f]*) fail 'invalid source commit';; esac
+    printf '%s\n' "$source_commit" > "$staging/source-commit"
+  else
+    git -c safe.directory="$root" rev-parse HEAD > "$staging/source-commit"
+  fi
+  printf '%s\n' 'Locally trusted build; source commit is context, not verified build provenance.' > "$staging/local-build"
+else
+  git rev-parse HEAD > "$staging/source-commit"
+fi
+cp LICENSE "$staging/share/notices/LICENSE"
+cp docs/THIRD-PARTY.md "$staging/share/notices/"
+# Keep collected notices at their repository paths (including license subtrees).
+cp -R docs/third-party "$staging/share/notices/"
+(cd "$staging/share" && sha256sum migrations/*.sql) > "$staging/migrations.sha256"
+(cd "$staging" && find . -type f ! -path ./manifest.sha256 -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > "$staging/manifest.sha256"
+name=ecx-bridge-ubuntu-24.04-$arch.run
+cat > "$output/$name" <<'HEADER'
+#!/bin/sh
+# Authenticate this complete artifact with release-auth and a separately trusted key.
+set -eu
+umask 077
+[ "$(id -u)" = 0 ] || { echo 'root required' >&2; exit 1; }
+staging=$(mktemp -d /tmp/ecx-install-XXXXXXXX)
+trap 'rm -rf -- "$staging"' EXIT
+trap 'exit 1' HUP INT TERM
+line=$(awk '/^__ECX_PAYLOAD__$/ { print NR+1; exit }' "$0")
+[ -n "$line" ]
+tail -n +"$line" "$0" | tar -xz -C "$staging" --no-same-owner
+if [ "$#" = 0 ]; then sh "$staging/launch"; else sh "$staging/install" "$@"; fi
+exit
+__ECX_PAYLOAD__
+HEADER
+tar -czf "$output/payload.tar.gz" -C "$staging" .
+cat "$output/payload.tar.gz" >> "$output/$name"
+rm "$output/payload.tar.gz"
+(cd "$output" && sha256sum "$name") > "$output/$name.sha256"
+printf 'Candidate: %s/%s\nAuthenticate and review before installation.\n' "$output" "$name"

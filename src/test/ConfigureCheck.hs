@@ -1,0 +1,614 @@
+module ConfigureCheck (contract,walletProperty) where
+import qualified Bridge.Config as C
+import qualified NodeSetup
+import qualified Bootstrap
+import qualified Token
+import qualified Token.Signing as TS
+import qualified Token.Operation as TO
+import Bridge.SDKBuild (sdkLibraryPath)
+import System.Environment (getEnv,setEnv,getExecutablePath)
+import System.Info (os,arch)
+import Bridge.File (hashHandle)
+import Bridge.Identity (digest)
+import qualified Data.Text.Encoding as TE
+import GHC.IO.Handle (hDuplicate,hDuplicateTo)
+import qualified Data.Aeson.Key as Key
+import System.Posix.Signals (signalProcess,nullSignal)
+import System.Timeout (timeout)
+import Control.Exception (evaluate,finally,AsyncException(ThreadKilled))
+import qualified Data.ByteString.Char8 as B8
+import Crypto.MAC.HMAC (hmac,HMAC)
+import Crypto.Hash (SHA256)
+import Crypto.Random (getRandomBytes)
+import Bridge.AdminKey (savePrivate)
+import Bridge.Wallet (mnemonic,mixWalletEntropy,walletKey,nativeDescriptors)
+import Bridge.NativeKey (deriveChild)
+import qualified Bridge.Native as N
+import Bridge.Wire (Profile(..))
+import Bridge.Error (BridgeError(..),require)
+import Bridge.RPC (fieldValue)
+import qualified Data.Aeson.KeyMap as KM
+import Data.IORef
+import Control.Monad (unless,forM)
+import qualified Data.ByteArray.Encoding as Hex
+import Data.Word (Word8)
+import Test.QuickCheck hiding ((.&.))
+import Bridge.SolanaMessage (base58)
+import Control.Exception (bracket,try,throwIO)
+import Crypto.Error (CryptoFailable(..))
+import qualified Crypto.PubKey.Ed25519 as Ed
+import qualified Data.ByteArray as BA
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Lazy as L
+import qualified Data.Text as T
+import Data.Aeson (encode,eitherDecodeStrict',Value(..),object,(.=),toJSON)
+import qualified Data.Map.Strict as M
+import Data.List (sort,isInfixOf,isPrefixOf,isSuffixOf)
+import Data.Bits ((.&.),shiftR)
+import System.Directory
+import System.FilePath ((</>))
+import System.IO (openTempFile,hClose,hPutStrLn,hFlush,hGetChar,hGetContents,withBinaryFile,stdin,IOMode(ReadMode))
+import System.Posix.Files (setFileMode,getFileStatus,fileMode)
+import System.Process
+import System.Exit (ExitCode(..))
+
+-- Real executable, disposable private keys, no network/database/service changes.
+contract :: IO Bool
+contract=bracket temporary removeDirectoryRecursive $ \directory->do
+  Just executable<-findExecutable "ecx-bridge"
+  let seed=B.replicate 32 7
+  secret<-case Ed.secretKey seed of CryptoPassed key->pure key; _->fail "test key"
+  let public=BA.convert(Ed.toPublic secret)::B.ByteString
+      owner=T.unpack(base58 public)
+      history=T.unpack(base58 $ B.replicate 64 1)
+      run input=readCreateProcessWithExitCode ((proc executable ["configure","--advanced"]) {cwd=Just directory}) input
+      key=directory</>"key.json"; worker=directory</>"worker.auth"; signer=directory</>"signer.auth"
+      invalidUnlock=directory</>"invalid-unlock"; unlock=directory</>"unlock"
+  savePrivate key (L.toStrict $ encode $ B.unpack(seed<>public))
+  savePrivate worker "worker:password";savePrivate signer "signer:password"
+  savePrivate invalidUnlock (B.singleton 255);savePrivate unlock " exact unlock secret "
+  -- Field order is explicitly sorted, and booleans/numbers retain their JSON types.
+  let fields=["false","1200",owner,owner,"test-deployment","10000","1000"
+        ,"invalid-number","4","2100000","10000000","10000","100000",owner
+        ,"00000047dcc9d64b767687d6a5e610c411dd85db5460e824c0f7284f5514bc47"
+        ,"16000","1","http://127.0.0.1:29432","test-wallet","300","8080","8081"
+        ,history,history,"https://api.devnet.solana.com","-"]
+      answers=["","L2LSignetDevnet","import"]<>fields<>["no","yes","release","installer","release.pem","candidate",key,"existing",worker,signer,"-","-","-","-","-","-","no"]
+  (code,_,_)<-run (unlines answers)
+  if code/=ExitSuccess then pure False else do
+    let out=directory</>".ecx-bridge"
+    config<-C.loadConfig(out</>"worker.json")
+    other<-C.loadConfig(out</>"signer.json")
+    modes<-mapM (fmap ((.&. 0o777) . fileMode) . getFileStatus . (out</>)) ["worker.json","signer.json","setup.json","sources.json"]
+    entries<-listDirectory out
+    sources<-either fail pure . (eitherDecodeStrict' :: B.ByteString -> Either String (M.Map String FilePath)) =<< B.readFile(out</>"sources.json")
+    originalKey<-B.readFile key
+    originalWorker<-B.readFile worker
+    originalSigner<-B.readFile signer
+    before<-B.readFile(out</>"worker.json")
+    (again,_,_)<-run "\n"
+    after<-B.readFile(out</>"worker.json")
+    (cancelled,_,_)<-run ((directory</>"cancelled")<>"\n")
+    partial<-doesDirectoryExist(directory</>"cancelled")
+    let local=directory</>"source-setup"
+        sourceAnswers=[local,"L2LSignetDevnet","import"]<>fields<>["no","yes","invalid-mode","source",directory,worker,key,"existing",worker,signer,invalidUnlock,unlock,"-","-","-","-","-","no"]
+    (sourceCode,sourceOutput,_)<-run (unlines sourceAnswers)
+    sourceSetup<-either fail pure . (eitherDecodeStrict' :: B.ByteString -> Either String Value) =<< B.readFile(local</>"setup.json")
+    sourceWorker<-C.loadConfig(local</>"worker.json")
+    sourceSigner<-C.loadConfig(local</>"signer.json")
+    let phrase=unwords (replicate 11 "abandon"<>["about"])
+        restored=directory</>"restored-setup"
+        wallet=directory</>"recovered-wallet"
+        phraseFile=directory</>"recovery.txt"
+    savePrivate phraseFile (B.pack $ map (fromIntegral . fromEnum) phrase)
+    (restoredCode,restoredOutput,_)<-run $ unlines $
+      [restored,"L2LSignetDevnet","restore",phraseFile,wallet]
+      <>take 3 fields<>drop 4 fields<>["no","yes","source",directory,worker,"existing",worker,signer,"-","-","-","-","-","-","no"]
+    restoredConfig<-C.loadConfig(restored</>"signer.json")
+    recovered<-B.readFile(wallet</>"solana.keypair.json")
+    recoveredPhrase<-B.readFile(wallet</>"solana-recovery.txt")
+    secretModes<-mapM (fmap ((.&. 0o777) . fileMode) . getFileStatus . (wallet</>)) ["solana-recovery.txt","solana.keypair.json"]
+    (pipeCode,pipeStdout,pipeOutput)<-run $ unlines [directory</>"pipe","L2LSignetDevnet","generate"]
+    let interrupted=directory</>"interrupted-setup"
+        retained=directory</>"retained-wallet"
+    (interruptedCode,_,_)<-run $ unlines [interrupted,"L2LSignetDevnet","restore",phraseFile,retained]
+    retainedKey<-B.readFile(retained</>"solana.keypair.json")
+    settingsRemain<-doesDirectoryExist interrupted
+    nativeChecked<-nativeSeedContract directory
+    simplifiedChecked<-simpleContract directory executable
+    require simplifiedChecked "interactive_wallet_mode_contract_failed"
+    importedChecked<-importContract directory executable (seed<>public)
+    require importedChecked "import_wallet_mode_contract_failed"
+    -- A verified pre-created ATA has no local creation attempt. Do not block
+    -- ordinary reconciliation, and never silently skip an existing corrupt file.
+    externalAta<-Bootstrap.initialAccounting directory config "owned SOL"
+    let ownerText=T.pack owner; mint=Bootstrap.canonicalMint
+        attempt=directory</>"ata-creation.json"
+    ata<-TO.runSafe (TO.Request $ Token.AssociatedAddress sdkLibraryPath ownerText mint)
+    let operation=Token.Associated ownerText mint ata ownerText 2039280 (base58 $ B.replicate 32 1)
+    unsigned<-TO.runSafe (TO.Request $ Token.Prepare sdkLibraryPath operation)
+    signature<-TO.runCritical (TO.Request $ TS.SignOffline key operation unsigned attempt)
+    localAta<-Bootstrap.initialAccounting directory config "owned SOL"
+    localReplay<-Bootstrap.initialAccounting directory config "owned SOL"
+    B.writeFile attempt "{}"
+    corruptAta<-try(Bootstrap.initialAccounting directory config "owned SOL") :: IO (Either BridgeError (Maybe Value))
+    historyPreflight<-preflightContract
+    backupChecked<-backupTimeoutContract directory
+    handoffChecked<-backupHandoffCancellation directory
+    expectedKey<-either (const $ fail "fixture mnemonic") pure (walletKey phrase)
+    let expectedSetup=object ["existing" .= False,"method" .= ("source"::String),"sourceRoot" .= directory,"restic" .= worker]
+    let checks=
+          [("bootstrap-accounting",externalAta==Nothing && either (const True) (const False) corruptAta
+            && localAta==localReplay && localAta==Just(object ["operation" .= ("initialize-operating"::T.Text)
+              ,"deposit" .= ("sol-operating:"<>C.solanaOperatingHistoryStart config),"transaction" .= signature,"reason" .= ("owned SOL"::T.Text)]))
+          ,("history-preflight",historyPreflight),("backup-handoff",handoffChecked)
+          ,("backup-timeout",backupChecked),("native-seed",nativeChecked)
+          ,("worker-signer-identity",C.fingerprint config==C.fingerprint other && C.nativeCookie config/=C.nativeCookie other)
+          ,("private-files",sort entries==["interface.json","setup.json","signer.json","sources.json","worker.json"] && all(==0o600)modes)
+          ,("import-sources",sources==M.fromList [("solana.keypair.json",key),("native-worker.auth",worker),("native-signer.auth",signer)]
+            && originalKey==L.toStrict(encode $ B.unpack(seed<>public)) && originalWorker=="worker:password" && originalSigner=="signer:password")
+          ,("source-selection",sourceCode==ExitSuccess && sourceSetup==expectedSetup && not ("PUBLIC key file" `isInfixOf` sourceOutput) && not ("signed installer directory" `isInfixOf` sourceOutput))
+          ,("unlock-validation",C.nativeUnlockFile sourceWorker==Nothing && C.nativeUnlockFile sourceSigner==Just unlock
+            && "invalid_native_unlock_file" `isInfixOf` sourceOutput && not (" exact unlock secret " `isInfixOf` sourceOutput))
+          ,("restore-identity",restoredCode==ExitSuccess && C.custodyOwner restoredConfig==base58(B.drop 32 expectedKey)
+            && recovered==L.toStrict(encode $ B.unpack expectedKey) && recoveredPhrase==B.pack(map (fromIntegral . fromEnum) (phrase<>"\n"))
+            && not (phrase `isInfixOf` restoredOutput) && all (==0o600) secretModes)
+          ,("configure-no-generation",pipeCode/=ExitSuccess && "wallet_generation_only_during_start" `isInfixOf` (pipeStdout<>pipeOutput))
+          ,("restore-interruption",interruptedCode/=ExitSuccess && not settingsRemain && retainedKey==recovered)
+          ,("overwrite-cancellation",before==after && again/=ExitSuccess && cancelled/=ExitSuccess && not partial)]
+    mapM_ (\(name,ok)->unless ok $ putStrLn $ "FAIL configure contract: "<>name) checks
+    pure(all snd checks)
+ where
+  temporary=do
+    parent<-getTemporaryDirectory
+    (path,h)<-openTempFile parent "ecx-configure-test"
+    hClose h;removeFile path;createDirectory path;setFileMode path 0o700
+    pure path
+
+-- Real configure-file command, published BIP-39 vector and disposable Solana key.
+-- No RPC, node creation, signing, services or funded wallets are involved.
+importContract :: FilePath -> FilePath -> B.ByteString -> IO Bool
+importContract parent executable key=do
+  let phrase=unwords(replicate 11 "abandon"<>["about"])
+      fields=
+        [("serverIp",show ("127.0.0.1"::String)),("domain",show ("bridge.example.invalid"::String))
+        ,("cloudflareTunnelToken","Nothing"),("ecxSeedBip39",show phrase),("solKeyB58",show $ T.unpack $ base58 key)
+        ,("assetMintAddress",show $ T.unpack Bootstrap.canonicalMint)
+        ,("feeRateWrapBps","100"),("feeRateUnwrapBps","100")
+        ,("payoutThresholdEcx",show ("0.001"::String)),("payoutThresholdWrappedEcx",show ("0.001"::String))
+        ,("minimumPayoutIntervalHours","48")
+        ,("ownerEcxXpub",show ("xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz"::String))
+        ,("ownerSolPubkey",show $ T.unpack $ base58 $ B.drop 32 key)
+        ,("externalLinkSolscan",show ("https://solscan.io/token/"<>T.unpack Bootstrap.canonicalMint))
+        ,("externalLinkOrca",show ("https://www.orca.so/pools/test"::String))
+        ,("solanaRpcUrl",show ("https://primary.example.invalid"::String))
+        ,("solanaVerifierRpcUrl",show ("https://verifier.example.invalid"::String))
+        ,("backupRepositoryUrl",show ("rest:https://backup.example.invalid/repository"::String))
+        ,("backupPassword",show ("test-backup-password-only"::String)),("resticExecutable",show executable)
+        ,("freshCustodyAttestation",show ("NEW_UNUSED_KEYS_WITH_NO_EXISTING_BRIDGE_LEDGER"::String))
+        ,("initialFundingOwnership",show ("test owned initial SOL"::String))]
+      record values="InstallConfig {"<>concat [separator<>name<>" = "<>value | ((name,value),separator)<-zip values ("":repeat ",")]<>"}"
+      replace name value=map (\(k,v)->(k,if k==name then value else v)) fields
+      output=parent</>"record-setup"
+      conf=parent</>"server.conf"
+      invoke path destination=readProcessWithExitCode executable ["configure-file",path,destination] ""
+      secretFree out=all (not . (`isInfixOf` out)) [phrase,T.unpack(base58 key),"test-backup-password-only"]
+  savePrivate conf (B8.pack $ record fields)
+  (first,out,err)<-invoke conf output
+  require (first==ExitSuccess) "import_contract_first_install_failed"
+  let privateFiles=[output</>name | name<-["install.conf","sources.json","bootstrap.json","setup.json","backup.repository","backup.password"]]
+        <>[output<>"-keys/"<>name | name<-["solana.keypair.json","ecx-recovery.txt","native-unlock"]]
+  before<-mapM B.readFile privateFiles
+  modes<-mapM (fmap ((.&. 0o777).fileMode) . getFileStatus) privateFiles
+  (second,reout,reerr)<-invoke conf output
+  after<-mapM B.readFile privateFiles
+  config<-Bootstrap.setupConfig output
+  importedKey<-B.readFile(output<>"-keys/solana.keypair.json")
+  importedPhrase<-B.readFile(output<>"-keys/ecx-recovery.txt")
+  generated<-mapM doesDirectoryExist [output<>"-solana-wallet",output<>"-ecx-wallet"]
+  invalid<-forM (zip [0::Int ..]
+    [replace "ecxSeedBip39" (show (""::String)),replace "solKeyB58" (show (""::String))
+    ,replace "ecxSeedBip39" (show $ unwords $ replicate 12 "abandon")
+    ,replace "solKeyB58" (show $ T.unpack $ base58 $ B.take 32 key<>B.replicate 32 0)
+    ,replace "solKeyB58" (show $ map (\c->toEnum(fromEnum c+256)::Char) $ T.unpack $ base58 key)
+    ,filter ((/="solKeyB58").fst) fields]) $ \(n,values)->do
+      let file=parent</>("invalid-"<>show n<>".conf"); dest=parent</>("invalid-"<>show n)
+      savePrivate file (B8.pack $ record values)
+      (code,stdout,stderr)<-invoke file dest
+      exists<-doesDirectoryExist dest
+      pure(code/=ExitSuccess && not exists && secretFree(stdout<>stderr))
+  let changed=parent</>"changed.conf"
+  savePrivate changed (B8.pack $ record $ replace "minimumPayoutIntervalHours" "24")
+  (changedCode,_,_)<-invoke changed output
+  unchanged<-mapM B.readFile privateFiles
+  let mixed=parent</>"mixed-setup"
+  createDirectory mixed;setFileMode mixed 0o700
+  savePrivate (mixed</>"configuring") "ecx-bridge-configuration-v1\n"
+  (mixedCode,_,_)<-invoke conf mixed
+  savePrivate (mixed</>"install.conf") (B8.pack $ record fields)
+  harness<-getExecutablePath
+  (resumeCode,_,resumeError)<-readProcessWithExitCode harness ["--start-setup",mixed] ""
+  mixedKeys<-mapM doesDirectoryExist [mixed<>"-keys",mixed<>"-solana-wallet",mixed<>"-ecx-wallet"]
+  pure(second==ExitSuccess && before==after && before==unchanged && all(==0o600)modes
+    && secretFree(out<>err<>reout<>reerr) && C.custodyOwner config==base58(B.drop 32 key)
+    && importedKey==L.toStrict(encode $ B.unpack key) && importedPhrase==B8.pack(phrase<>"\n")
+    && not(or generated) && and invalid && changedCode/=ExitSuccess && mixedCode/=ExitSuccess
+    && resumeCode/=ExitSuccess && "record_setup_incomplete_rerun_install" `isInfixOf` resumeError && not(or mixedKeys))
+
+-- An unavailable backup must not stall setup or leave its subprocess running.
+-- This executable is a process fixture, not a simulated chain or accepted backup.
+backupTimeoutContract :: FilePath -> IO Bool
+backupTimeoutContract parent=do
+  let root=parent</>"backup-timeout"; executable=root</>"restic"
+      pidFile=root</>"pid"; phrase=root</>"recovery"
+  mapM_ (\path->createDirectory path >> setFileMode path 0o700) [root,root</>"share"]
+  savePrivate executable (B8.pack $ "#!/bin/sh\necho $$ > '"<>pidFile<>"'\ntrap '' TERM\nexec sleep 600\n")
+  setFileMode executable 0o700
+  digest<-withBinaryFile executable ReadMode hashHandle
+  let record name value=savePrivate(root</>name)(L.toStrict $ encode value)
+  record "bootstrap.json" (object [])
+  record "setup.json" (object ["restic" .= executable,"sourceRoot" .= root,"method" .= ("bundle"::String)])
+  record "sources.json" (object ["backup.repository" .= (root</>"repository"),"backup.password" .= (root</>"password")])
+  record "share/toolchains.json" (object ["restic-reviewed" .= Object(KM.singleton(Key.fromString arch)(String digest))])
+  savePrivate phrase "preserved-recovery-fixture"
+  result<-try (Bootstrap.initializeBackup root) :: IO (Either BridgeError ())
+  pid<-read . B8.unpack <$> B.readFile pidFile
+  alive<-try (signalProcess nullSignal pid) :: IO (Either IOError ())
+  retained<-B.readFile phrase
+  pure (case (result,alive) of
+    (Left(BridgeError "backup_setup_timeout"),Left _)->retained=="preserved-recovery-fixture"
+    _->False)
+
+-- Published BIP-39 entropy/phrase vectors; SLIP-0010 Solana seeds independently
+-- cross-checked with Python hashlib/hmac (empty passphrase, m/44'/501'/0'/0').
+walletProperty :: Property
+walletProperty=forAll (vectorOf 16 arbitrary) $ \(entropy::[Word8])->
+  conjoin [case mnemonic (B.pack entropy) >>= walletKey of
+             Right key->property (B.length key==64)
+             Left _->property False
+          ,let randomBytes=B.pack (entropy<>entropy)
+               mixed=mixWalletEntropy "ecx" randomBytes "user text"
+           in conjoin [mixWalletEntropy "ecx" randomBytes ""===Right(B.pack entropy)
+              ,property (mixed/=mixWalletEntropy "solana" randomBytes "user text")
+              ,property (mixed/=mixWalletEntropy "ecx" (B.map (+1) randomBytes) "user text")
+              ,property (case mixed >>= mnemonic >>= walletKey of Right key->B.length key==64; _->False)
+              ,mixWalletEntropy "ecx" (B.pack entropy) "user text"===Left "invalid_wallet_entropy"
+              ,mixWalletEntropy "unknown" randomBytes ""===Left "invalid_wallet_entropy"
+              ,fmap (Hex.convertToBase Hex.Base16) (mixWalletEntropy "ecx" (B.pack [0..31]) "user text")===Right ("036bc3ecde7438a76a14bda8ca31c72f" :: B.ByteString)]
+          ,ioProperty (nativeScalarContract entropy)
+          ,conjoin [counterexample "BIP39/SLIP10 known vector mismatch" $
+             mnemonic (B.replicate 16 byte)==Right phrase &&
+             fmap (Hex.convertToBase Hex.Base16 . B.take 32) (walletKey phrase)==Right expected
+            | (byte,phrase,expected)<-vectors]
+          ,ioProperty $ do
+             actual<-nativeDescriptors False (unwords $ replicate 11 "abandon"<>["about"])
+             pure (actual==Right
+              ["wpkh([73c5da0a/84h/0h/0h]xprv9ybY78BftS5UGANki6oSifuQEjkpyAC8ZmBvBNTshQnCBcxnefjHS7buPMkkqhcRzmoGZ5bokx7GuyDAiktd5HemohAU4wV1ZPMDRmLpBMm/0/*)","wpkh([73c5da0a/84h/0h/0h]xprv9ybY78BftS5UGANki6oSifuQEjkpyAC8ZmBvBNTshQnCBcxnefjHS7buPMkkqhcRzmoGZ5bokx7GuyDAiktd5HemohAU4wV1ZPMDRmLpBMm/1/*)"])
+          ,property (case walletKey (unwords $ replicate 12 "abandon") of Left _->True; _->False)
+          ,property (case mnemonic (B.replicate 15 0) of Left _->True; _->False)]
+ where
+  vectors :: [(Word8,String,B.ByteString)]
+  vectors=
+    [(0,unwords (replicate 11 "abandon"<>["about"]),"37df573b3ac4ad5b522e064e25b63ea16bcbe79d449e81a0268d1047948bb445")
+    ,(127,"legal winner thank year wave sausage worth useful legal winner thank yellow","6987bdb06aa8a243a3019f41489ffa8e609c953a885a748d1849a8df760aa479")
+    ,(128,"letter advice cage absurd amount doctor acoustic avoid letter advice cage above","8ab69a9cd074a86f71fea02a807dac8cc5d498f292844417640946f497117746")
+    ,(255,unwords (replicate 11 "zoo"<>["wrong"]),"0b69a88e057a6ff3299f4adac3b04b0b24df114b3f3c21c5cefe0b89664b3bcf")]
+
+-- Integer arithmetic is an independent TEST oracle, never production key math.
+nativeScalarContract :: [Word8] -> IO Bool
+nativeScalarContract entropy=do
+  let order=0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141 :: Integer
+      bytes :: Integer -> B.ByteString
+      bytes value=B.pack [fromIntegral (value `shiftR` offset) | offset<-[248,240..0]]
+      randomScalar=1+B.foldl' (\n b->256*n+fromIntegral b) 0 (B.pack entropy)
+      generator="0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798" :: B.ByteString
+      cases=[(1,0,Just 1),(order-1,0,Just (order-1)),(0,1,Nothing),(order,0,Nothing)
+            ,(1,order,Nothing),(1,order-1,Nothing),(order-1,2,Just 1)
+            ,(randomScalar,order-randomScalar+1,Just 1)]
+  results<-forM cases $ \(parent,tweak,expected)->do
+    result<-deriveChild (bytes parent) (bytes tweak)
+    pure $ fmap fst result==fmap bytes expected && case result of
+      Just (_,public)->B.length public==33 && (parent/=1 || Hex.convertToBase Hex.Base16 public==generator)
+      Nothing->True
+  short<-deriveChild (B.replicate 31 0) (bytes 0)
+  long<-deriveChild (bytes 1) (B.replicate 33 0)
+  pure (and results && short==Nothing && long==Nothing)
+
+-- Closed native setup protocol: real-node descriptor compatibility is checked
+-- separately; these fixtures exercise interruption/refusal without chain effects.
+nativeSeedContract :: FilePath -> IO Bool
+nativeSeedContract directory=do
+  let phrase=unwords (replicate 11 "abandon"<>["about"])
+      seedFile=directory</>"native-seed.txt"
+      settings=N.NativeSettings L2LSignetDevnet "http://127.0.0.1:29432" (directory</>"worker.auth") "seed-test"
+        16000 "00000047dcc9d64b767687d6a5e610c411dd85db5460e824c0f7284f5514bc47"
+      public=["public-receive#checksum","public-change#checksum"]::[T.Text]
+  private<-nativeDescriptors True phrase >>= either (const $ fail "fixture native mnemonic") pure
+  savePrivate seedFile (B.pack $ map (fromIntegral . fromEnum) phrase)
+  exists<-newIORef False;imports<-newIORef (0::Int);creates<-newIORef (0::Int)
+  broken<-newIORef False;failImport<-newIORef False;restoring<-newIORef False
+  starting<-newIORef (2::Int)
+  let call _ method args=do
+        unless (not $ phrase `isInfixOf` show (encode args)) (fail "phrase leaked into RPC")
+        case (method,args) of
+          ("getblockchaininfo",[])->do
+            remaining<-readIORef starting
+            if remaining>0 then do
+              writeIORef starting (remaining-1)
+              throwIO(BridgeError $ if remaining==2 then "rpc_transport_unknown_outcome" else "rpc_error_-28")
+             else pure $ object ["chain" .= ("signet"::T.Text),"initialblockdownload" .= False,"blocks" .= (17000::Int),"pruned" .= False,"signet_challenge" .= N.signetChallenge]
+          ("getblockhash",_)->pure $ String $ N.nativeCheckpointHash settings
+          ("getconnectioncount",[])->pure $ Number 1
+          ("getdescriptorinfo",[String descriptor])->case lookup descriptor (zip private public) of
+            Just pub->pure $ object ["descriptor" .= pub,"checksum" .= ("checksum"::T.Text)]
+            Nothing->fail "unexpected descriptor"
+          ("deriveaddresses",_)->pure $ toJSON (["fixture-funding-address"]::[T.Text])
+          ("listwalletdir",[])->do
+            present<-readIORef exists
+            pure $ object ["wallets" .= [object ["name" .= N.nativeWallet settings] | present]]
+          ("createwallet",[String name,Bool False,Bool True,String "",Bool False,Bool True,Bool True,Bool False])->do
+            modifyIORef' creates (+1);writeIORef exists True
+            pure $ object ["name" .= name]
+          ("importdescriptors",[requests])->do
+            recovering<-readIORef restoring
+            let expected=toJSON [object ["desc" .= (descriptor<>"#checksum"),"active" .= True,"internal" .= internal
+                    ,"range" .= ([0,999]::[Int]),"next_index" .= (0::Int),"timestamp" .= (if recovering then Number 0 else String "now")]
+                    | (descriptor,internal)<-zip private [False,True]]
+            unless (requests==expected) (fail "incorrect import contract")
+            modifyIORef' imports (+1);bad<-readIORef failImport
+            pure $ toJSON [object ["success" .= not bad],object ["success" .= not bad]]
+          ("getwalletinfo",[])->pure $ object ["walletname" .= N.nativeWallet settings,"descriptors" .= True,"scanning" .= False
+            ,"private_keys_enabled" .= True,"external_signer" .= False]
+          ("listdescriptors",[Bool False])->do
+            bad<-readIORef broken
+            pure $ object ["descriptors" .= [object ["desc" .= (if bad then "changed" else descriptor),"active" .= True,"internal" .= internal]
+                  | (descriptor,internal)<-zip public [False,True]]]
+          ("getnewaddress",[String "bridge-initial-funding",String "bech32"])->pure $ String "fixture-funding-address"
+          _->fail "unexpected native initialization RPC"
+      run=N.evalNativeRecoveryWith call settings
+  address<-run (N.InitializeNativeWallet seedFile Nothing False 999)
+  repeated<-run (N.InitializeNativeWallet seedFile Nothing False 999)
+  firstImports<-readIORef imports;firstCreates<-readIORef creates
+  writeIORef broken True
+  changed<-try (run $ N.InitializeNativeWallet seedFile Nothing False 999) :: IO (Either BridgeError T.Text)
+  writeIORef broken False;writeIORef exists False;writeIORef failImport True;writeIORef restoring True
+  let failedSeed=directory</>"failed-native-seed.txt"
+  savePrivate failedSeed (B.pack $ map (fromIntegral . fromEnum) phrase)
+  failed<-try (run $ N.InitializeNativeWallet failedSeed Nothing True 999) :: IO (Either BridgeError T.Text)
+  checkpoint<-doesFileExist (failedSeed<>".initialized.json")
+  retried<-try (run $ N.InitializeNativeWallet failedSeed Nothing True 999) :: IO (Either BridgeError T.Text)
+  finalImports<-readIORef imports;finalCreates<-readIORef creates
+  let refused code result=case result of Left (BridgeError actual)->actual==code; _->False
+  pure (address==repeated && firstImports==1 && firstCreates==1 && finalImports==2 && finalCreates==2 && not checkpoint
+    && refused "native_seed_wallet_mismatch" changed && refused "native_seed_import_or_rescan_failed" failed
+    && refused "native_seed_wallet_exists_requires_review" retried)
+
+-- Real wizard on a disposable terminal; script writes to /dev/null, never a
+-- transcript. Recovery words are read only in memory and never printed by tests.
+simpleContract :: FilePath -> FilePath -> IO Bool
+simpleContract parent executable=do
+  let directory=parent</>"simple"
+      commands=directory</>"commands"
+      node=directory</>"bitcoin.conf"
+  createDirectory directory;setFileMode directory 0o700
+  -- A killed wizard left settings and an already-displayed wallet phrase.
+  -- Retrying must preserve the settings and keep the funding identity.
+  let interrupted=directory</>".ecx-bridge"
+      wallet=directory</>".ecx-bridge-solana-wallet"
+  mapM_ (\path->createDirectory path >> setFileMode path 0o700) [interrupted,wallet]
+  savePrivate (interrupted</>"configuring") "ecx-bridge-configuration-v1\n"
+  savePrivate (interrupted</>"retained-credential") "interrupted-fixture\n"
+  let primaryFile=directory</>"primary.url"
+      preserved=["native-admin.auth","native-worker.auth","native-signer.auth","native-rpc.conf","backup.password"]
+  savePrivate primaryFile "https://primary.example.invalid/"
+  savePrivate (interrupted</>"answer-primary.json") (L.toStrict $ encode primaryFile)
+  savePrivate (interrupted</>"answer-verifier.json") (L.toStrict $ encode ("https://verifier.example.invalid/"::String))
+  _<-NodeSetup.credentials interrupted
+  getRandomBytes 32 >>= savePrivate (interrupted</>"backup.password")
+  before<-mapM (B.readFile . (interrupted</>)) preserved
+  priorPhrase<-either (fail . T.unpack) pure (mnemonic $ B.replicate 16 1)
+  savePrivate (wallet</>"solana-recovery.txt") (B8.pack $ priorPhrase<>"\n")
+  savePrivate (wallet</>"solana-recovery.saved") "saved\n"
+  createDirectory commands;setFileMode commands 0o700
+  savePrivate node "server=1\n"
+  savePrivate (commands</>"restic") "#!/bin/sh\nexit 0\n"
+  savePrivate (commands</>"systemctl") "#!/bin/sh\ncase \"$1\" in cat|restart) exit 0;; *) exit 1;; esac\n"
+  mapM_ (\name->setFileMode (commands</>name) 0o700) ["restic","systemctl"]
+  old<-getEnv "PATH"
+  harness<-getExecutablePath
+  let stage starting=do
+        let program=if starting then harness else executable
+            arguments=if starting then ["--start-setup",interrupted] else ["configure"]
+            quote value="'"<>concatMap (\c->if c=='\'' then "'\\''" else [c]) value<>"'"
+            args=if os=="darwin" then ["-q","/dev/null",program]<>arguments
+                 else ["-q","-c",unwords(map quote $ program:arguments),"/dev/null"]
+        result<-timeout (45*1000000) $ withCreateProcess ((proc "script" args)
+          {cwd=Just directory,std_in=CreatePipe,std_out=CreatePipe,std_err=NoStream,create_group=True}) $ \input output _ process->do
+            let Just writer=input; Just reader=output
+                await needle=go "" (0::Int)
+                 where
+                  go found count=do
+                    unless (count<65536) (fail "wizard_output_bound")
+                    char<-hGetChar reader
+                    let next=drop (max 0 (length found+1-max 256 (length needle))) (found<>[char])
+                    unless (not $ any (`isInfixOf` next)
+                      ["Solana Mainnet RPC URL","Independent Mainnet RPC URL","Write down these 12 solana recovery words","Additional randomness for solana","private-entropy-fixture",priorPhrase])
+                      (fail "wizard_repeated_completed_prompt_or_phrase")
+                    if needle `isSuffixOf` next then pure () else go next (count+1)
+                answer label value=await label >> await ": " >> hPutStrLn writer value >> hFlush writer
+                ack=await "Type saved once you have backed up the phrase:" >> hPutStrLn writer "saved" >> hFlush writer
+            if starting then do
+              answer "Additional randomness for ecx (hidden; Enter skips)" "private-entropy-fixture"
+              ack
+              await "Saved private setup"
+             else do
+              answer "NEW HTTPS restic repository URL" "https://backup.example.invalid/repository"
+              answer "Public HTTPS origin" "-"
+              answer "Initial SOL ownership statement (fund once with your own SOL; add trading inventory after startup)" ""
+              answer "Initial SOL ownership statement (fund once with your own SOL; add trading inventory after startup)" "I own the initial SOL funding — opérateur"
+              await "No wallets generated; run start interactively to create custody."
+            hClose writer
+            remaining<-hGetContents reader
+            _<-evaluate(length remaining)
+            code<-waitForProcess process
+            pure(code==ExitSuccess)
+        pure(result==Just True)
+      run=do
+        setEnv "PATH" (commands<> ":"<>old)
+        configured<-stage False
+        -- Configuration must neither generate custody nor complete setup. A
+        -- piped start must fail before either of those actions, too.
+        let absent=[interrupted</>"setup.json",wallet</>"solana.keypair.json"
+                   ,directory</>".ecx-bridge-ecx-wallet/ecx-recovery.txt"]
+        beforeStart<-mapM doesFileExist absent
+        (refused,_,failure)<-readProcessWithExitCode harness ["--start-setup",interrupted] ""
+        afterRefusal<-mapM doesFileExist absent
+        started<-stage True
+        after<-mapM (B.readFile . (interrupted</>)) preserved
+        checked<-verify directory node
+        pure(configured && started && not(or beforeStart) && beforeStart==afterRefusal
+          && refused/=ExitSuccess && "wallet_generation_requires_interactive_terminal" `isInfixOf` failure
+          && before==after && checked)
+  run `finally` setEnv "PATH" old
+ where
+  verify directory node=do
+    let setup=directory</>".ecx-bridge"
+    c<-Bootstrap.setupConfig setup
+    runtimeExists<-doesFileExist(setup</>"worker.json")
+    rejected<-try(C.loadConfig(setup</>"bootstrap.json")) :: IO(Either BridgeError C.Config)
+    phraseA<-B8.strip <$> B.readFile(directory</>".ecx-bridge-solana-wallet/solana-recovery.txt")
+    phraseB<-B8.strip <$> B.readFile(directory</>".ecx-bridge-ecx-wallet/ecx-recovery.txt")
+    expectedPhrase<-either (fail . T.unpack) pure (mnemonic $ B.replicate 16 1)
+    archives<-filter (".ecx-bridge-interrupted-" `isPrefixOf`) <$> listDirectory directory
+    retained<-(=="interrupted-fixture\n") <$> B.readFile(setup</>"retained-credential")
+    repository<-B.readFile(setup</>"backup.repository")
+    acknowledgements<-mapM B.readFile
+      [directory</>(".ecx-bridge-"<>asset<>"-wallet")</>(asset<>"-recovery.saved") | asset<-["solana","ecx"]]
+    answerModes<-mapM (fmap ((.&. 0o777).fileMode) . getFileStatus . (setup</>))
+      ["answer-primary.json","answer-verifier.json","answer-backup.json","answer-origin.json","answer-initial-funding.json"]
+    solana<-either (const $ fail "generated_phrase_invalid") pure (walletKey $ B8.unpack phraseA)
+    rules<-B8.lines <$> B.readFile(setup</>"native-rpc.conf")
+    valid<-forM ["admin","worker","signer"] $ \role->do
+      let path=setup</>"native-"<>role<>".auth"
+      auth<-B8.strip <$> B.readFile path
+      mode<-fileMode <$> getFileStatus path
+      let (user,tailBytes)=B8.break (==':') auth
+          password=B.drop 1 tailBytes
+          match=[B.drop (B.length user+9) line | line<-rules,("rpcauth="<>user<>":") `B.isPrefixOf` line]
+          whitelist=[B.drop (B.length user+14) line | line<-rules,("rpcwhitelist="<>user<>":") `B.isPrefixOf` line]
+      pure $ mode .&. 0o777==0o600 && B.length password>=40 && case (match,whitelist) of
+        ([value],[methods])->
+          let (salt,hashValue)=B8.break (=='$') value
+              expected=Hex.convertToBase Hex.Base16 (hmac salt password::HMAC SHA256)::B.ByteString
+          in B.drop 1 hashValue==expected
+                                && (role/="worker" || all (`notElem` B8.split ',' methods) ["walletprocesspsbt","dumpprivkey","listdescriptors","backupwallet"])
+                                && (role/="signer" || "sendrawtransaction" `notElem` B8.split ',' methods)
+        _->False
+    -- Default setup selects the managed node. Exercise existing-node provisioning
+    -- separately against a disposable fixture, without installing a real service.
+    setupValue<-either fail pure . eitherDecodeStrict' =<< B.readFile(setup</>"setup.json")
+    managedSelected<-case setupValue of
+      Object fields->do
+        let selected=KM.lookup "managedNode" fields==Just(Bool True)
+              && KM.lookup "initialFundingOwnership" fields==Just(String "I own the initial SOL funding — opérateur")
+            changed=KM.insert "managedNode" (Bool False) $ KM.insert "nodeConfig" (toJSON node) $
+              KM.insert "nodeService" (String "fixture.service") fields
+        B.writeFile (setup</>"setup.json") (L.toStrict $ encode $ Object changed)
+        pure selected
+      _->pure False
+    Bootstrap.bind setup
+    NodeSetup.provision setup
+    first<-B.readFile node
+    NodeSetup.provision setup
+    second<-B.readFile node
+    prior<-B.readFile(setup</>"node-config.before")
+    -- Changing settings after any bootstrap begins cannot silently change identity.
+    B.appendFile (setup</>"interface.json") " "
+    Bootstrap.bind setup -- whitespace is not a semantic change
+    B.writeFile (setup</>"interface.json") "{}"
+    changed<-try(Bootstrap.bind setup) :: IO(Either BridgeError ())
+    historyChecked<-originContract
+    B.appendFile node "# unexpected operator edit\n"
+    nodeChanged<-try(NodeSetup.provision setup) :: IO(Either BridgeError ())
+    pure(retained && null archives && repository=="rest:https://backup.example.invalid/repository"
+      && all (=="saved\n") acknowledgements && all (==0o600) answerModes
+      && C.solanaRpc c=="https://primary.example.invalid/" && C.solanaVerifierRpc c==Just "https://verifier.example.invalid/"
+      && phraseA==B8.pack expectedPhrase && managedSelected && historyChecked && either (const True) (const False) nodeChanged && all id valid && not runtimeExists && either (const True) (const False) rejected
+      && C.profile c==CanonicalBeta && C.mint c==Bootstrap.canonicalMint && C.custodyOwner c==base58(B.drop 32 solana)
+      && phraseA/=phraseB && first==second && prior=="server=1\n" && "rpcwhitelistdefault=0" `B.isInfixOf` first
+      && either (const True) (const False) changed)
+
+-- Read-only RPC fixtures, not claims of real Mainnet acceptance.
+originContract :: IO Bool
+originContract=do
+  let address=base58(B.replicate 32 7)
+      signature=base58(B.replicate 64 1)
+      other=base58(B.replicate 64 2)
+      entry sig=object ["signature" .= sig,"slot" .= (12::Int),"err" .= Null,"confirmationStatus" .= String "finalized"]
+      request variant provider method args=case (method,args) of
+        ("getSignaturesForAddress",[_,Object options])->
+          if KM.member "before" options && variant/="repeat" then pure(toJSON ([]::[Value]))
+          else pure(toJSON [entry $ if variant=="disagree" && provider=="second" then other else signature])
+        ("getTransaction",_)->if variant=="missing" then pure Null else pure $ object
+          ["meta" .= object [],"transaction" .= object ["signatures" .= [signature],"message" .= object
+            ["accountKeys" .= [if variant=="wrong-account" then base58(B.replicate 32 8) else address]]]]
+        _->fail "unexpected_bootstrap_read"
+      run variant=try(Bootstrap.agreedOrigin ["first","second"] (request variant) address) :: IO(Either BridgeError T.Text)
+  good<-run "ok"
+  refused<-mapM run ["repeat","disagree","missing","wrong-account"]
+  pure(either (const False) (==signature) good && all (either (const True) (const False)) refused)
+
+
+-- Provider plan refusal and missing/misbound history must fail before setup spends.
+preflightContract :: IO Bool
+preflightContract=do
+  let signature=base58(B.replicate 64 1)
+      request variant method args=case (method,args) of
+        ("getSignaturesForAddress",[String mint,_]) | mint==Bootstrap.canonicalMint->
+          if variant=="forbidden" then throwIO(BridgeError "rpc_method_forbidden")
+          else pure $ toJSON (if variant=="empty" then [] else [object ["signature" .= signature]])
+        ("getTransaction",[String sig,options]) | sig==signature->do
+          maximumVersion<-fieldValue "maxSupportedTransactionVersion" options :: IO Int
+          require (maximumVersion==1) "preflight_requires_v1"
+          if variant=="missing" then pure Null else pure $ object
+            ["meta" .= object [],"transaction" .= object
+              ["signatures" .= [if variant=="wrong-signature" then base58(B.replicate 64 2) else signature]
+              ,"message" .= object ["accountKeys" .= [if variant=="wrong-account" then base58(B.replicate 32 8) else Bootstrap.canonicalMint]]]]
+        _->fail "unexpected_preflight_read"
+      run variant=try(Bootstrap.checkHistoryWith $ request variant) :: IO(Either BridgeError ())
+  good<-run "ok"
+  refused<-mapM run ["forbidden","empty","missing","wrong-signature","wrong-account"]
+  pure(either (const False) (const True) good && all (either (const True) (const False)) refused)
+
+-- Losing the caller during backupwallet must retain the directory: the node RPC
+-- may still be writing after the Haskell helper has been cancelled.
+backupHandoffCancellation :: FilePath -> IO Bool
+backupHandoffCancellation parent=do
+  let spool=parent</>"native-spool"; input=parent</>"native-request"
+      settings=N.NativeSettings ECXBetanetDevnet "http://127.0.0.1:28532" (parent</>"cookie") "backup-test"
+        967680 "00000000000000030101ba5cfea54b22becc79f95dc6040beb76e01dd9d04042"
+      binding=digest . L.toStrict . encode $ object ["profile" .= N.profile settings,"wallet" .= N.nativeWallet settings
+        ,"height" .= N.nativeCheckpointHeight settings,"checkpoint" .= N.nativeCheckpointHash settings]
+      call _ method _=case method of
+        "getblockchaininfo"->pure $ object ["chain" .= ("main"::T.Text),"initialblockdownload" .= False,"blocks" .= (967681::Int)]
+        "getblockhash"->pure $ String $ N.nativeCheckpointHash settings
+        "getconnectioncount"->pure $ Number 1
+        "getwalletinfo"->pure $ object ["walletname" .= N.nativeWallet settings,"descriptors" .= True
+          ,"scanning" .= False,"private_keys_enabled" .= True,"external_signer" .= False]
+        "listdescriptors"->pure $ object ["wallet_name" .= N.nativeWallet settings,"descriptors" .= [object ["desc" .= ("public"::T.Text)]]]
+        "backupwallet"->throwIO ThreadKilled
+        _->fail "unexpected backup fixture RPC"
+      run=bracket (hDuplicate stdin) hClose $ \saved->
+        withBinaryFile input ReadMode $ \source->
+          (hDuplicateTo source stdin >> N.evalNativeRecoveryWith call settings (N.ServeNativeWalletBackup spool))
+            `finally` hDuplicateTo saved stdin
+  createDirectory spool;setFileMode spool 0o700
+  savePrivate input ("ECX-NATIVE-BACKUP/1 "<>TE.encodeUtf8 binding<>"\n")
+  first<-try run :: IO (Either AsyncException ())
+  second<-try run :: IO (Either AsyncException ())
+  before<-sort <$> listDirectory spool
+  third<-try run :: IO (Either BridgeError ())
+  after<-sort <$> listDirectory spool
+  pure (first==Left ThreadKilled && second==Left ThreadKilled && before==after
+    && length (filter (isPrefixOf "export-") before)==2
+    && case third of Left (BridgeError "native_backup_spool_requires_cleanup")->True; _->False)

@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>ECX Bridge</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/wallet.js"></script>
+  </head>
+  <body>
+    <main>
+      <nav aria-label="Main navigation">
+        <a href="/" aria-current="page">Bridge</a>
+        <a href="/info">Info</a>
+        <a href="/funding">Funding</a>
+      </nav>
+      <header>
+        <span class="eyebrow">ECX / OPEN SOURCE</span>
+        <h1>A direct bridge.</h1>
+        <p>
+          Wrap and unwrap ECX. Pay from your wallet without connecting it to
+          this site.
+        </p>
+      </header>
+      <section class="notice">
+        <strong id="network">Checking deployment…</strong>
+        <p id="availability"></p>
+        <p id="limits" class="small"></p>
+        <details>
+          <summary>Configured token</summary>
+          <p id="mint" class="address"></p>
+          <p><a id="mint-link" target="_blank" rel="noopener noreferrer" hidden>View token on Solana Explorer</a></p>
+        </details>
+        <p id="network-note" class="small"></p>
+      </section>
+      <details class="card">
+        <summary>Bridge information</summary>
+        <p id="report-note" class="small">Loading report…</p>
+        <div id="report-data" hidden>
+          <p>Completed in the last 24 hours: <strong id="report-wraps">—</strong> wraps,
+            <strong id="report-unwraps">—</strong> unwraps.</p>
+          <p id="report-undated" class="small"></p>
+          <div class="report-table">
+            <table>
+              <thead><tr><th>Asset</th><th>Custody reserves</th><th>Fees earned · lifetime</th><th>Free payout inventory</th><th>Reserved payouts</th><th>Customer principal</th></tr></thead>
+              <tbody>
+            <tr><th scope="row">ECX</th><td id="report-Native-reserve">—</td><td id="report-Native-fees">—</td><td id="report-Native-float">—</td><td id="report-Native-held">—</td><td id="report-Native-liability">—</td></tr>
+            <tr><th scope="row">Wrapped ECX</th><td id="report-Wrapped-reserve">—</td><td id="report-Wrapped-fees">—</td><td id="report-Wrapped-float">—</td><td id="report-Wrapped-held">—</td><td id="report-Wrapped-liability">—</td></tr>
+            <tr><th scope="row">SOL</th><td id="report-Sol-reserve">—</td><td id="report-Sol-fees">—</td><td id="report-Sol-float">—</td><td id="report-Sol-held">—</td><td id="report-Sol-liability">—</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="small">Reserves include funds owed to customers and operating funds;
+            they are not all available for payouts. Earned bridge fees exclude network
+            costs and are cumulative, including fees already withdrawn. Refunds and
+            unsuccessful transfers are excluded from completed-transfer counts.</p>
+        </div>
+      </details>
+      <section class="card">
+        <h2>Transfer</h2>
+        <form id="order-form">
+          <label
+            >Direction<select id="direction">
+              <option value="NativeToWrapped">Native → wrapped</option>
+              <option value="WrappedToNative">Wrapped → native</option>
+            </select></label
+          ><label
+            >Amount<input
+              id="amount"
+              inputmode="decimal"
+              placeholder="0.00000000"
+              required
+              autocomplete="off"
+          /></label>
+          <div class="quote">
+            <span>Bridge fee <strong id="fee">—</strong></span
+            ><span>You receive <strong id="net">—</strong></span>
+          </div>
+          <label
+            ><span id="destination-label">Solana destination address</span
+            ><input
+              id="recipient"
+              required
+              autocomplete="off"
+              spellcheck="false" /></label
+          ><label id="refund-field"
+            >Native refund address<input
+              id="refund"
+              required
+              autocomplete="off"
+              spellcheck="false"
+          /></label>
+          <p id="refund-note" class="small" hidden>
+            Any token refund returns to the verified owner of the account that
+            paid this order.
+          </p>
+          <button id="create" type="submit" disabled>Create order</button>
+        </form>
+      </section>
+      <section class="card">
+        <div class="row">
+          <h2>Your order</h2>
+          <button id="new" type="button">New order</button>
+        </div>
+        <p id="status">No order yet.</p>
+        <div id="order-details" hidden>
+          <p id="order-short" class="small"></p>
+          <p id="order-summary"></p>
+          <p id="deposit-deadline" class="small"></p>
+          <p id="deposit-address" class="address"></p>
+          <canvas id="qr" hidden></canvas>
+          <p><a id="payment-link" hidden>Open payment in your wallet</a></p>
+          <button id="copy-payment" type="button" hidden>
+            Copy payment instructions
+          </button>
+          <p>
+            <a id="payout-link" target="_blank" rel="noopener noreferrer" hidden
+              >View payout transaction</a
+            >
+          </p>
+        </div>
+        <div id="manual-copy" hidden>
+          <label>Copy selected text
+            <textarea id="copy-text" readonly spellcheck="false" autocomplete="off" rows="3"></textarea>
+          </label>
+          <p class="small">Keep recovery links private: they grant access to your order.</p>
+          <button id="close-copy" type="button">Close and clear</button>
+        </div>
+        <div class="row">
+          <button id="refresh" type="button" disabled>Refresh</button
+          ><button id="copy" type="button" disabled>
+            Copy private recovery link
+          </button>
+        </div>
+      </section>
+      <label id="history-field" hidden
+        >Recent orders on this device<select id="history"></select
+      ></label>
+      <p id="error" role="alert"></p>
+      <p id="message" role="status"></p>
+      <section id="trading" class="notice" hidden>
+        <h2>Trade the wrapped token</h2>
+        <p class="row">
+          <a id="jupiter-link" target="_blank" rel="noopener noreferrer" hidden>Open Jupiter</a>
+          <a id="orca-link" target="_blank" rel="noopener noreferrer" hidden>Open Orca pool</a>
+        </p>
+        <p class="small">Trading uses your wallet on the external site. Verify its token mint and quote before signing.</p>
+      </section>
+      <footer>
+        Bridge fee: 1% in each direction. Operator pays payout network costs.
+        Keep your recovery link private. Use only the networks and token mint
+        shown above.
+        <p><a id="support-link" target="_blank" rel="noopener noreferrer" hidden>Contact the bridge operator</a></p>
+      </footer>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,63 @@
+{
+  "aarch64": {
+    "ghc": [
+      "https://downloads.haskell.org/ghc/9.14.1/ghc-9.14.1-aarch64-deb12-linux.tar.xz",
+      "6aa27a377451851c851eefdd869e8f5a9217b02ce66c6ca9b418b72efee28427"
+    ],
+    "cabal": [
+      "https://downloads.haskell.org/cabal/cabal-install-3.16.1.0/cabal-install-3.16.1.0-aarch64-linux-deb12.tar.xz",
+      "41d8fc43de1c652c00d85799d0273f8b6600bc71603126bc651ca4e3917a1b84"
+    ],
+    "rust": [
+      "https://static.rust-lang.org/dist/rust-1.97.1-aarch64-unknown-linux-gnu.tar.xz",
+      "9a7a2c336b4787f1b72f6bab7c35d5b7af2fd03cbd39b4fc721466a70d402a7d"
+    ],
+    "node": [
+      "https://nodejs.org/dist/v25.4.0/node-v25.4.0-linux-arm64.tar.xz",
+      "1e8c471a0c4693cb8b592bcde86be0bf4b7bf8efb28b196e52fc6fa4b486f2e9"
+    ],
+    "bitcoin": [
+      "https://bitcoincore.org/bin/bitcoin-core-30.2/bitcoin-30.2-aarch64-linux-gnu.tar.gz",
+      "73e76c14edc79808a0511c744d102ffbb494807ee90cbcba176568243254b532"
+    ]
+  },
+  "x86_64": {
+    "ghc": [
+      "https://downloads.haskell.org/ghc/9.14.1/ghc-9.14.1-x86_64-ubuntu24_04-linux.tar.xz",
+      "530f0861d1d7b45476c158a9e68aa89987687aaf9939df7a15995c45726e2344"
+    ],
+    "cabal": [
+      "https://downloads.haskell.org/cabal/cabal-install-3.16.1.0/cabal-install-3.16.1.0-x86_64-linux-ubuntu24_04.tar.xz",
+      "f7284888f523ff0bb3d8bfc9e7b8c89ab3b95fe87792aefc06019801b9f6ef74"
+    ],
+    "rust": [
+      "https://static.rust-lang.org/dist/rust-1.97.1-x86_64-unknown-linux-gnu.tar.xz",
+      "88f28fa9af20594179f85d6df67078dfd6fa93e2f6da5e1e9b0ac4997988ca4f"
+    ],
+    "node": [
+      "https://nodejs.org/dist/v25.4.0/node-v25.4.0-linux-x64.tar.xz",
+      "f3bde66a96c232f34cdd9f4fea6b551f915f8f3ac0952793eef903b3e35df037"
+    ],
+    "bitcoin": [
+      "https://bitcoincore.org/bin/bitcoin-core-30.2/bitcoin-30.2-x86_64-linux-gnu.tar.gz",
+      "6aa7bb4feb699c4c6262dd23e4004191f6df7f373b5d5978b5bcdd4bb72f75d8"
+    ]
+  },
+  "ghc-source": [
+    "https://downloads.haskell.org/ghc/9.14.1/ghc-9.14.1-src.tar.xz",
+    "2a83779c9af86554a3289f2787a38d6aa83d00d136aa9f920361dd693c101e77"
+  ],
+  "restic-reviewed": {
+    "source": "github.com/restic/restic@v0.19.1",
+    "sourceSum": "h1:LQKkar5/gYxay1OCokAWPBNiLr1lTpt4fhdM4GWqSlY=",
+    "go": "go1.26.9",
+    "tags": "disable_grpc_modules",
+    "patchSha256": "1195318dbdf1d8cdb30e9b658e1c6338f689ba49081b281b9102bc1a945563aa",
+    "aarch64": "d67592900b7c87f28bc0618ed3b2937f645630b8b1194a43a4cde36f5f3ad8eb",
+    "x86_64": "0b9777171a216de85789286f976a8ca0ada550b1909288ebd2d474cce4c56c76"
+  },
+  "secp256k1": [
+    "https://codeload.github.com/bitcoin-core/secp256k1/tar.gz/6e2c8bc4ecdc6e71dbe7a368f360d8d453ce435d",
+    "3fe9fd705f4fdf2fe90d6e04b6c1fedd7e8f244a119315886f6468f52c2dfc33"
+  ]
+}

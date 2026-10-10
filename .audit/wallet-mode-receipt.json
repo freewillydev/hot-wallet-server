@@ -1,0 +1,37 @@
+{
+  "scope": "wallet import/generation modes; local configure contract, no chain/funds/services",
+  "time": "2026-10-10T21:28:39.002548+00:00",
+  "cwd": "/Users/lukekensik/Documents/Codex/hot-wallet-server",
+  "source_sha256": {
+    "src/app/Configure.hs": "0fd8c536f40a09257dd2f468076856d282a1ac611119abdbf70fb013db5c7b67",
+    "src/app/InstallConfig.hs": "a1485203d4640b9a5a210ab4b4087a60bbb0b4df684e9fabcb56dabf3cd468ac",
+    "src/app/Main.hs": "448642c941ca9be16f43b1428406832eee2ac4d29fe19c120032105301187371",
+    "src/app/Menu.hs": "d19ab6b6aca9594f19f1486c8f098768a32b120017dfc8815c46e80d52a810f7",
+    "src/app/Bootstrap.hs": "24314a844ab2b45ce3c2167240183042f8b45172628dcb87420fe17b428bee55",
+    "src/test/ConfigureCheck.hs": "919e330d85354fbdbfcbaf905efdd9cbab6799760e15c0f8d96287ee7ff73c66",
+    "src/test/Main.hs": "53e7d895a11e83d4540bca56306501bbd3a72235f89eab9c177ef8255ec02f2e",
+    "src/ecx-bridge.cabal": "7e900d8baa30eed6b1a253efd8b7a30656bd9537c310c68905f92eef27d5d3de"
+  },
+  "command": "cabal test bridge-test -j1 --builddir=/tmp/hot-wallet-server-build --test-show-details=direct --test-options=--configure-only",
+  "terminal_session": 44193,
+  "observed_exit_code": 0,
+  "log": "/tmp/hot-wallet-wallet-mode-test.log",
+  "log_sha256": "f4eb9f455cebf6d1207fbdc053547ba2329ad8713f6711c64bb65279b9d5a172",
+  "limits": [
+    "cached browser/FFI reused from /tmp/ecx-path-log-build",
+    "not Ubuntu install/production acceptance",
+    "payout rounds not implemented"
+  ],
+  "full_bridge_test": {
+    "session": 69904,
+    "observed_exit_code": 0,
+    "command": "cabal test bridge-test -j1 --builddir=/tmp/hot-wallet-server-build --test-show-details=direct",
+    "log": "/tmp/hot-wallet-server-full-test.log",
+    "log_sha256": "f086cec54e7419964aa0589b88cf7f02fde579ee201ed526ce480ae78eef67ff"
+  },
+  "independent_review": {
+    "agent": "/root/wallet_mode_verifier",
+    "verdict": "PASS",
+    "scope": "wallet modes, Unicode refusal, backup child reaping; source hashes and execution evidence reviewed; no independent rerun"
+  }
+}

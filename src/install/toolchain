@@ -1,0 +1,32 @@
+#!/bin/sh
+# Invoked only by install.sh as the isolated build user, never with custody input.
+set -eu
+[ "$(id -u)" != 0 ] || { echo 'Refusing to compile as root.' >&2; exit 1; }
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
+cd "$root"
+export PATH="$HOME/.ghcup/bin:$HOME/.cargo/bin:$PATH"
+mkdir -p "$HOME/.cache/hot-wallet-server" "$HOME/.local/share"
+if ! command -v ghcup >/dev/null; then
+  curl -fLsS --proto '=https' --tlsv1.2 https://get-ghcup.haskell.org -o "$HOME/.cache/hot-wallet-server/ghcup.sh"
+  BOOTSTRAP_HASKELL_NONINTERACTIVE=1 BOOTSTRAP_HASKELL_MINIMAL=1 sh "$HOME/.cache/hot-wallet-server/ghcup.sh"
+fi
+ghcup install ghc 9.14.1
+ghcup install cabal 3.16.1.0
+if ! command -v rustup >/dev/null; then
+  curl -fLsS --proto '=https' --tlsv1.2 https://sh.rustup.rs -o "$HOME/.cache/hot-wallet-server/rustup.sh"
+  sh "$HOME/.cache/hot-wallet-server/rustup.sh" -y --no-modify-path --profile minimal
+fi
+sh src/install/secp256k1 "$HOME/.local/share/ecx-secp256k1"
+export PKG_CONFIG_PATH="$HOME/.local/share/ecx-secp256k1/prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+if [ ! -d "$HOME/.local/share/ecx-emsdk/.git" ]; then
+  git clone https://github.com/emscripten-core/emsdk.git "$HOME/.local/share/ecx-emsdk"
+fi
+"$HOME/.local/share/ecx-emsdk/emsdk" install 3.1.74
+"$HOME/.local/share/ecx-emsdk/emsdk" activate 3.1.74
+. "$HOME/.local/share/ecx-emsdk/emsdk_env.sh"
+ghcup config add-release-channel cross
+emconfigure ghcup install ghc javascript-unknown-ghcjs-9.12.2
+export ECX_GHC_JS="$HOME/.ghcup/bin/javascript-unknown-ghcjs-ghc-9.12.2"
+export ECX_EMSDK="$HOME/.local/share/ecx-emsdk"
+ghcup run --ghc 9.14.1 --cabal 3.16.1.0 -- cabal update
+ghcup run --ghc 9.14.1 --cabal 3.16.1.0 -- cabal build exe:ecx-bridge -j1

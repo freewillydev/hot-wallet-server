@@ -1,0 +1,29 @@
+dist-newstyle/
+cabal.project.local
+solana-helper/target/
+web/node_modules
+web/dist/
+*.sqlite*
+*.keypair.json
+secretKey
+ecx-token.json
+.ecx-token/
+.ecx-token-*
+.env
+config/local.json
+run/
+.DS_Store
+.release-build/
+__pycache__/
+
+# Generated bridge setup, credentials and recovery phrases.
+.ecx-bridge/
+.ecx-bridge-*/
+*.key
+*.pem
+*.log
+# Real unattended installation inputs and isolated build-copy provenance.
+server.conf
+source-commit
+# Public test trust anchor; not a private key.
+!docs/development-release-public.pem
