@@ -71,8 +71,11 @@ Set those for the Cabal commands in AGENTS.md. Targeted test log:
 `/tmp/hot-wallet-server-full-test.log`. No owned long-running processes remain.
 Neither test invokes the disposable PostgreSQL financial matrix or a real install.
 
-Private GitHub development checkpoint publication is authorized and being reviewed
-by `server_extraction_review`. It is not a declaration of installation completion.
-After push, record exact commit, remote equality/private visibility and reviewer
-receipt in .audit/extraction.tsv. Never include real server.conf, credentials,
-wallets, database state, build caches or live key material.
+Private development checkpoint published:
+https://github.com/freewillydev/hot-wallet-server (visibility PRIVATE verified).
+Initial source commit `10e36ae6def507bb7ecb6ed04d992668f0c84f68` matches remote main;
+its exact tree `9c2778f88db423b1b17fd4f096a7ced87f4840a6` received independent
+`server_extraction_review` PASS for unfinished source checkpoint publication only.
+All installer, payout and production gates remain pending. Publication evidence
+is recorded in .audit/extraction.tsv. Follow-up protocol-only commits do not change
+that reviewed implementation. Next implementation work is item1 above.

@@ -30,3 +30,11 @@ Cloudflare/owner wiring, PostgreSQL schedule/recovery and production are not cer
 Full extracted `bridge-test` suite also PASS (session69904 exit0,
 `/tmp/hot-wallet-server-full-test.log`). This is the local suite; the separate
 PostgreSQL financial contracts and Linux installation remain unrun here.
+
+## Private source checkpoint publication
+
+PASS for source-only publication: independent `server_extraction_review` bound
+staged tree `9c2778f88db423b1b17fd4f096a7ced87f4840a6`; committed as
+`10e36ae6def507bb7ecb6ed04d992668f0c84f68`. GitHub
+`freewillydev/hot-wallet-server` is PRIVATE and its main branch matched that commit
+at publication. This does not mark the broader finish line complete.
