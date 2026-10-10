@@ -63,3 +63,17 @@ session80273 exit0; `/tmp/hot-wallet-layout-archive-plan.log`). No standalone
 Independent `/root/layout_final_verifier`: PASS for staged tree `12fa156b1dc0242b982eb86ed37ff3c11e978e10`.
 No blocking findings. This verdict covers the layout only; all broader installer,
 payout, PostgreSQL and production checks above remain PENDING/FAIL.
+
+## Custom frontend (2026-10-10)
+
+Scope: optional `websiteDirectory` record input, three fixed public files,
+immutable setup hashes, protected installed copy retained across upgrades, and
+bounded startup snapshots. Same customer API, CSP and evaluator boundaries.
+Build PASS (`/tmp/hot-wallet-website-build.log`, session1786 exit0); installer shell
+syntax and `git diff --check` PASS. Full local `bridge-test` PASS
+(`/tmp/hot-wallet-website-test-final.log`, session3902 exit0), including file
+protection, API routing, immutable snapshot and real configure-file replay checks.
+Independent `/root/website_final_verifier` PASS for staged tree
+`b8091c3fb943b134642664e8c519f9c55295e42a`; no blocking findings.
+Ubuntu custom-site install/reboot/upgrade acceptance remains unrun; this
+feature does not close the broader installer or production gates.

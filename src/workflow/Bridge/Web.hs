@@ -1,12 +1,13 @@
-{-# LANGUAGE ConstraintKinds, DataKinds, RankNTypes #-}
-module Bridge.Web (customerApplication,publicApplication,boundedApplication,runPublicServer,rateLimitedApplication,fundingApplication) where
+{-# LANGUAGE ConstraintKinds, DataKinds, RankNTypes, ScopedTypeVariables #-}
+module Bridge.Web (readWebsite,customerApplication,publicApplication,boundedApplication,runPublicServer,rateLimitedApplication,fundingApplication) where
 import Bridge.API
 import Bridge.Operation (Plan,Caller(Customer),CustomerOperations,CustomerRead(PublicConfig),safe)
 import Bridge.Credentials (protectedSignerFile,readFundingConfig)
+import Bridge.File (withHandle,readBounded)
 import Bridge.Error
 import Control.Concurrent.STM
-import Control.Exception (bracket,catch)
-import Control.Monad (when)
+import Control.Exception (bracket,catch,IOException)
+import Control.Monad (when,forM,forM_)
 import Control.Monad.IO.Class (liftIO)
 import Data.Aeson (encode,object,(.=),eitherDecodeStrict',withObject,(.:))
 import Data.Aeson.Types (parseEither)
@@ -25,7 +26,10 @@ import Data.Text (Text)
 import qualified Network.HTTP.Types as HTTP
 import Network.Wai
 import Servant
-import System.Directory (doesFileExist)
+import Data.Bits ((.&.))
+import qualified System.Posix.Files as F
+import qualified System.Posix.IO as P
+import System.Posix.User (getEffectiveUserID)
 import System.FilePath ((</>))
 import System.Environment (lookupEnv)
 import GHC.Clock (getMonotonicTimeNSec)
@@ -43,16 +47,37 @@ customerRoutes evaluate = serve customerAPI (hoistServer customerAPI interpret c
     result<-liftIO $ (Right <$> evaluate plan) `catch` (\(BridgeError code)->pure $ Left code)
     either (\code->throwError err409 {errBody=encode $ object ["error" .= code],errHeaders=[("Content-Type","application/json")]}) pure result
 
--- Exactly three static resources, built from Haskell/HTML/CSS by root Cabal.
--- A requested path is never joined to a filesystem path.
+-- Fixed public names only: bundled GHC JavaScript or operator-supplied files.
+-- Capture bounded bytes before serving; requests never select filesystem paths.
+websiteFiles :: [([Text],FilePath,BS.ByteString)]
+websiteFiles=[([],"index.html","text/html; charset=utf-8"),(["style.css"],"style.css","text/css; charset=utf-8"),
+  (["wallet.js"],"dist/wallet.js","text/javascript; charset=utf-8")]
+
+readWebsite :: FilePath -> IO [(FilePath,BS.ByteString)]
+readWebsite assets=load `catch` (\(_::IOException)->reject "website_assets_unreadable")
+ where
+  load=do
+    uid<-getEffectiveUserID
+    let owned status=F.fileOwner status `elem` [0,uid] && F.fileMode status .&. 0o022==0
+    forM_ [assets,assets</>"dist"] $ \directory->do
+      status<-F.getSymbolicLinkStatus directory
+      require (F.isDirectory status && owned status) "unsafe_website_directory"
+    forM websiteFiles $ \(_,name,_)->
+      bracket (P.openFd (assets</>name) P.ReadOnly P.defaultFileFlags
+        {P.nofollow=True,P.cloexec=True,P.nonBlock=True}) P.closeFd $ \fd->do
+        status<-F.getFdStatus fd
+        require (F.isRegularFile status && owned status && F.linkCount status==1
+          && F.fileSize status>0 && F.fileSize status<=16*1024*1024) "unsafe_website_file"
+        bytes<-withHandle fd (readBounded (16*1024*1024)) >>= maybe (reject "website_file_too_large") pure
+        require (not $ BS.null bytes) "empty_website_file"
+        pure (name,bytes)
+
 publicApplication :: CustomerOperations => FilePath -> (forall a. Plan 'Customer a -> IO a) -> IO Application
 publicApplication assets evaluate = do
-  let files=[([],"index.html","text/html; charset=utf-8"),(["style.css"],"style.css","text/css; charset=utf-8"),
-             (["wallet.js"],"dist/wallet.js","text/javascript; charset=utf-8")]
-  mapM_ (\(_,file,_)->doesFileExist (assets</>file) >>= flip require "browser_assets_missing") files
+  contents<-readWebsite assets
   site<-fundingApplication (evaluate $ safe PublicConfig) $ \request respond->
-    case [(file,mime)|(path,file,mime)<-files,pathInfo request==path,requestMethod request=="GET"] of
-      [(file,mime)]->respond $ responseFile HTTP.status200 [("Content-Type",mime)] (assets</>file) Nothing
+    case [(bytes,mime)|((path,_,mime),(_,bytes))<-zip websiteFiles contents,pathInfo request==path,requestMethod request=="GET"] of
+      [(bytes,mime)]->respond $ responseLBS HTTP.status200 [("Content-Type",mime)] (BL.fromStrict bytes)
       _ | pathInfo request==["info"] && requestMethod request=="GET"->do
             c<-evaluate (safe PublicConfig)
             respond $ responseLBS HTTP.status200 [("Content-Type","text/html; charset=utf-8"),("Cache-Control","no-store")] $

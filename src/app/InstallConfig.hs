@@ -20,11 +20,12 @@ import qualified Data.ByteString.Char8 as B8
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Network.HTTP.Client (parseRequest,HttpException)
-import System.FilePath (isAbsolute)
+import System.FilePath (isAbsolute,normalise)
 import Text.Read (readEither)
 
 data InstallConfig = InstallConfig
   { serverIp :: String, domain :: String
+  , websiteDirectory :: Maybe FilePath
   , cloudflareTunnelToken :: Maybe String
   , ecxSeedBip39 :: String, solKeyB58 :: String, assetMintAddress :: String
   , feeRateWrapBps :: Int, feeRateUnwrapBps :: Int
@@ -79,4 +80,6 @@ validateInstallConfig c=do
   require (not(null $ domain c) && length(domain c)<=253 && all (`elem` (['a'..'z']<>['0'..'9']<>".-")) (domain c)) "invalid_domain"
   require (not(null $ serverIp c) && length(serverIp c)<=45 && all (`elem` (['0'..'9']<>['a'..'f']<>".:")) (serverIp c)) "invalid_server_ip"
   forM_ (cloudflareTunnelToken c) $ \token->require (length token>=32 && length token<=4096 && not(any (`elem` ['\n','\r',' ','\0']) token)) "invalid_cloudflare_tunnel_token"
+  forM_ (websiteDirectory c) $ \path->require (isAbsolute path && normalise path==path && length path<=4096
+    && all (\character->character>=' ' && character/='\DEL') path) "absolute_website_directory_required"
   pure key

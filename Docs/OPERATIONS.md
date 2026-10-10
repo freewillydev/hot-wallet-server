@@ -19,6 +19,52 @@ Installed systemd services already set it; direct maintenance commands must too.
 reviewed private files/directories. Read [INSTALL.md](INSTALL.md) first. The candidate installer supports fresh installation and code-only upgrade; it
 does not provide an automatic wipe/reinstall recovery command.
 
+## Custom website
+
+For a new record-based installation, set `websiteDirectory = Just "/opt/my-website"`
+in `server.conf`; use `Nothing` for the bundled Haskell-generated interface. The
+field is required in new configuration records. Existing bound setup records are
+immutable: do not edit them to retrofit a new installation or replace custody.
+
+The source directory must contain these nonempty files, each at most 16 MiB:
+
+| Source file | Public URL |
+| --- | --- |
+| `index.html` | `/` |
+| `style.css` | `/style.css` |
+| `dist/wallet.js` | `/wallet.js` |
+
+Only those three files are exposed. Bundle JavaScript into `dist/wallet.js` and CSS
+into `style.css`; other asset paths and arbitrary HTML pages are not served. Link
+CSS with `<link rel="stylesheet" href="/style.css">` and JavaScript with
+`<script src="/wallet.js" defer></script>`. Existing CSP blocks inline code/styles,
+inline event handlers and external scripts/CDNs. Use trusted code only: it runs on
+the bridge's origin and can use customer order capabilities. Never include private
+keys, RPC credentials or server configuration in website files.
+
+On Ubuntu, prepare root-owned files/directories and ancestors, without group/other
+write permission (normally 0644 files and 0755 directories). Symlinks, hardlinks,
+non-regular files and missing files are rejected. Keep the source directory intact
+through configure/install retries: setup records bind the exact file hashes before
+node or funding operations. Changed files require restoring the original inputs.
+The installer rechecks the copy before startup and stores it under
+`/etc/ecx-bridge/worker/website`, root-owned and readable only by the worker group.
+Code upgrades retain that directory; the default release browser stays in its
+signed bundle. Include the custom site in your operator configuration backup.
+
+For local source runs or an existing manually managed deployment, `ECX_ASSETS`
+can select a reviewed directory with the same three files. The server loads their
+bytes at startup, so changes require a worker restart. Changing an already bound
+installed site also requires reviewing its setup hash binding; normal `start`
+refuses a mismatch. The signer never loads or executes these assets.
+
+The customer API remains `/api/v1/config`, `/api/v1/orders`, the authorized order
+status endpoint, and its `/transaction` payment-instruction endpoint. `/info` and
+`/funding` remain server-owned. See [API contracts](ARCHITECTURE.md#customer-api),
+[wire types](../src/src/Bridge/Wire.hs) and the
+[default frontend](../src/web/Browser.hs) when implementing your interface. Custom
+HTML is presentation; orders, fees, chain validation and signing stay on the server.
+
 ## Credentials and startup
 
 The worker needs local `PGHOST`, `PGPORT`, `PGDATABASE`, writer `PGUSER`, and a

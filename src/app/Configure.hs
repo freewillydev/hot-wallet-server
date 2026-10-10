@@ -10,6 +10,8 @@ import qualified SetupPaths
 import qualified Token
 import qualified Token.Operation as TokenOp
 import Bridge.RPC (independentHttps)
+import Bridge.Web (readWebsite)
+import Bridge.Identity (digest)
 import Bridge.SDKBuild (sdkLibraryPath,sdkSourceDirectory)
 import Bridge.BrowserBuild (browserAssetsDirectory)
 import System.Environment (getExecutablePath)
@@ -72,6 +74,7 @@ configureFile input output=do
   file<-makeAbsolute input
   (bytes,settings)<-I.readInstallConfig file
   keyBytes<-I.validateInstallConfig settings
+  website<-traverse websiteManifest (I.websiteDirectory settings)
   directory<-makeAbsolute output
   withFamily (directory<>"-configure") $ do
     let keys=directory<>"-keys"
@@ -113,7 +116,7 @@ configureFile input output=do
         setup=object ["existing" .= False,"method" .= String "source","sourceRoot" .= root,"restic" .= I.resticExecutable settings
           ,"nodeConfig" .= String "/var/lib/ecx-betanet/bitcoin.conf","nodeService" .= String "ecx-betanet.service","managedNode" .= True
           ,"nativeSeedFile" .= phrase,"nativeAdminAuth" .= admin,"nativeRestore" .= False,"nativeRangeEnd" .= (999::Int)
-          ,"initialFundingOwnership" .= I.initialFundingOwnership settings]
+          ,"initialFundingOwnership" .= I.initialFundingOwnership settings,"website" .= website]
         sources=object [K.fromString name .= path | (name,path)<-
           [("solana.keypair.json",key),("native-worker.auth",worker),("native-signer.auth",signer)
           ,("native-unlock",unlock),("backup.repository",repository),("backup.password",password)]]
@@ -123,6 +126,11 @@ configureFile input output=do
       [("sources.json",sources),("bootstrap.json",Object defaults)
       ,("interface.json",Bootstrap.interface Nothing),("setup.json",setup)]
     putStrLn "Saved immutable private installation record; no prompts, signing or broadcast."
+
+websiteManifest :: FilePath -> IO Value
+websiteManifest path=do
+  contents<-readWebsite path
+  pure $ object ["directory" .= path,"hashes" .= object [K.fromString name .= digest body | (name,body)<-contents]]
 
 -- Each accepted answer is an immutable private record, so interruption never
 -- repeats completed questions. Referenced files are validated again on resume.
@@ -598,6 +606,8 @@ startUnlocked path=do
   bytes<-readPrivate (directory</>"setup.json")
   value<-either (const $ reject "invalid_setup_json") pure (eitherDecodeStrict' bytes)
   existing<-field "existing" value
+  website<-either (const $ reject "invalid_setup_website") pure
+    (parseEither (withObject "setup" (.:? "website")) value) :: IO (Maybe Value)
   uid<-getEffectiveUserID
   let execute program args=do
         result<-if uid==0 then rawSystem program args else rawSystem "sudo" (program:args)
@@ -620,6 +630,9 @@ startUnlocked path=do
       root<-field "sourceRoot" value
       (verified,_,_)<-readCreateProcessWithExitCode ((proc "sha256sum" ["--check","--status","manifest.sha256"]) {cwd=Just root}) ""
       require (verified==ExitSuccess) "installed_setup_bundle_changed"
+    forM_ website $ \saved->do
+      site<-field "directory" saved >>= websiteManifest
+      require (site==saved) "website_changed_restore_original_files"
     Bootstrap.preflight directory
     Bootstrap.bind directory
     Bootstrap.initializeBackup directory
@@ -651,6 +664,10 @@ startUnlocked path=do
   sourceInterface<-B.readFile(directory</>"interface.json")
   installedInterface<-B.readFile "/etc/ecx-bridge/worker/interface.json"
   require (sourceInterface==installedInterface) "installed_material_differs_updated_package_required"
+  forM_ website $ \saved->do
+    expected<-field "hashes" saved :: IO Value
+    actual<-websiteManifest "/etc/ecx-bridge/worker/website" >>= field "hashes"
+    require (actual==expected) "installed_website_changed_requires_review"
   let registry="/var/lib/ecx-bridge-setup"
   registryExists<-doesDirectoryExist registry
   when (not registryExists) $ P.createDirectory registry 0o700

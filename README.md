@@ -27,6 +27,14 @@ URLs and backup settings. Keys are imported; missing or invalid keys stop setup.
 New wallets are generated only through interactive startup. Fresh installation
 requires unused custody; existing custody needs ledger restoration.
 
+## Custom website
+
+Set `websiteDirectory = Just "/opt/my-website"` in your configuration (`Nothing`
+keeps the bundled interface). Supply `index.html`, `style.css` and `dist/wallet.js`;
+HTML should load `/style.css` and `/wallet.js`. Use local scripts/styles, without
+inline code or CDN dependencies. Installation preserves the site across upgrades.
+See [website details](Docs/OPERATIONS.md#custom-website).
+
 ## Install
 
 From the repository directory:

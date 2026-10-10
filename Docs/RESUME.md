@@ -110,3 +110,20 @@ explicitly confirmed by the user on 2026-10-10. Public server activation stays O
 Independent `/root/layout_final_verifier` passed staged tree `12fa156b1dc0242b982eb86ed37ff3c11e978e10`.
 Only this verdict record was appended afterward. The layout change is ready for
 publication; next implementation work remains the durable payout-round plan above.
+
+## Custom frontend checkpoint
+
+The new optional websiteDirectory field selects index.html, style.css and
+dist/wallet.js (served as /, /style.css, /wallet.js). Configure binds file hashes;
+installer verifies and copies them into /etc/ecx-bridge/worker/website, retaining
+them across code upgrades via the worker ECX_ASSETS override. Web preloads bounded
+regular files and rejects links/unsafe modes. No dependencies/processes/HTTP APIs
+were added. CSP and financial operations are unchanged. Existing bound setup
+records stay immutable; the new field must be present in new InstallConfig input.
+
+Build/shell syntax and full local bridge-test pass (session3902 exit0,
+/tmp/hot-wallet-website-test-final.log). Independent website_final_verifier PASS
+for staged tree b8091c3fb943b134642664e8c519f9c55295e42a. Only verdict metadata
+was appended afterward.
+No custom-site Ubuntu deployment or live operation was performed. After this
+scoped feature, the next substantive task remains durable payout rounds above.

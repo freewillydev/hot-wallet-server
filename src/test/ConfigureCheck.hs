@@ -172,7 +172,7 @@ importContract parent executable key=do
   let phrase=unwords(replicate 11 "abandon"<>["about"])
       fields=
         [("serverIp",show ("127.0.0.1"::String)),("domain",show ("bridge.example.invalid"::String))
-        ,("cloudflareTunnelToken","Nothing"),("ecxSeedBip39",show phrase),("solKeyB58",show $ T.unpack $ base58 key)
+        ,("websiteDirectory","Nothing"),("cloudflareTunnelToken","Nothing"),("ecxSeedBip39",show phrase),("solKeyB58",show $ T.unpack $ base58 key)
         ,("assetMintAddress",show $ T.unpack Bootstrap.canonicalMint)
         ,("feeRateWrapBps","100"),("feeRateUnwrapBps","100")
         ,("payoutThresholdEcx",show ("0.001"::String)),("payoutThresholdWrappedEcx",show ("0.001"::String))
@@ -211,7 +211,9 @@ importContract parent executable key=do
     ,replace "ecxSeedBip39" (show $ unwords $ replicate 12 "abandon")
     ,replace "solKeyB58" (show $ T.unpack $ base58 $ B.take 32 key<>B.replicate 32 0)
     ,replace "solKeyB58" (show $ map (\c->toEnum(fromEnum c+256)::Char) $ T.unpack $ base58 key)
-    ,filter ((/="solKeyB58").fst) fields]) $ \(n,values)->do
+    ,filter ((/="solKeyB58").fst) fields
+    ,replace "websiteDirectory" ("Just "<>show ("relative/site"::String))
+    ,replace "websiteDirectory" ("Just "<>show (parent</>"missing-site"))]) $ \(n,values)->do
       let file=parent</>("invalid-"<>show n<>".conf"); dest=parent</>("invalid-"<>show n)
       savePrivate file (B8.pack $ record values)
       (code,stdout,stderr)<-invoke file dest
@@ -229,7 +231,22 @@ importContract parent executable key=do
   harness<-getExecutablePath
   (resumeCode,_,resumeError)<-readProcessWithExitCode harness ["--start-setup",mixed] ""
   mixedKeys<-mapM doesDirectoryExist [mixed<>"-keys",mixed<>"-solana-wallet",mixed<>"-ecx-wallet"]
-  pure(second==ExitSuccess && before==after && before==unchanged && all(==0o600)modes
+  let site=parent</>"custom-site"; siteOutput=parent</>"custom-setup"; siteConf=parent</>"custom.conf"
+      siteFiles=[("index.html","custom-html"),("style.css","custom-css"),("dist/wallet.js","custom-js")]
+  createDirectory site;createDirectory(site</>"dist")
+  mapM_ (\(name,body)->B.writeFile(site</>name) body) siteFiles
+  savePrivate siteConf (B8.pack $ record $ replace "websiteDirectory" ("Just "<>show site))
+  (siteCode,_,_)<-invoke siteConf siteOutput
+  siteSetup<-B.readFile(siteOutput</>"setup.json") >>= either fail pure . eitherDecodeStrict'
+  actualSite<-fieldValue "website" siteSetup :: IO Value
+  (siteReplay,_,_)<-invoke siteConf siteOutput
+  B.writeFile (site</>"style.css") "changed-css"
+  (siteChanged,_,_)<-invoke siteConf siteOutput
+  retainedSite<-B.readFile(siteOutput</>"setup.json") >>= either fail pure . eitherDecodeStrict'
+  let expectedSite=object ["directory" .= site,"hashes" .= object [Key.fromString name .= digest body | (name,body)<-siteFiles]]
+  pure(siteCode==ExitSuccess && siteReplay==ExitSuccess && actualSite==expectedSite
+    && siteChanged/=ExitSuccess && retainedSite==siteSetup
+    && second==ExitSuccess && before==after && before==unchanged && all(==0o600)modes
     && secretFree(out<>err<>reout<>reerr) && C.custodyOwner config==base58(B.drop 32 key)
     && importedKey==L.toStrict(encode $ B.unpack key) && importedPhrase==B8.pack(phrase<>"\n")
     && not(or generated) && and invalid && changedCode/=ExitSuccess && mixedCode/=ExitSuccess

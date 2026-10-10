@@ -52,10 +52,10 @@ import Network.HTTP.Types
 import Network.Wai (requestMethod,requestHeaders,responseLBS)
 import Network.Wai.Test
 import Servant.API (BasicAuthData(..))
-import System.Directory (removeFile,createDirectory,removeDirectoryRecursive,renameFile,doesPathExist)
+import System.Directory (removeFile,createDirectory,removeDirectoryRecursive,renameFile,renameDirectory,doesPathExist)
 import System.FilePath ((</>),takeDirectory)
 import System.IO (openTempFile,hClose)
-import System.Posix.Files (setFileMode,createSymbolicLink,createLink)
+import System.Posix.Files (setFileMode,createSymbolicLink,createLink,createNamedPipe)
 import Test.QuickCheck
 
 checks :: IO [Result]
@@ -188,7 +188,7 @@ checks=sequence
       pure (map (statusCode . simpleStatus) responses==[200,200,200,200,400,409,400,413,403,404,404]
         && seen==["config","create","read","instructions"]
         && all ((==Just "no-store") . lookup "Cache-Control" . simpleHeaders) responses)
-  , check "public server serves only fixed assets with browser security headers" $ once $ ioProperty $
+  , check "custom website is a bounded immutable snapshot with fixed routes and security headers" $ once $ ioProperty $
       bracket temporary removeDirectoryRecursive $ \directory->do
         createDirectory (directory</>"dist")
         mapM_ (\(file,bytes)->BS.writeFile (directory</>file) bytes)
@@ -198,10 +198,32 @@ checks=sequence
             get path=srequest $ SRequest ((setPath defaultRequest path)
               {requestHeaders=[("Sec-Fetch-Site","cross-site")]}) ""
         app<-publicApplication directory forbid
-        replies<-runSession (mapM get ["/","/style.css","/wallet.js","/.env","/dist/wallet.js","/../.env"]) app
+        replies<-runSession (mapM get ["/","/style.css","/wallet.js","/.env","/dist/wallet.js","/../.env","/%2e%2e/.env","/api/v1/orders/missing"]) app
+        BS.writeFile (directory</>"index.html") "changed-after-start"
+        captured<-runSession (get "/") app
         removeFile (directory</>"style.css")
         missing<-refuses (publicApplication directory forbid)
-        pure (map (statusCode.simpleStatus) replies==[200,200,200,404,404,404]
+        createSymbolicLink (directory</>".env") (directory</>"style.css")
+        linked<-refuses (publicApplication directory forbid)
+        removeFile (directory</>"style.css")
+        createLink (directory</>".env") (directory</>"style.css")
+        hardlinked<-refuses (publicApplication directory forbid)
+        removeFile (directory</>"style.css")
+        createNamedPipe (directory</>"style.css") 0o600
+        fifo<-refuses (publicApplication directory forbid)
+        removeFile (directory</>"style.css")
+        BS.writeFile (directory</>"style.css") "css"
+        setFileMode (directory</>"style.css") 0o666
+        writable<-refuses (publicApplication directory forbid)
+        setFileMode (directory</>"style.css") 0o600
+        BS.writeFile (directory</>"style.css") (BS.replicate (16*1024*1024+1) 97)
+        oversized<-refuses (publicApplication directory forbid)
+        BS.writeFile (directory</>"style.css") "css"
+        renameDirectory (directory</>"dist") (directory</>"real-dist")
+        createSymbolicLink (directory</>"real-dist") (directory</>"dist")
+        directoryLink<-refuses (publicApplication directory forbid)
+        pure (map (statusCode.simpleStatus) replies==[200,200,200,404,404,404,404,400]
+          && simpleBody captured=="html-fixture" && and [linked,hardlinked,fifo,writable,oversized,directoryLink]
           && map simpleBody (take 3 replies)==["html-fixture","css-fixture","js-fixture"] && missing
           && all (\reply->lookup "Referrer-Policy" (simpleHeaders reply)==Just "no-referrer"
             && lookup "X-Content-Type-Options" (simpleHeaders reply)==Just "nosniff"

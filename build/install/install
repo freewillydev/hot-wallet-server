@@ -29,6 +29,32 @@ reader=ecxbridger
 journal=/var/lib/ecx-bridge-install
 database=ecx_bridge
 minimum_sequence=0
+website_directory=
+# A custom site is a fixed three-file snapshot, independent of release artifacts.
+# Its hashes are bound in private setup and rechecked after copying, before start.
+verify_website() {
+  for directory in "$1" "$1/dist"; do
+    [ -d "$directory" ] && [ ! -L "$directory" ] || fail 'website directory must not be a symlink'
+    parent=$directory
+    while :; do
+      [ "$(stat -c %u "$parent")" = 0 ] || fail 'website ancestors must be root-owned'
+      permissions=$(stat -c %a "$parent")
+      [ "$((0$permissions & 022))" = 0 ] || fail 'website ancestors must not be group/other writable'
+      [ "$parent" != / ] || break
+      parent=$(dirname -- "$parent")
+    done
+  done
+  for name in index.html style.css dist/wallet.js; do
+    file=$1/$name
+    [ -f "$file" ] && [ ! -L "$file" ] && [ "$(stat -c '%u:%h' "$file")" = 0:1 ] || fail 'website files must be root-owned regular files without links'
+    permissions=$(stat -c %a "$file")
+    [ "$((0$permissions & 022))" = 0 ] || fail 'website file is writable by others'
+    size=$(stat -c %s "$file")
+    [ "$size" -gt 0 ] && [ "$size" -le 16777216 ] || fail 'website file must be nonempty and at most 16 MiB'
+    expected=$(printf '%s' "$website_hashes" | jq -er --arg name "$name" '.[$name]')
+    [ "$(sha256sum < "$file" | cut -d ' ' -f 1)" = "$expected" ] || fail 'website changed; restore the reviewed setup files'
+  done
+}
 if [ "$mode" = recover ]; then
   recovery=/var/lib/ecx-bridge-restore
   for record in pending ledger.completed native-wallet.completed services.blocked; do
@@ -135,6 +161,19 @@ if [ "$mode" = fresh ] || [ "$mode" = recover ]; then
     [ -f "$cert_source" ] && [ -f "$tls_source" ] || fail 'both public TLS files required'
   fi
   if [ -e "$material/interface.json" ]; then private_source "$material/interface.json"; fi
+  if [ -e "$material/setup.json" ] || [ -L "$material/setup.json" ]; then
+    private_source "$material/setup.json"
+    jq -e 'type == "object"' "$material/setup.json" >/dev/null || fail 'invalid setup record'
+    if jq -e '.website != null' "$material/setup.json" >/dev/null; then
+      jq -e '.website | type == "object" and keys == ["directory","hashes"]
+        and (.directory | type == "string" and startswith("/") and (explode | all(. >= 32 and . != 127)))
+        and (.hashes | type == "object" and keys == ["dist/wallet.js","index.html","style.css"]
+          and all(.[]; type == "string" and test("^[0-9a-f]{64}$")))' "$material/setup.json" >/dev/null || fail 'invalid website manifest'
+      website_directory=$(jq -er '.website.directory' "$material/setup.json")
+      website_hashes=$(jq -c '.website.hashes' "$material/setup.json")
+      verify_website "$website_directory"
+    fi
+  fi
   # Validate supplied identity/key/policy before creating accounts or databases.
   "$bundle/bin/ecx-bridge" check-config "$material/worker.json" >/dev/null
   "$bundle/bin/ecx-bridge" check-signer "$material/signer.json" "$key_source" >/dev/null
@@ -155,7 +194,7 @@ if [ "$mode" = fresh ] || [ "$mode" = recover ]; then
   {
     printf '%s\n%s\n' "$release" "$material"
     if [ "$mode" = recover ]; then printf '%s\n%s\n%s\n' "$mode" "$database" "$minimum_sequence"; sha256sum "$recovery/pending" "$recovery/ledger.completed" "$recovery/native-wallet.completed" "$recovery/source-excluded"; fi
-    for name in worker.json signer.json sources.json interface.json; do
+    for name in worker.json signer.json sources.json interface.json setup.json; do
       if [ -f "$material/$name" ]; then sha256sum "$material/$name"; fi
     done
     for source in "$key_source" "$worker_source" "$signer_source" "$unlock_source" "$cert_source" "$tls_source"; do
@@ -239,6 +278,13 @@ if [ "$mode" = fresh ] || [ "$mode" = recover ]; then
   if [ -f "$material/interface.json" ]; then
     install -o root -g "$worker" -m 0640 "$material/interface.json" "$config/worker/interface.json"
   fi
+  if [ -n "$website_directory" ]; then
+    install -d -o root -g "$worker" -m 0750 "$config/worker/website" "$config/worker/website/dist"
+    for name in index.html style.css dist/wallet.js; do
+      install -o root -g "$worker" -m 0640 "$website_directory/$name" "$config/worker/website/$name"
+    done
+    verify_website "$config/worker/website"
+  fi
   if [ -f "$cert_source" ]; then
     install -o root -g "$worker" -m 0640 "$cert_source" "$config/worker/public-fullchain.pem"
     install -o "$worker" -g "$worker" -m 0600 "$tls_source" "$config/worker/public-privkey.pem"
@@ -315,6 +361,8 @@ if [ "$mode" = fresh ] || [ "$mode" = recover ]; then
 else
   systemctl stop ecx-bridge-worker ecx-bridge-signer
 fi
+# Retried fresh installs must still match their immutable custom-site snapshot.
+if [ -n "$website_directory" ]; then verify_website "$config/worker/website"; fi
 # Publishing a release never changes keys, configuration, ledger or saved attempts.
 # Sync candidate data before its pointer, including when /opt is a separate filesystem.
 sync -f "$prefix"
@@ -381,6 +429,9 @@ UNIT
     install -d -m 0755 "$dropin"
     {
       printf '%s\n' '[Service]'
+      if [ -d "$config/worker/website" ]; then
+        printf '%s\n' "Environment=ECX_ASSETS=$config/worker/website"
+      fi
       if [ -f "$config/worker/interface.json" ]; then
         printf '%s\n' "Environment=ECX_INTERFACE_CONFIG=$config/worker/interface.json"
       fi
