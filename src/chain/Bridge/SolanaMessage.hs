@@ -1,7 +1,7 @@
 {-# LANGUAGE RecordWildCards #-}
 module Bridge.SolanaMessage
   ( Instruction(..), Message(..), Transaction(..), Expected(..), publicKey
-  , signatureBytes, base58, boundedBase64, decodeTransaction, decodePoolTransaction, decodePositionTransaction, decodeLiquidityTransaction, validateTransaction, validateAssociated ) where
+  , signatureBytes, base58, boundedBase64, decodeTransaction, validateTransaction, validateAssociated ) where
 
 import Bridge.Domain (Amount, units)
 import Bridge.Identity (publicKey)
@@ -48,14 +48,6 @@ bounded :: Int -> Get Int
 bounded maxN = short >>= \n -> if n<=maxN then pure n else fail "vector_too_large"
 decodeTransaction :: Text -> Either Text Transaction
 decodeTransaction = decodeLegacy 1 3 8
--- Pool initialization has three writable signers and exactly one instruction.
--- This does not widen the custody decoder above.
-decodePoolTransaction :: Text -> Either Text Transaction
-decodePoolTransaction = decodeLegacy 3 1 11
-decodePositionTransaction :: Text -> Either Text Transaction
-decodePositionTransaction = decodeLegacy 2 3 10
-decodeLiquidityTransaction :: Text -> Either Text Transaction
-decodeLiquidityTransaction = decodeLegacy 1 2 11
 decodeLegacy :: Int -> Int -> Int -> Text -> Either Text Transaction
 decodeLegacy signerCount instructionLimit accountLimit encoded = do
   unless (T.length encoded<=1644) (Left "transaction_too_large")
@@ -84,7 +76,7 @@ decodeLegacy signerCount instructionLimit accountLimit encoded = do
       program <- getWord8
       accountCount <- bounded accountLimit
       accounts <- replicateM accountCount getWord8
-      dataSize <- bounded 512 -- Metaplex strings can exceed 256; full transaction stays <=1232
+      dataSize <- bounded 512 -- Full transaction remains bounded to 1232 bytes
       payload <- getByteString dataSize
       unless (all ((<keyCount) . fromIntegral) (program:accounts)) (fail "account_index_out_of_bounds")
       pure (Instruction program accounts payload)

@@ -32,6 +32,8 @@ operator control must use the closed DSL dispatcher, not operator HTTP routes.
 SQLite and its legacy test library are retired; use QuickCheck and actual
 PostgreSQL contracts. Run bridge commands from the repository root. The standalone token and pool CLIs
 remain in the upstream ecx-solana-bridge repository; they are not included here.
+The administration component is ATA setup only. Do not reintroduce mint/burn,
+metadata, nonce, pool or general token-key operations into this server.
 
 
 ## How to run and verify this project

@@ -164,161 +164,44 @@ fn prepare(c: &Config, r: &Request) -> Result<Reply, &'static str> {
         memo,
     })
 }
-// Separate administration preview: no key paths, signatures, RPC or custody API.
+// Unsigned account setup only; no mint, burn, pool or arbitrary instruction input.
 #[derive(Deserialize)]
-#[serde(untagged)]
-enum AdminRequest { Token(TokenRequest), Address(MetadataAddressRequest) }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MetadataAddressRequest { protocol:u8, verb:AddressVerb, mint:String, owner:Option<String> }
-#[derive(Deserialize)]
-enum AddressVerb { #[serde(rename="metadata_address")] MetadataAddress, #[serde(rename="associated_address")] AssociatedAddress }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TokenRequest {
-    protocol: u8,
-    verb: TokenVerb,
-    authority: String,
-    mint: Option<String>,
-    account: Option<String>,
-    owner: Option<String>,
-    amount: Option<String>,
-    metadata: Option<MetadataRequest>,
-    seed: Option<String>,
-    rent: Option<String>,
-    blockhash: String,
-    #[serde(rename="nonceAccount")]
-    nonce_account: Option<String>,
+#[serde(tag = "verb", deny_unknown_fields)]
+enum AccountRequest {
+    #[serde(rename = "associated_address")]
+    Address { protocol: u8, mint: String, owner: String },
+    #[serde(rename = "associated")]
+    Create { protocol: u8, authority: String, mint: String, account: String,
+        owner: String, rent: String, blockhash: String },
 }
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum TokenVerb { Mint, Burn, Create, Metadata, Associated, NonceMint, CreateNonce }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MetadataRequest {
-    create: bool, address: String, name: String, symbol: String, uri: String, max_cost: String,
-}
-fn metadata_instruction(r: &TokenRequest) -> Result<solana_instruction::Instruction, &'static str> {
-    use solana_instruction::{Instruction,AccountMeta};
-    let m = r.metadata.as_ref().ok_or("missing_metadata")?;
-    if r.account.is_some() || r.amount.is_some() || r.seed.is_some() || r.rent.is_some()
-        || m.name.is_empty() || m.name.len()>32 || m.symbol.is_empty() || m.symbol.len()>10 || m.uri.len()>200 {
-        return Err("invalid_metadata_fields");
-    }
-    raw_amount(&m.max_cost)?;
-    let mint=key(r.mint.as_deref().ok_or("missing_mint")?)?;
-    let authority=key(&r.authority)?;
-    let program=key("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s")?;
-    let metadata=metadata_address(&mint, &program);
-    if metadata.to_string()!=m.address { return Err("metadata_address_mismatch"); }
-    // Metaplex CreateMetadataAccountV3 / UpdateMetadataAccountV2 Borsh wire format.
-    // Golden messages come from the official mpl-token-metadata 5.1.1 builders.
-    let mut data=if m.create { vec![33] } else { vec![15,1] };
-    for text in [&m.name,&m.symbol,&m.uri] {
-        data.extend_from_slice(&(text.len() as u32).to_le_bytes());
-        data.extend_from_slice(text.as_bytes());
-    }
-    data.extend_from_slice(&[0;5]); // zero royalty; no creators, collection, uses
-    data.extend_from_slice(if m.create { &[1,0][..] } else { &[0,0,0][..] });
-    let accounts=if m.create { vec![AccountMeta::new(metadata,false),AccountMeta::new_readonly(mint,false),
-        AccountMeta::new_readonly(authority,true),AccountMeta::new(authority,true),
-        AccountMeta::new_readonly(authority,true),AccountMeta::new_readonly(Pubkey::default(),false)] }
-        else { vec![AccountMeta::new(metadata,false),AccountMeta::new_readonly(authority,true)] };
-    Ok(Instruction { program_id:program,accounts,data })
-}
-fn metadata_address(mint: &Pubkey, program: &Pubkey) -> Pubkey {
-    Pubkey::find_program_address(&[b"metadata",program.as_ref(),mint.as_ref()],program).0
-}
-
-fn prepare_token(r: &TokenRequest) -> Result<String, &'static str> {
-    if r.protocol != 1 { return Err("invalid_protocol"); }
-    if r.nonce_account.is_some() != matches!(r.verb, TokenVerb::NonceMint | TokenVerb::CreateNonce) {
-        return Err("invalid_nonce_fields");
-    }
-    let authority = key(&r.authority)?;
-    if matches!(r.verb, TokenVerb::CreateNonce) {
-        let nonce=key(r.nonce_account.as_deref().ok_or("missing_nonce")?)?;
-        let owner=key(r.owner.as_deref().ok_or("missing_nonce_authority")?)?;
-        let seed=r.seed.as_deref().ok_or("missing_nonce_seed")?;
-        let rent=raw_amount(r.rent.as_deref().ok_or("missing_nonce_rent")?)?;
-        if r.mint.is_some() || r.account.is_some() || r.amount.is_some() || r.metadata.is_some()
-            || seed.is_empty() || seed.len()>32 || !authority.is_on_curve() || !owner.is_on_curve()
-            || Pubkey::create_with_seed(&authority,seed,&Pubkey::default()).map_err(|_| "invalid_seed")? != nonce {
-            return Err("invalid_nonce_creation");
-        }
-        let instructions=solana_system_interface::instruction::create_nonce_account_with_seed(
-            &authority,&nonce,&authority,seed,&owner,rent);
-        let hash=Hash::from_str(&r.blockhash).map_err(|_| "invalid_blockhash")?;
-        let message=Message::new_with_blockhash(&instructions,Some(&authority),&hash);
-        return bincode::serialize(&Transaction::new_unsigned(message)).map(|bytes| STANDARD.encode(bytes))
-            .map_err(|_| "serialization_failed");
-    }
-    let mint = key(r.mint.as_deref().ok_or("missing_mint")?)?;
+fn prepare_account(request: AccountRequest) -> Result<String, &'static str> {
     let program = spl_token_interface::id();
-    let blockhash = Hash::from_str(&r.blockhash).map_err(|_| "invalid_blockhash")?;
-    if matches!(r.verb, TokenVerb::Associated) {
-        let owner=key(r.owner.as_deref().ok_or("missing_account_owner")?)?;
-        let account=key(r.account.as_deref().ok_or("missing_token_account")?)?;
-        if !authority.is_on_curve() || !owner.is_on_curve() || mint==owner || mint==authority
-            || r.amount.is_some() || r.seed.is_some() || r.metadata.is_some()
-            || account!=get_associated_token_address_with_program_id(&owner,&mint,&program) {
-            return Err("invalid_associated_account");
+    match request {
+        AccountRequest::Address { protocol, mint, owner } => {
+            if protocol != 1 { return Err("invalid_protocol"); }
+            let mint = key(&mint)?;
+            let owner = key(&owner)?;
+            if !owner.is_on_curve() { return Err("invalid_account_owner"); }
+            Ok(get_associated_token_address_with_program_id(&owner, &mint, &program).to_string())
         }
-        raw_amount(r.rent.as_deref().ok_or("missing_account_rent")?)?;
-        let instruction=create_associated_token_account_idempotent(&authority,&owner,&mint,&program);
-        let message=Message::new_with_blockhash(&[instruction],Some(&authority),&blockhash);
-        return bincode::serialize(&Transaction::new_unsigned(message)).map(|bytes| STANDARD.encode(bytes))
-            .map_err(|_| "serialization_failed");
-    }
-    if r.owner.is_some() { return Err("unexpected_account_owner"); }
-    if matches!(r.verb, TokenVerb::Metadata) {
-        if !authority.is_on_curve() { return Err("invalid_metadata_authority"); }
-        let instruction=metadata_instruction(r)?;
-        let message=Message::new_with_blockhash(&[instruction],Some(&authority),&blockhash);
-        return bincode::serialize(&Transaction::new_unsigned(message)).map(|bytes| STANDARD.encode(bytes))
-            .map_err(|_| "serialization_failed");
-    }
-    if r.metadata.is_some() { return Err("unexpected_metadata"); }
-    if matches!(r.verb, TokenVerb::Create) {
-        let seed = r.seed.as_deref().ok_or("missing_mint_seed")?;
-        let rent = raw_amount(r.rent.as_deref().ok_or("missing_mint_rent")?)?;
-        if r.account.is_some() || r.amount.is_some() || seed.is_empty() || seed.len()>32 || !authority.is_on_curve()
-            || Pubkey::create_with_seed(&authority, seed, &program).map_err(|_| "invalid_seed")? != mint {
-            return Err("invalid_mint_creation");
+        AccountRequest::Create { protocol, authority, mint, account, owner, rent, blockhash } => {
+            if protocol != 1 { return Err("invalid_protocol"); }
+            let authority = key(&authority)?;
+            let mint = key(&mint)?;
+            let owner = key(&owner)?;
+            let account = key(&account)?;
+            if !authority.is_on_curve() || !owner.is_on_curve() || mint == owner || mint == authority
+                || account != get_associated_token_address_with_program_id(&owner, &mint, &program) {
+                return Err("invalid_associated_account");
+            }
+            raw_amount(&rent)?;
+            let blockhash = Hash::from_str(&blockhash).map_err(|_| "invalid_blockhash")?;
+            let instruction = create_associated_token_account_idempotent(&authority, &owner, &mint, &program);
+            let message = Message::new_with_blockhash(&[instruction], Some(&authority), &blockhash);
+            bincode::serialize(&Transaction::new_unsigned(message)).map(|bytes| STANDARD.encode(bytes))
+                .map_err(|_| "serialization_failed")
         }
-        let instructions = [solana_system_interface::instruction::create_account_with_seed(
-            &authority, &mint, &authority, seed, rent, 82, &program),
-            spl_token_interface::instruction::initialize_mint2(&program, &mint, &authority, None, 8)
-                .map_err(|_| "invalid_mint_initialization")?];
-        let message=Message::new_with_blockhash(&instructions,Some(&authority),&blockhash);
-        return bincode::serialize(&Transaction::new_unsigned(message)).map(|bytes| STANDARD.encode(bytes))
-            .map_err(|_| "serialization_failed");
     }
-    if r.seed.is_some() || r.rent.is_some() { return Err("unexpected_creation_fields"); }
-    let account = key(r.account.as_deref().ok_or("missing_token_account")?)?;
-    let program = spl_token_interface::id();
-    if !authority.is_on_curve() || [mint, account, program].contains(&authority)
-        || mint == account || mint == program || account == program {
-        return Err("invalid_admin_accounts");
-    }
-    let amount = raw_amount(r.amount.as_deref().ok_or("missing_amount")?)?;
-    let instruction = match r.verb {
-        TokenVerb::Mint | TokenVerb::NonceMint => spl_token_interface::instruction::mint_to_checked(
-            &program, &mint, &account, &authority, &[], amount, 8),
-        TokenVerb::Burn => spl_token_interface::instruction::burn_checked(
-            &program, &account, &mint, &authority, &[], amount, 8),
-        TokenVerb::Create | TokenVerb::Metadata | TokenVerb::Associated | TokenVerb::CreateNonce => return Err("invalid_admin_instruction"),
-    }.map_err(|_| "invalid_admin_instruction")?;
-    let blockhash = Hash::from_str(&r.blockhash).map_err(|_| "invalid_blockhash")?;
-    let mut instructions=Vec::new();
-    if let Some(nonce)=r.nonce_account.as_deref() {
-        instructions.push(solana_system_interface::instruction::advance_nonce_account(&key(nonce)?, &authority));
-    }
-    instructions.push(instruction);
-    let message = Message::new_with_blockhash(&instructions, Some(&authority), &blockhash);
-    let bytes = bincode::serialize(&Transaction::new_unsigned(message)).map_err(|_| "serialization_failed")?;
-    if bytes.len() > 1232 { return Err("transaction_too_large"); }
-    Ok(STANDARD.encode(bytes))
 }
 
 // The caller owns every buffer. No Rust allocation or pointer escapes this ABI.
@@ -335,152 +218,19 @@ pub unsafe extern "C" fn ecx_solana_prepare_v1(
     capacity: usize,
     output_len: *mut usize,
 ) -> i32 {
-    unsafe { prepare_ffi(0, config, config_len, request, request_len, output, capacity, output_len) }
+    unsafe { prepare_ffi(false, config, config_len, request, request_len, output, capacity, output_len) }
 }
 
 // Same caller-owned buffer and pointer requirements as ecx_solana_prepare_v1.
 #[no_mangle]
-pub unsafe extern "C" fn ecx_token_prepare_v1(
+pub unsafe extern "C" fn ecx_associated_prepare_v1(
     config: *const u8, config_len: usize, request: *const u8, request_len: usize,
     output: *mut u8, capacity: usize, output_len: *mut usize,
 ) -> i32 {
-    unsafe { prepare_ffi(1, config, config_len, request, request_len, output, capacity, output_len) }
+    unsafe { prepare_ffi(true, config, config_len, request, request_len, output, capacity, output_len) }
 }
-// Read-only pool address derivation; no instruction, key or RPC input.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PoolAddressRequest {protocol:u8,config:String,mint_a:String,mint_b:String,fee_tier_index:u16}
-#[no_mangle]
-pub unsafe extern "C" fn ecx_pool_address_v1(
-    config: *const u8, config_len: usize, request: *const u8, request_len: usize,
-    output: *mut u8, capacity: usize, output_len: *mut usize,
-) -> i32 {
-    unsafe { prepare_ffi(2, config, config_len, request, request_len, output, capacity, output_len) }
-}
-// Unsigned classic Orca InitializePool, pinned client f4b99e79. No keys or RPC.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PoolCreateRequest {
-    protocol:u8, config:String, payer:String, mint_a:String, mint_b:String,
-    vault_a:String, vault_b:String, sqrt_price:String, blockhash:String,
-}
-fn prepare_pool(r:PoolCreateRequest)->Result<serde_json::Value,&'static str> {
-    use solana_instruction::{AccountMeta as A,Instruction};
-    let config=key(&r.config)?; let payer=key(&r.payer)?;
-    let a=key(&r.mint_a)?; let b=key(&r.mint_b)?;
-    let va=key(&r.vault_a)?; let vb=key(&r.vault_b)?;
-    let price=r.sqrt_price.parse::<u128>().map_err(|_| "invalid_pool_price")?;
-    if r.protocol!=1 || a>=b || price.to_string()!=r.sqrt_price
-        || !(4295048016..=79226673515401279992447579055).contains(&price)
-        || ![payer,va,vb].iter().all(Pubkey::is_on_curve) { return Err("invalid_pool_request"); }
-    let program=key("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc")?;
-    let spacing=32896u16.to_le_bytes();
-    let (pool,bump)=Pubkey::find_program_address(&[b"whirlpool",config.as_ref(),a.as_ref(),b.as_ref(),&spacing],&program);
-    let tier=Pubkey::find_program_address(&[b"fee_tier",config.as_ref(),&spacing],&program).0;
-    let accounts=vec![A::new_readonly(config,false),A::new_readonly(a,false),A::new_readonly(b,false),
-        A::new(payer,true),A::new(pool,false),A::new(va,true),A::new(vb,true),A::new_readonly(tier,false),
-        A::new_readonly(spl_token_interface::id(),false),A::new_readonly(Pubkey::default(),false),
-        A::new_readonly(key("SysvarRent111111111111111111111111111111111")?,false)];
-    let mut identities=accounts.iter().map(|a|a.pubkey).collect::<Vec<_>>(); identities.push(program);
-    identities.sort(); identities.dedup();
-    if identities.len()!=12 { return Err("duplicate_pool_account"); }
-    let mut data=vec![95,180,10,172,84,174,232,40,bump];
-    data.extend_from_slice(&spacing); data.extend_from_slice(&price.to_le_bytes());
-    let hash=Hash::from_str(&r.blockhash).map_err(|_| "invalid_blockhash")?;
-    let message=Message::new_with_blockhash(&[Instruction{program_id:program,accounts,data}],Some(&payer),&hash);
-    let bytes=bincode::serialize(&Transaction::new_unsigned(message)).map_err(|_| "serialization_failed")?;
-    if bytes.len()>1232 { return Err("transaction_too_large"); }
-    Ok(serde_json::json!({"pool":pool.to_string(),"feeTier":tier.to_string(),"bump":bump,"transaction":STANDARD.encode(bytes)}))
-}
-#[no_mangle]
-pub unsafe extern "C" fn ecx_pool_prepare_v1(
-    config:*const u8,config_len:usize,request:*const u8,request_len:usize,
-    output:*mut u8,capacity:usize,output_len:*mut usize,
-)->i32 { unsafe { prepare_ffi(3,config,config_len,request,request_len,output,capacity,output_len) } }
-// Atomic full-range position opening plus idempotent dynamic boundary arrays.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PositionRequest {protocol:u8,payer:String,pool:String,position_mint:String,blockhash:String}
-fn prepare_position(r:PositionRequest)->Result<serde_json::Value,&'static str> {
-    use solana_instruction::{AccountMeta as A,Instruction};
-    let payer=key(&r.payer)?; let pool=key(&r.pool)?; let mint=key(&r.position_mint)?;
-    if r.protocol!=1 || payer==mint || !payer.is_on_curve() || !mint.is_on_curve() { return Err("invalid_position_request"); }
-    let program=key("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc")?;
-    let token=spl_token_interface::id(); let system=Pubkey::default();
-    let (position,bump)=Pubkey::find_program_address(&[b"position",mint.as_ref()],&program);
-    let account=get_associated_token_address_with_program_id(&payer,&mint,&token);
-    let starts=[-2894848i32,0];
-    let arrays=starts.map(|start|Pubkey::find_program_address(&[b"tick_array",pool.as_ref(),start.to_string().as_bytes()],&program).0);
-    let mut instructions=Vec::new();
-    for (start,array) in starts.into_iter().zip(arrays) {
-        let mut data=vec![41,33,165,200,120,231,142,50]; data.extend_from_slice(&start.to_le_bytes()); data.push(1);
-        instructions.push(Instruction {program_id:program,accounts:vec![A::new_readonly(pool,false),A::new(payer,true),A::new(array,false),A::new_readonly(system,false)],data});
-    }
-    let accounts=vec![A::new(payer,true),A::new_readonly(payer,false),A::new(position,false),A::new(mint,true),
-        A::new(account,false),A::new_readonly(pool,false),A::new_readonly(token,false),A::new_readonly(system,false),
-        A::new_readonly(key("SysvarRent111111111111111111111111111111111")?,false),
-        A::new_readonly(key("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")?,false)];
-    let mut data=vec![135,128,47,77,15,152,240,49,bump];
-    data.extend_from_slice(&(-427648i32).to_le_bytes()); data.extend_from_slice(&427648i32.to_le_bytes());
-    instructions.push(Instruction {program_id:program,accounts,data});
-    let hash=Hash::from_str(&r.blockhash).map_err(|_| "invalid_blockhash")?;
-    let message=Message::new_with_blockhash(&instructions,Some(&payer),&hash);
-    if message.account_keys.len()!=12 || message.header.num_required_signatures!=2 { return Err("position_account_collision"); }
-    let bytes=bincode::serialize(&Transaction::new_unsigned(message)).map_err(|_| "serialization_failed")?;
-    if bytes.len()>1232 { return Err("transaction_too_large"); }
-    Ok(serde_json::json!({"position":position.to_string(),"tokenAccount":account.to_string(),"lowerArray":arrays[0].to_string(),
-        "upperArray":arrays[1].to_string(),"bump":bump,"transaction":STANDARD.encode(bytes)}))
-}
-#[no_mangle]
-pub unsafe extern "C" fn ecx_position_prepare_v1(
-    config:*const u8,config_len:usize,request:*const u8,request_len:usize,
-    output:*mut u8,capacity:usize,output_len:*mut usize,
-)->i32 { unsafe { prepare_ffi(4,config,config_len,request,request_len,output,capacity,output_len) } }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LiquidityRequest {protocol:u8,verb:String,owner:String,pool:String,position_mint:String,
-    mint_a:String,mint_b:String,vault_a:String,vault_b:String,liquidity:String,amount_a:String,amount_b:String,blockhash:String}
-fn prepare_liquidity(r:LiquidityRequest)->Result<serde_json::Value,&'static str> {
-    use solana_instruction::{AccountMeta as A,Instruction};
-    let owner=key(&r.owner)?; let pool=key(&r.pool)?; let mint=key(&r.position_mint)?;
-    let a=key(&r.mint_a)?; let b=key(&r.mint_b)?; let va=key(&r.vault_a)?; let vb=key(&r.vault_b)?;
-    let liquidity=r.liquidity.parse::<u128>().map_err(|_| "invalid_liquidity")?;
-    let amount_a=r.amount_a.parse::<u64>().map_err(|_| "invalid_limit")?; let amount_b=r.amount_b.parse::<u64>().map_err(|_| "invalid_limit")?;
-    let collect=r.verb=="collect";
-    if r.protocol!=1 || !owner.is_on_curve() || a>=b || liquidity.to_string()!=r.liquidity
-        || amount_a.to_string()!=r.amount_a || amount_b.to_string()!=r.amount_b
-        || (collect && (amount_a!=0 || amount_b!=0))
-        || (!collect && (liquidity==0 || (r.verb!="deposit" && r.verb!="withdraw"))) { return Err("invalid_liquidity_request"); }
-    let program=key("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc")?; let token=spl_token_interface::id();
-    let position=Pubkey::find_program_address(&[b"position",mint.as_ref()],&program).0;
-    let nft=get_associated_token_address_with_program_id(&owner,&mint,&token);
-    let oa=get_associated_token_address_with_program_id(&owner,&a,&token); let ob=get_associated_token_address_with_program_id(&owner,&b,&token);
-    let arrays=[-2894848i32,0].map(|start|Pubkey::find_program_address(&[b"tick_array",pool.as_ref(),start.to_string().as_bytes()],&program).0);
-    let mut instructions=Vec::new();
-    if collect {
-        if liquidity>0 { instructions.push(Instruction {program_id:program,accounts:vec![A::new(pool,false),A::new(position,false),A::new_readonly(arrays[0],false),A::new_readonly(arrays[1],false)],data:vec![154,230,250,13,236,209,75,223]}); }
-        instructions.push(Instruction {program_id:program,accounts:vec![A::new_readonly(pool,false),A::new_readonly(owner,true),A::new(position,false),A::new_readonly(nft,false),A::new(oa,false),A::new(va,false),A::new(ob,false),A::new(vb,false),A::new_readonly(token,false)],data:vec![164,152,207,99,30,186,19,182]});
-    } else {
-        let accounts=vec![A::new(pool,false),A::new_readonly(token,false),A::new_readonly(owner,true),A::new(position,false),A::new_readonly(nft,false),A::new(oa,false),A::new(ob,false),A::new(va,false),A::new(vb,false),A::new(arrays[0],false),A::new(arrays[1],false)];
-        let mut data=if r.verb=="deposit" {vec![46,156,243,118,13,205,251,178]} else {vec![160,38,208,111,104,91,44,1]};
-        data.extend_from_slice(&liquidity.to_le_bytes()); data.extend_from_slice(&amount_a.to_le_bytes()); data.extend_from_slice(&amount_b.to_le_bytes());
-        instructions.push(Instruction {program_id:program,accounts,data});
-    }
-    let hash=Hash::from_str(&r.blockhash).map_err(|_| "invalid_blockhash")?;
-    let message=Message::new_with_blockhash(&instructions,Some(&owner),&hash);
-    if message.account_keys.len()!=(if collect && liquidity==0 {10} else {12}) || message.header.num_required_signatures!=1 { return Err("liquidity_account_collision"); }
-    let bytes=bincode::serialize(&Transaction::new_unsigned(message)).map_err(|_| "serialization_failed")?;
-    if bytes.len()>1232 { return Err("transaction_too_large"); }
-    Ok(serde_json::json!({"position":position.to_string(),"positionToken":nft.to_string(),"ownerA":oa.to_string(),"ownerB":ob.to_string(),
-        "lowerArray":arrays[0].to_string(),"upperArray":arrays[1].to_string(),"transaction":STANDARD.encode(bytes)}))
-}
-#[no_mangle]
-pub unsafe extern "C" fn ecx_liquidity_prepare_v1(
-    config:*const u8,config_len:usize,request:*const u8,request_len:usize,
-    output:*mut u8,capacity:usize,output_len:*mut usize,
-)->i32 { unsafe { prepare_ffi(5,config,config_len,request,request_len,output,capacity,output_len) } }
 unsafe fn prepare_ffi(
-    mode: u8, config: *const u8, config_len: usize, request: *const u8, request_len: usize,
+    associated: bool, config: *const u8, config_len: usize, request: *const u8, request_len: usize,
     output: *mut u8, capacity: usize, output_len: *mut usize,
 ) -> i32 {
     if output_len.is_null() {
@@ -499,57 +249,13 @@ unsafe fn prepare_ffi(
         return 2;
     }
     let result = std::panic::catch_unwind(|| {
-        if mode == 5 {
-            if unsafe { std::slice::from_raw_parts(config,config_len) } != b"{}" { return Err("invalid_liquidity_config"); }
-            let r=serde_json::from_slice(unsafe { std::slice::from_raw_parts(request,request_len) }).map_err(|_| "invalid_liquidity_request")?;
-            return serde_json::to_vec(&prepare_liquidity(r)?).map_err(|_| "serialization_failed");
-        }
-        if mode == 4 {
-            if unsafe { std::slice::from_raw_parts(config,config_len) } != b"{}" { return Err("invalid_position_config"); }
-            let r=serde_json::from_slice(unsafe { std::slice::from_raw_parts(request,request_len) }).map_err(|_| "invalid_position_request")?;
-            return serde_json::to_vec(&prepare_position(r)?).map_err(|_| "serialization_failed");
-        }
-        if mode == 3 {
-            if unsafe { std::slice::from_raw_parts(config,config_len) } != b"{}" { return Err("invalid_pool_config"); }
-            let r=serde_json::from_slice(unsafe { std::slice::from_raw_parts(request,request_len) }).map_err(|_| "invalid_pool_request")?;
-            return serde_json::to_vec(&prepare_pool(r)?).map_err(|_| "serialization_failed");
-        }
-        if mode == 2 {
-            if unsafe { std::slice::from_raw_parts(config, config_len) } != b"{}" { return Err("invalid_pool_config"); }
-            let r: PoolAddressRequest=serde_json::from_slice(unsafe { std::slice::from_raw_parts(request,request_len) })
-                .map_err(|_| "invalid_pool_request")?;
-            let config=key(&r.config)?; let a=key(&r.mint_a)?; let b=key(&r.mint_b)?;
-            if r.protocol!=1 || a>=b { return Err("invalid_pool_mints"); }
-            let program=key("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc")?;
-            let address=Pubkey::find_program_address(&[b"whirlpool",config.as_ref(),a.as_ref(),b.as_ref(),&r.fee_tier_index.to_le_bytes()],&program).0;
-            return serde_json::to_vec(&address.to_string()).map_err(|_| "serialization_failed");
-        }
-        if mode == 1 {
+        if associated {
             if unsafe { std::slice::from_raw_parts(config, config_len) } != b"{}" {
-                return Err("invalid_admin_config");
+                return Err("invalid_account_config");
             }
-            let request: AdminRequest = serde_json::from_slice(unsafe { std::slice::from_raw_parts(request, request_len) })
-                .map_err(|_| "invalid_admin_request")?;
-            let reply=match request {
-                AdminRequest::Token(r)=>prepare_token(&r)?,
-                AdminRequest::Address(MetadataAddressRequest {protocol,verb,mint,owner})=>{
-                    if protocol!=1 { return Err("invalid_protocol"); }
-                    let mint=key(&mint)?;
-                    match verb {
-                        AddressVerb::MetadataAddress=>{
-                            if owner.is_some() { return Err("unexpected_account_owner"); }
-                            let program=key("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s")?;
-                            metadata_address(&mint,&program).to_string()
-                        }
-                        AddressVerb::AssociatedAddress=>{
-                            let owner=key(owner.as_deref().ok_or("missing_account_owner")?)?;
-                            if !owner.is_on_curve() { return Err("invalid_account_owner"); }
-                            get_associated_token_address_with_program_id(&owner,&mint,&spl_token_interface::id()).to_string()
-                        }
-                    }
-                }
-            };
-            return serde_json::to_vec(&reply).map_err(|_| "serialization_failed");
+            let request = serde_json::from_slice(unsafe { std::slice::from_raw_parts(request, request_len) })
+                .map_err(|_| "invalid_account_request")?;
+            return serde_json::to_vec(&prepare_account(request)?).map_err(|_| "serialization_failed");
         }
         let config: Config =
             serde_json::from_slice(unsafe { std::slice::from_raw_parts(config, config_len) })
@@ -668,6 +374,46 @@ mod wire_tests {
                 create_ata: false,
             },
         )
+    }
+    #[test]
+    fn account_setup_is_closed_and_preserves_exact_wire() {
+        let (c, r) = inputs();
+        let mint = key(&c.mint).unwrap();
+        let owner = key(&r.owner).unwrap();
+        let program = spl_token_interface::id();
+        let ata = get_associated_token_address_with_program_id(&owner, &mint, &program);
+        let input = serde_json::json!({"protocol":1,"verb":"associated","authority":r.owner,
+            "mint":c.mint,"account":ata.to_string(),"owner":r.owner,"rent":"2039280","blockhash":r.blockhash});
+        let invoke = |value: &serde_json::Value| {
+            let bytes = serde_json::to_vec(value).unwrap();
+            let mut output = [0; 8192];
+            let mut length = 0;
+            let status = unsafe { ecx_associated_prepare_v1(b"{}".as_ptr(), 2, bytes.as_ptr(), bytes.len(),
+                output.as_mut_ptr(), output.len(), &mut length) };
+            (status, output[..length].to_vec())
+        };
+        let (status, reply) = invoke(&input);
+        assert_eq!(status, 0);
+        let encoded: String = serde_json::from_slice(&reply).unwrap();
+        let tx: Transaction = bincode::deserialize(&STANDARD.decode(encoded).unwrap()).unwrap();
+        let expected = Message::new_with_blockhash(
+            &[create_associated_token_account_idempotent(&owner, &owner, &mint, &program)],
+            Some(&owner), &Hash::from_str(&r.blockhash).unwrap());
+        assert_eq!(tx, Transaction::new_unsigned(expected));
+        let address = serde_json::json!({"protocol":1,"verb":"associated_address","mint":c.mint,"owner":r.owner});
+        let (status, reply) = invoke(&address);
+        assert_eq!(status, 0);
+        assert_eq!(serde_json::from_slice::<String>(&reply).unwrap(), ata.to_string());
+        for verb in ["mint", "burn", "create", "metadata", "metadata_address", "nonce_mint", "create_nonce", "deposit", "collect"] {
+            let mut invalid = input.clone(); invalid["verb"] = verb.into();
+            assert_eq!(invoke(&invalid).0, 1, "{verb}");
+        }
+        for (field, value) in [("protocol", 2.into()), ("account", r.owner.clone().into()),
+            ("owner", ata.to_string().into()), ("rent", "0".into()), ("amount", "1".into()),
+            ("secret", "unwanted".into()), ("blockhash", "invalid".into())] {
+            let mut invalid = input.clone(); invalid[field] = value;
+            assert_eq!(invoke(&invalid).0, 1, "{field}");
+        }
     }
     #[test]
     fn unsigned_wire_fidelity() {

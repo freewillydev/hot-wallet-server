@@ -81,3 +81,27 @@ feature does not close the broader installer or production gates.
 README permissions/custom-site instructions: independent `readme_permissions_verifier`
 PASS for SHA256 `c4be49c2d98ee1a626a533bbc2eaf3ee17376dfaaac65e7b6af1cd2b6e7bf0d1`.
 Shell syntax and all ten links verified; documentation only, no deployment claim.
+
+## Wrapping-only source cleanup (2026-10-10)
+
+PASS: pinned Cabal `build all` and full `bridge-test`, one job, native cache
+`/tmp/hot-wallet-server-build`. The suite includes locked/offline SDK codec/FFI
+contracts, exact ATA setup/record replay, retired-operation rejection, status
+consistency, signing transport, recovery, lifecycle, customer routes and website.
+The rebuilt SDK exports only `ecx_solana_prepare_v1` and `ecx_associated_prepare_v1`.
+The original upstream checkout is still clean at `6af7e73`.
+
+Removed token mint/burn, metadata, nonce and liquidity-pool builders, unused key/
+offline-signing operations, their uncalled replacement writer, two modules and two
+direct Rust dependencies. Existing ATA signature/lineage validation and protected
+saved-before-send submission remain. No customer financial operation was removed.
+Application/SDK source files: 17,762 -> 16,903 lines; 66 -> 64 files (tracked Haskell,
+Rust and C excluding src/test; Rust inline tests included). Separate Haskell tests:
+10,246 -> 10,224 lines, with focused tests replacing obsolete-feature tests.
+
+Independent `/root/wrap_only_verifier`: **PASS** for source/build diff SHA256
+`39a9b3924d48276c3ab3b396caed6183603298c76ce1a24258effffd6af212da`
+against baseline `ec068ad`. No blocking findings. Log hashes are in
+`.audit/wrap-only.tsv`.
+No new funded, PostgreSQL, Ubuntu installation or overall production acceptance
+is claimed; all broader open gates above remain PENDING/FAIL.

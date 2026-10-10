@@ -1,6 +1,6 @@
 {-# LANGUAGE GADTs #-}
 -- Fresh unused custody only, before installation. No customer or runtime entry.
--- Reuse token administration's closed, saved-before-send ATA operation; never mint.
+-- Closed, saved-before-send ATA setup; no minting operations.
 module Bootstrap (preflight,checkHistoryWith,canonicalMint,interface,validateOrigin,setupConfig,bind,complete,initializeBackup,agreedOrigin,initialAccounting) where
 import qualified Bridge.Config as C
 import Bridge.Domain (units)
@@ -24,7 +24,6 @@ import qualified SetupPaths
 import Bridge.Signer (verifySigningKey)
 import qualified Token
 import qualified Token.Network as TN
-import qualified Token.Signing as TS
 import qualified Token.Operation as TO
 import Control.Exception (bracket,onException)
 import Control.Monad (forM_,when)
@@ -65,10 +64,10 @@ initialAccounting directory c reason=do
   exists<-doesFileExist path
   if not exists then pure Nothing else do
     saved<-readRecord path
-    _<-either reject pure (TS.validateSaved saved)
+    _<-either reject pure (Token.validateSaved saved)
     pure $ Just $ object ["operation" .= String "initialize-operating"
       ,"deposit" .= ("sol-operating:"<>C.solanaOperatingHistoryStart c)
-      ,"transaction" .= TS.savedId saved,"reason" .= reason]
+      ,"transaction" .= Token.savedId saved,"reason" .= reason]
 
 setupConfig :: FilePath -> IO C.Config
 setupConfig directory=do
@@ -204,12 +203,11 @@ evalSetup (FundCustody directory c key)=bracket newRpcManager closeManager $ \ma
     pure ()
   hasAttempt<-doesFileExist attempt
   when hasAttempt $ do
-    archived<-readRecord attempt :: IO TS.Saved
-    case TS.savedRequest archived of
+    archived<-readRecord attempt :: IO Token.Saved
+    case Token.savedRequest archived of
       Token.Associated payer mint address holder rent _->require
         (payer==owner && holder==owner && mint==canonicalMint && address==ata
           && rent>0 && rent<=fromIntegral(units $ C.maxSolAccountRent c)) "bootstrap_attempt_identity_changed"
-      _->reject "bootstrap_requires_ata_operation"
     -- Submit rechecks the saved signature/status and sends identical bytes only.
     result<-TO.runCritical (TO.Request $ TN.Submit TN.Mainnet (C.solanaRpc c) fee attempt)
     status<-fieldValue "status" result :: IO T.Text

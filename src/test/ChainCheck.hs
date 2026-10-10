@@ -669,41 +669,18 @@ administrationChecks=sequence
         (take 2 fresh<>[let (method,args,value)=fresh!!2 in (method,args,replace ["context","slot"] (Number 89) value)]) $ \call->
           Admin.newRecoveryWith call genesis payer 50 root
       pure (actual==recovery && badBlock && wrongGenesis && missingOrigin && staleOrigin)
-  , check "administration replacement requires exact finalized failure and a bounded verified fee" $ once $ ioProperty $ do
-      proof<-adminScript (prefix<>terminal failedStatus failedTransaction) $ \call->Admin.retirementWith call signature bytes recovery
-      let mutations=
-            [("administration_attempt_not_retryable",pending,Null)
-            ,("administration_attempt_not_retryable",replace ["err"] Null failedStatus,replace ["meta","err"] Null failedTransaction)
-            ,("administration_status_mismatch",failedStatus,replace ["transaction"] (toJSON ["different"::Text,"base64"]) failedTransaction)
-            ,("administration_status_mismatch",failedStatus,replace ["meta","err"] Null failedTransaction)
-            ,("administration_failed_evidence_mismatch",failedStatus,replace ["slot"] (Number 109) failedTransaction)
-            ,("administration_failed_evidence_mismatch",replace ["slot"] (Number 100) failedStatus,replace ["slot"] (Number 100) failedTransaction)
-            ,("administration_failed_evidence_mismatch",failedStatus,replace ["meta","fee"] (Number 0) failedTransaction)
-            ,("administration_failed_evidence_mismatch",failedStatus,replace ["meta","fee"] (Number 51) failedTransaction)]
-      refused<-mapM (\(code,status,transaction)->rejects code $ adminScript (prefix<>terminal status transaction) $ \call->
-        Admin.retirementWith call signature bytes recovery) mutations
-      outcome<-fieldValue "outcome" proof :: IO Text
-      pure (outcome=="failed" && and refused)
-  , check "expired administration attempts require finalized expiry, complete anchored history and a final absence recheck" $ once $ ioProperty $ do
-      proof<-adminScript expired $ \call->Admin.retirementWith call signature bytes recovery
-      outcome<-fieldValue "outcome" proof :: IO Text
-      invalidExpiry<-mapM (\(valid,slot,height)->rejects "administration_attempt_not_expired" $
-        adminScript (prefix<>terminal Null Null<>expiry valid slot height) $ \call->Admin.retirementWith call signature bytes recovery)
-        [(True,120,200),(False,100,200),(False,120,160)]
-      invalidHistory<-mapM (\(code,values)->rejects code $ adminScript (beforeHistory<>[("getSignaturesForAddress",historyArgs,toJSON values)]) $ \call->
-        Admin.retirementWith call signature bytes recovery)
-        [("solana_history_gap",[])
-        ,("solana_history_repeated_page",[history otherSignature 110,history otherSignature 110,history origin 90])
-        ,("solana_history_order_invalid",[history otherSignature 80,history origin 90])
-        ,("administration_history_disagrees",[history signature 110,history origin 90])
-        ,("administration_history_disagrees",[history origin 89])]
-      gap<-rejects "solana_history_gap" $ adminScript (beforeHistory<>
-        [("getSignaturesForAddress",historyArgs,toJSON [history otherSignature 110])
-        ,("getSignaturesForAddress",[toJSON payer,object ["commitment" .= ("finalized"::Text),"minContextSlot" .= (120::Int)
-          ,"limit" .= (100::Int),"before" .= otherSignature]],toJSON ([]::[Value]))]) $ \call->Admin.retirementWith call signature bytes recovery
-      changed<-rejects "administration_history_changed" $ adminScript (take (length expired-2) expired<>terminal pending Null) $ \call->
-        Admin.retirementWith call signature bytes recovery
-      pure (outcome=="expired-unseen" && and invalidExpiry && and invalidHistory && gap && changed)
+  , check "ATA status requires exact saved bytes and consistent finalized effects" $ once $
+      let classify=Admin.classifyStatus bytes
+      in classify Null Null True==Right Admin.Unseen
+        && classify Null Null False==Right Admin.ExpiredUnseen
+        && classify pending Null True==Right Admin.Pending
+        && classify failedStatus failedTransaction True==Right Admin.Failed
+        && classify (replace ["err"] Null failedStatus) (replace ["meta","err"] Null failedTransaction) True==Right Admin.Finalized
+        && all isLeft
+          [classify Null failedTransaction False,classify pending failedTransaction True
+          ,classify failedStatus (replace ["transaction"] (toJSON ["different"::Text,"base64"]) failedTransaction) True
+          ,classify failedStatus (replace ["meta","err"] Null failedTransaction) True
+          ,classify (replace ["confirmationStatus"] (String "unknown") pending) Null True]
   , check "administration recovery bounds generations and binds root, parent, payer, fee cap and fresh hash" $
       forAll (chooseInt (0,8)) $ \generation->
         let child=recovery {Admin.recoveryGeneration=generation,Admin.recoveryParent=Just parent
@@ -780,7 +757,7 @@ administrationChecks=sequence
   check description p=putStrLn description >> quickCheckWithResult stdArgs p
   genesis="fixture genesis"; root="/tmp/ecx-administration-contract/attempt"
   payer=Message.base58(BS.replicate 32 1); recent=Message.base58(BS.replicate 32 2); otherHash=Message.base58(BS.replicate 32 3)
-  origin=Message.base58(BS.replicate 64 1); signature=Message.base58(BS.replicate 64 2); otherSignature=Message.base58(BS.replicate 64 3)
+  origin=Message.base58(BS.replicate 64 1)
   bytes="archived base64 transaction"; parent=T.replicate 64 "a"
   recovery=Admin.Recovery genesis payer 50 root 0 Nothing recent origin 90 100 160 Nothing
   history sig slot=object ["signature" .= sig,"slot" .= (slot::Int),"confirmationStatus" .= ("finalized"::Text),"err" .= Null]
@@ -791,21 +768,10 @@ administrationChecks=sequence
     ,("getLatestBlockhash",[object ["commitment" .= ("finalized"::Text),"minContextSlot" .= (90::Int)]],
       object ["context" .= object ["slot" .= (100::Int)],"value" .= object ["blockhash" .= recent,"lastValidBlockHeight" .= (160::Int)]])
     ,("getBlock",blockArgs,block)]
-  prefix=[head fresh,last fresh]
-  terminal status transaction=
-    [("getSignatureStatuses",[toJSON [signature],object ["searchTransactionHistory" .= True]],object ["value" .= [status]])
-    ,("getTransaction",[toJSON signature,object ["encoding" .= ("base64"::Text),"commitment" .= ("finalized"::Text),"maxSupportedTransactionVersion" .= (0::Int)]],transaction)]
   failure=object ["InstructionError" .= [Number 0,String "InsufficientFunds"]]
   pending=object ["confirmationStatus" .= ("confirmed"::Text),"err" .= Null,"slot" .= (110::Int)]
   failedStatus=object ["confirmationStatus" .= ("finalized"::Text),"err" .= failure,"slot" .= (110::Int)]
   failedTransaction=object ["transaction" .= [bytes,"base64"],"slot" .= (110::Int),"meta" .= object ["err" .= failure,"fee" .= (5::Int)]]
-  validity valid slot=object ["value" .= valid,"context" .= object ["slot" .= (slot::Int)]]
-  expiry valid slot height=
-    [("isBlockhashValid",[toJSON recent,object ["commitment" .= ("finalized"::Text),"minContextSlot" .= (100::Int)]],validity valid slot)
-    ,("getBlockHeight",[object ["commitment" .= ("finalized"::Text),"minContextSlot" .= slot]],toJSON (height::Int))]
-  beforeHistory=prefix<>terminal Null Null<>expiry False 120 200
-  historyArgs=[toJSON payer,object ["commitment" .= ("finalized"::Text),"minContextSlot" .= (120::Int),"limit" .= (100::Int)]]
-  expired=beforeHistory<>[("getSignaturesForAddress",historyArgs,toJSON [history otherSignature 110,history origin 90])]<>terminal Null Null
 
 adminScript :: [(Text,[Value],Value)] -> ((Text -> [Value] -> IO Value) -> IO a) -> IO a
 adminScript responses action=do

@@ -422,30 +422,14 @@ another. Worker and signer budgets are separate; deployment must keep their sum
 and other consumers within provider quotas. Pacing neither authorizes a payment nor
 extends its saved deadlines, custody freshness, backup or blockhash checks.
 
-Token and pool administration have their own closed critical evaluators, outside
-custody. `Token.Network` and `Pool.Signing` own private signing helpers and immutable
-attempt families. `Token.Signing` also owns closed offline key-import/sign operations:
-it validates the exact prepared intent and key, then saves a portable signed record
-without RPC or recovery claims. Online submission reuses `Token.Network` validation;
-offline records cannot use automatic successor recovery. Ordinary requests use recent
-blockhashes. The closed `NonceMint` request instead binds an initialized System Program
-nonce account to the same mint authority/fee payer, advances it as the first instruction
-and then mints the exact checked amount. Haskell validates every key, writable role and
-instruction independently of SDK encoding. Preflight/submission checks the current
-nonce value and authority; a consumed nonce is refused unless the saved signature is
-already observed. `CreateNonce` provisions rent with a separate online payer using
-create-with-seed and initialization; nonce authority is the explicit owner, not
-implicitly the payer.
-Import accepts
-base58 64-byte Solana keypairs with matching public halves, not seed phrases.
-Shared `Bridge.AdminStatus` collects read-only recovery evidence;
-it cannot sign or broadcast. Recovery binds a payer-history anchor to the actual
-block that produced the saved blockhash, then requires two providers to establish
-finalized failure or expiry with complete anchored absence. The sole successor
-changes only the blockhash, retains its predecessor hash and limits, and is saved
-before any submission. Protected files and process locks prevent local branching;
-RPC completeness and exclusion of other hosts holding keys remain trust assumptions.
-See the token/pool READMEs for commands, bounds and publication-crash handling.
+The closed ATA setup evaluator runs only before installation. `Token.Network`
+checks the complete unsigned message, fee/rent limits and simulation before signing,
+then exclusively saves the signed attempt before submission. A restart submits only
+the same saved bytes after inspecting its signature/status. The live bridge signer
+remains separate and has no mint, burn or liquidity-pool operation.
+`Bridge.AdminStatus` classifies exact saved transaction outcomes for setup and initial
+funding accounting. Existing ATA attempt lineage and successor-refusal checks remain;
+this repository contains no standalone token recovery writer or offline signing CLI.
 
 ## Shared protocol mechanics
 
@@ -453,8 +437,8 @@ Share parsing mechanics while retaining each caller's authorization rules:
 
 | Repeated responsibility | Shared owner / retained difference |
 | --- | --- |
-| Canonical decimal strings in bridge, mint and pool inputs | Domain's bounded natural parser; bridge still narrows to signed Int64, SPL amounts to Word64 and liquidity to 128 bits. Positive-only fields reject zero separately. Native scientific coin parsing remains distinct. |
-| Classic SPL account JSON in bridge and token administration | Solana parser returns typed owner/balance/mint once; custody additionally binds expected identities and its ledger range. Mint, nonce, binary pool and metadata layouts retain distinct validators. |
+| Canonical decimal strings in bridge and ATA setup | Domain's bounded natural parser; bridge narrows to signed Int64 and ATA rent to Word64. Positive-only fields reject zero separately. Native scientific coin parsing remains distinct. |
+| Classic SPL account JSON in bridge and ATA setup | Solana parser returns typed owner/balance/mint once; custody additionally binds expected identities and its ledger range. Classic mint policy checks remain. |
 | Base64 account/message decoding | SolanaMessage bounds encoded text before decoding and decoded bytes afterward; callers retain exact account size/layout, field set and error category. Transaction signer/instruction/account limits remain separate. |
 | HTTPS session/genesis setup and hostname normalization | RPC shares mechanics and closes each administration session; each caller supplies its exact genesis and existing errors. Independent providers, mutable reads and uncertainty semantics remain explicit. No extra retries or permanent identity cache. |
 | Saved/SDK/HTTP representations | Keep original bytes at persistence/transport boundaries; remove repeated internal JSON extraction only. Worker and signer each independently decode and validate their inputs. |
@@ -615,31 +599,24 @@ and OPERATIONS. `ConfigureCheck`, `setupMain`, `fenceMain`, `archiveContract` an
 the native/custody modes cover their distinct boundaries. Configuration/start are
 local setup, not extra HTTP routes; signer keys remain outside worker resources.
 
-`ecx-token` retains `configure`, `keygen`, `enter-key`, `import-key`, `prepare`,
-`check`, `sign KEY TRANSACTION`, `prepare-offline`, `sign-offline`, `submit-file`,
-`submit`, `recover`, `status`, `inspect-policy`, `address`, `nonce-address`,
-`nonce-rent`, `associated-address`, `metadata-address`. Its closed transaction
-verbs are `mint`, `burn`, `create`, `associated`, `metadata`, `nonce_mint`,
-`create_nonce`. `Token.Operation` separates safe preparation/network reads from
-key/sign/send operations; `token-test` covers codecs, effects, private files,
-terminal key entry, offline intent and recovery. Recent-blockhash input acquisition
-and durable nonce signing retain their different freshness rules.
+This repository includes no mint/burn, metadata, nonce, pool, position or liquidity
+operations. Those standalone tools remain in the upstream repository. Wrapping and
+unwrapping transfer existing ECX/wECX inventory; they do not change token supply.
 
-`ecx-pool` retains `address`, `inspect`, `quote-mainnet`, `prepare`, `check`,
-`sign`, `prepare-position`, `check-position`, `sign-position`, `prepare-liquidity`,
-`check-liquidity`, `sign-liquidity`, `submit`, `status`, `recover`.
-`Pool.Operation` separates inspection/preparation from saved-attempt signing/send.
-Pool creation, full-range position/boundary initialization, deposits, withdrawals
-and collection are exercised in `pool-test`. Reinvestment is an explicit liquidity
-operation; unattended compounding, multisig and LP locking are not implemented scope.
+The three `administration` modules support only associated-token-account (ATA)
+setup before installation. `Token` contains the exact ATA request, saved record,
+unsigned-message and signature checks; `Token.Network` checks network/rent/fees,
+signs once and submits saved bytes; `Token.Operation` retains closed existential
+requests and separate safe/critical evaluators. The SDK exposes only bridge transfer
+preparation and unsigned ATA preparation/address derivation. It has no token/pool
+administration entrypoints. The runtime signer/worker do not depend on this setup
+component.
 
-Administration retains the shared AdminKey publication/family locks
-and AdminStatus status/retirement evidence. Token and pool archives, signatures,
-nonce behavior and finalized cost checks differ; combining those interpreters
-would obscure their authority. No generic signing callback or transaction builder
-was added. The browser already consumes the derived OrderView: its four state
-fields hold public configuration, the current capability/request, bounded saved
-history and copyable instructions, not another financial lifecycle.
+AdminKey retains protected publication and family locks. AdminStatus retains
+status classification and existing ATA lineage validation. Submission still rejects
+superseded attempts; there is no automatic or exported setup replacement operation.
+Failed/expired setup requires reviewed recovery rather than a fresh payment.
+The browser consumes the derived OrderView, not another financial lifecycle.
 
 Configure and config loading use the same complete runtime validation. Native
 unlock setup additionally calls the signer's fixed credential check, which returns
@@ -670,11 +647,9 @@ except unavailable history origins, while **all runtime loading still uses
 worker config. `Bootstrap` seals inputs before mutation, reuses saved ATA attempts,
 checks both finalized histories, and exclusively publishes complete runtime files.
 It has no runtime HTTP route, database writer or arbitrary signing input. Setup uses
-the existing closed token-administration DSL for its sole ATA-creation request before
-installation; it does not contact or bypass the runtime signer. Token implementation
-modules now live in the shared `administration` Cabal component and `ecx-token`
-reexports them, avoiding package cycles and duplicate implementations. Worker and
-signer workflow libraries do not depend on that component.
+the closed ATA setup DSL before installation; it does not contact or bypass the
+runtime signer. Worker and signer workflow libraries do not depend on the
+`administration` component.
 
 `NodeSetup` generates random per-role credentials and HMAC-SHA256 `rpcauth` hashes,
 installs fixed method allowlists while retaining existing users' default behavior,
@@ -704,9 +679,8 @@ not a replacement public enum. Preserve capability hashing, idempotency conflict
 Solana reference and original conversion payout-link precedence.
 
 Retain strict configuration fields/fingerprint (`Config.hs`), private setup
-source-file references (`Configure.hs`), token `.ecx-token/ecx-token.json` defaults
-and legacy read-only fallback. Preserve saved `PaymentTerms`, `SignedAttempt`,
-native/Solana draft/message bytes, token/pool attempt/parent formats, custody archive
+source-file references (`Configure.hs`). Preserve saved `PaymentTerms`, `SignedAttempt`,
+native/Solana draft/message bytes, ATA attempt/parent formats, custody archive
 formats 1/2 and schema-21/22 backup manifests. Exact keys, decoder bounds and rejected
 unknown fields remain owned by their existing codecs; no new compatibility codec.
 
@@ -735,8 +709,8 @@ scans retain cursors and mark failure. Safe customer reads do not resume or paus
 | I10 | Fee/rent/generation/deadline bounds | Immutable cost times, operating clock, holds, eight generations | Main/chain and expiry/cancellation/budget contracts |
 | I11 | Exact observed effects; unknown differs from absent | Atomic page+cursor+evidence, current custody revision | ObservationCheck, custodyContract; fixtures are not real reorgs |
 | I12 | Family/source/cancellation proof checks | Append-only loss/cover/return/winner approvals | restoration/replacement/cancellation contracts; live conflicts open |
-| I13 | Exact file/key/manifest validation | Ownership/mode/link refusal, exclusive publication and locks | ConfigureCheck, SigningTransportCheck, archive/token/pool tests |
-| I14 | Stable wire/CLI and derived display precedence | Capability scope, paused boot, protected setup | API/server/refund/token/pool checks; customer-wallet interaction open |
+| I13 | Exact file/key/manifest validation | Ownership/mode/link refusal, exclusive publication and locks | ConfigureCheck, SigningTransportCheck, archive and ATA setup tests |
+| I14 | Stable wire/CLI and derived display precedence | Capability scope, paused boot, protected setup | API/server/refund/ATA setup checks; customer-wallet interaction open |
 | I15 | Bounds on amounts/lists/bodies/history | Concurrency/admission/RPC budgets, fenced failures | Chain/transport checks; production load/security review open |
 
 Before address allocation, only the saved claim survives; its owner can allocate,

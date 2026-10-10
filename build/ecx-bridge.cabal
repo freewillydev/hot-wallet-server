@@ -53,14 +53,14 @@ library chain
   c-sources: ../src/cbits/native_key.c
   pkgconfig-depends: libsecp256k1 >=0.4 && <0.9
 
--- Shared closed token operations: setup creates an ATA; ecx-token administers tokens.
+-- Closed associated-token-account setup operations used before installation.
 library administration
   import: settings
   visibility: public
   hs-source-dirs: ../src/administration
-  exposed-modules: Token, Token.Signing, Token.Network, Token.Metadata, Token.Operation
+  exposed-modules: Token, Token.Network, Token.Operation
   build-depends: base, ecx-bridge, ecx-bridge:chain, aeson, bytestring, text,
-    binary, unix, filepath, crypton, ram, base64-bytestring, base58-bytestring, http-client
+    unix, crypton, ram, base64-bytestring
 
 library workflow
   import: settings

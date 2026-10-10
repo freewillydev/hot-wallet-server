@@ -8,6 +8,15 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Implemented and checked
 
+- Wrapping-only cleanup: removed standalone mint/burn, metadata, nonce, pool,
+  position/liquidity builders and unused token key/offline-signing operations.
+  ATA setup retains its closed DSL, exact saved format, validation, locks and
+  saved-before-send behavior. Token saved validators now live in Token.hs.
+  Source count (tracked .hs/.rs/.c excluding src/test; Rust inline tests included):
+  17,762 -> 16,903 lines, 66 -> 64 files. Administration: 873 -> 354 lines,
+  5 -> 3 files. SDK: 792 -> 538 lines including its tests. Core financial paths
+  and upstream checkout are unchanged. Build-all and full local bridge-test PASS;
+  evidence and scoped independent verdict are in .audit/wrap-only.tsv and DONE.md.
 - Server source is in `src/`; documentation and agent records are in `Docs/`.
   Cabal metadata, asset hooks and installation support are in `build/`.
   Run from the root with `cabal --project-dir=build`; install via `build/install.sh`.

@@ -1,5 +1,11 @@
 # Auditable financial-core refactor: design and execution plan
 
+Scope note for **hot-wallet-server**: this inherited plan records the upstream
+refactor. Standalone token/pool tools remain upstream; their command preservation
+and test requirements below do not apply to this server extraction. Only ATA setup
+is retained here. Current acceptance is tracked in [DONE.md](DONE.md), with the
+active work order in [RESUME.md](RESUME.md).
+
 Status: **117/120 steps verified (A–I, J105–111, J113–117, J120)**. Implementation and
 available acceptance are complete; external gates J112, J118 and J119 remain open.
 The source-size reduction target was not met; see the measured J117 results. This replaces the

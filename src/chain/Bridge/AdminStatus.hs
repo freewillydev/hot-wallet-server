@@ -1,18 +1,16 @@
 {-# LANGUAGE DeriveGeneric #-}
--- Shared, bounded evidence for closed token/pool recovery operations.
+-- Bounded status and saved-lineage evidence for associated-account setup.
 module Bridge.AdminStatus
-  ( Status(..),inspectStatus,classifyStatus,Recovery(..),newRecovery,renewRecovery
-  , validateRecovery,validateSuccessor,attemptPath,newRecoveryWith,retirementWith ) where
+  ( Status(..),inspectStatus,classifyStatus,Recovery(..),newRecovery
+  , validateRecovery,validateSuccessor,attemptPath,newRecoveryWith ) where
 import Bridge.Error (require,reject)
 import Bridge.RPC
-import Bridge.Identity (digest)
-import Bridge.Solana (SignatureInfo(..),collectSignatures)
+import Bridge.Solana (SignatureInfo(..))
 import Bridge.SolanaMessage (publicKey,signatureBytes)
 import Control.Exception (bracket)
 import Control.Monad (unless)
 import Data.Aeson
 import Data.Aeson.Types (parseEither,Parser)
-import qualified Data.ByteString.Lazy as L
 import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -129,34 +127,6 @@ newRecoveryWith call genesis payer fee root=do
   checkBlock call r
   pure r
 
-renewRecovery :: String -> String -> Text -> Text -> Text -> Recovery -> IO Recovery
-renewRecovery primary verifier signature bytes parent old=do
-  independentHttps primary verifier
-  either reject pure (validateRecovery (recoveryGenesis old) (recoveryPayer old) (recoveryFeeLimit old) (recoveryBlockhash old) old)
-  require (recoveryGeneration old<7) "administration_generation_limit"
-  -- A throttled verifier may take longer than the primary's keep-alive timeout.
-  -- Close each read session; acquiring the new context gets a fresh connection.
-  let collect endpoint=bracket newRpcManager closeManager $ \manager->
-        retirementWith (rpc manager endpoint Nothing) signature bytes old
-  proof<-collect primary
-  other<-collect verifier
-  -- Both providers must agree on the terminal outcome and exact failed effect.
-  outcome<-fieldValue "outcome" proof :: IO Text
-  actual<-fieldValue "outcome" other
-  require (outcome==actual) "administration_retirement_disagreement"
-  if outcome=="failed" then do
-    terminal<-fieldValue "transactionHash" proof :: IO Text
-    agreed<-fieldValue "transactionHash" other
-    require (terminal==agreed) "administration_retirement_disagreement"
-    else pure ()
-  fresh<-newRecovery (recoveryGenesis old) primary (recoveryPayer old)
-    (recoveryFeeLimit old) (recoveryRoot old)
-  let child=fresh {recoveryGeneration=recoveryGeneration old+1,recoveryParent=Just parent
-        ,recoveryEvidence=Just $ object ["signature" .= signature,"primary" .= primary,"verifier" .= verifier
-           ,"primaryEvidence" .= proof,"verifierEvidence" .= other]}
-  either reject pure (validateSuccessor old parent child)
-  pure child
-
 identity :: Call -> Text -> IO ()
 identity call expected=do
   actual<-call "getGenesisHash" [] >>= parseValue parseJSON
@@ -173,49 +143,3 @@ checkBlock call r=do
   height<-fieldValue "blockHeight" block :: IO Word64
   require (recent==recoveryBlockhash r && height<recoveryLastHeight r
     && toInteger(recoveryLastHeight r)-toInteger height<=300) "administration_blockhash_origin_mismatch"
-
-retirementWith :: Call -> Text -> Text -> Recovery -> IO Value
-retirementWith call signature bytes r=do
-  identity call (recoveryGenesis r)
-  _<-either reject pure (signatureBytes signature)
-  either reject pure (validateRecovery (recoveryGenesis r) (recoveryPayer r) (recoveryFeeLimit r) (recoveryBlockhash r) r)
-  checkBlock call r
-  let readStatus=do
-        response<-call "getSignatureStatuses" [toJSON [signature],object ["searchTransactionHistory" .= True]]
-        values<-fieldValue "value" response
-        status<-case values of [value]->pure value; _->reject "invalid_administration_status"
-        transaction<-call "getTransaction" [toJSON signature,object ["encoding" .= ("base64"::Text)
-          ,"commitment" .= ("finalized"::Text),"maxSupportedTransactionVersion" .= (0::Int)]]
-        pure (status,transaction)
-  (status,transaction)<-readStatus
-  if status/=Null || transaction/=Null then do
-    state<-either (const $ reject "administration_status_mismatch") pure (classifyStatus bytes status transaction True)
-    require (state==Failed) "administration_attempt_not_retryable"
-    slot<-fieldValue "slot" transaction :: IO Word64
-    reported<-fieldValue "slot" status
-    metadata<-fieldValue "meta" transaction
-    charged<-fieldValue "fee" metadata :: IO Word64
-    require (slot==reported && slot>recoverySlot r && charged>0 && charged<=recoveryFeeLimit r) "administration_failed_evidence_mismatch"
-    pure $ object ["outcome" .= ("failed"::Text),"slot" .= slot,"fee" .= charged
-      ,"transactionHash" .= digest(L.toStrict $ encode transaction)]
-  else do
-    validity<-call "isBlockhashValid" [toJSON(recoveryBlockhash r),object ["commitment" .= ("finalized"::Text),"minContextSlot" .= recoverySlot r]]
-    valid<-fieldValue "value" validity
-    context<-fieldValue "context" validity
-    finalSlot<-fieldValue "slot" context :: IO Word64
-    height<-call "getBlockHeight" [object ["commitment" .= ("finalized"::Text),"minContextSlot" .= finalSlot]] >>= parseValue parseJSON :: IO Word64
-    require (not valid && finalSlot>recoverySlot r && height>recoveryLastHeight r) "administration_attempt_not_expired"
-    history<-collectSignatures (recoveryOrigin r) Nothing $ \before->
-      call "getSignaturesForAddress" [toJSON(recoveryPayer r),object
-        (["commitment" .= ("finalized"::Text),"minContextSlot" .= finalSlot,"limit" .= (100::Int)]
-        <>maybe [] (\previous->["before" .= previous]) before)] >>= parseValue parseJSON
-    let anchored=case history of
-          origin:_->historySignature origin==recoveryOrigin r && fromIntegral(historySlot origin)==recoveryOriginSlot r
-          []->False
-    require (anchored
-      && all ((/=signature) . historySignature) history) "administration_history_disagrees"
-    (again,saved)<-readStatus
-    require (again==Null && saved==Null) "administration_history_changed"
-    pure $ object ["outcome" .= ("expired-unseen"::Text),"finalizedSlot" .= finalSlot,"height" .= height
-      ,"historyCount" .= length history,"historyHash" .= digest(L.toStrict $ encode
-        [(historySignature h,historySlot h,historyFailed h) | h<-history])]

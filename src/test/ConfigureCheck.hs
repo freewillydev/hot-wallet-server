@@ -3,7 +3,6 @@ import qualified Bridge.Config as C
 import qualified NodeSetup
 import qualified Bootstrap
 import qualified Token
-import qualified Token.Signing as TS
 import qualified Token.Operation as TO
 import Bridge.SDKBuild (sdkLibraryPath)
 import System.Environment (getEnv,setEnv,getExecutablePath)
@@ -33,7 +32,8 @@ import Control.Monad (unless,forM)
 import qualified Data.ByteArray.Encoding as Hex
 import Data.Word (Word8)
 import Test.QuickCheck hiding ((.&.))
-import Bridge.SolanaMessage (base58)
+import Bridge.SolanaMessage (base58,Transaction(..))
+import qualified Data.ByteString.Base64 as B64
 import Control.Exception (bracket,try,throwIO)
 import Crypto.Error (CryptoFailable(..))
 import qualified Crypto.PubKey.Ed25519 as Ed
@@ -126,8 +126,20 @@ contract=bracket temporary removeDirectoryRecursive $ \directory->do
         attempt=directory</>"ata-creation.json"
     ata<-TO.runSafe (TO.Request $ Token.AssociatedAddress sdkLibraryPath ownerText mint)
     let operation=Token.Associated ownerText mint ata ownerText 2039280 (base58 $ B.replicate 32 1)
+    let rejectIntent value=case (eitherDecodeStrict' (L.toStrict $ encode value)::Either String Token.Request) of
+          Left _->True; Right _->False
+        Object fields=toJSON operation
+    require (all (\verb->rejectIntent $ Object $ KM.insert "verb" (String verb) fields)
+      ["mint","burn","create","metadata","nonce_mint","create_nonce"]
+      && rejectIntent (Object $ KM.insert "amount" (String "1") fields)) "ata_setup_accepts_only_closed_intent"
     unsigned<-TO.runSafe (TO.Request $ Token.Prepare sdkLibraryPath operation)
-    signature<-TO.runCritical (TO.Request $ TS.SignOffline key operation unsigned attempt)
+    -- Fixture signing stays in the test; production exposes only guarded ATA setup.
+    Transaction _ _ message<-either (fail . T.unpack) pure (Token.validate operation unsigned)
+    let signedBytes=BA.convert(Ed.sign secret (Ed.toPublic secret) message)::B.ByteString
+        signature=base58 signedBytes
+        saved=Token.Saved operation signature (TE.decodeUtf8 $ B64.encode (B.singleton 1<>signedBytes<>message)) Nothing
+    _<-either (fail . T.unpack) pure (Token.validateSaved saved)
+    savePrivate attempt (L.toStrict $ encode saved)
     localAta<-Bootstrap.initialAccounting directory config "owned SOL"
     localReplay<-Bootstrap.initialAccounting directory config "owned SOL"
     B.writeFile attempt "{}"

@@ -1,10 +1,9 @@
 {-# LANGUAGE DataKinds, GADTs, FunctionalDependencies, KindSignatures #-}
--- Administration requests cannot change their severity or result type at dispatch.
+-- Account-setup requests cannot change their severity or result type at dispatch.
 module Token.Operation (Severity(..),Operation(..),Request(..),DSL,resolve,runSafe,runCritical) where
 import Data.Kind (Type)
 import qualified Token
 import qualified Token.Network as Network
-import qualified Token.Signing as Signing
 
 data Severity = Safe | Critical
 class Operation (s :: Severity) (op :: Type -> Type) | op -> s where
@@ -16,12 +15,10 @@ data Request (s :: Severity) a where
 data DSL (s :: Severity) a where
   Prepare :: Token.Safe a -> DSL 'Safe a
   Inspect :: Network.Safe a -> DSL 'Safe a
-  Key :: Signing.Critical a -> DSL 'Critical a
   Network :: Network.Critical a -> DSL 'Critical a
 
 instance Operation 'Safe Token.Safe where command = Prepare
 instance Operation 'Safe Network.Safe where command = Inspect
-instance Operation 'Critical Signing.Critical where command = Key
 instance Operation 'Critical Network.Critical where command = Network
 
 resolve :: Request s a -> DSL s a
@@ -38,5 +35,4 @@ evalSafe (Prepare operation) = Token.evalSafe operation
 evalSafe (Inspect operation) = Network.evalSafe operation
 
 evalCritical :: DSL 'Critical a -> IO a
-evalCritical (Key operation) = Signing.evalCritical operation
 evalCritical (Network operation) = Network.evalCritical operation
