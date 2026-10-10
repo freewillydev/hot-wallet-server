@@ -79,3 +79,12 @@ its exact tree `9c2778f88db423b1b17fd4f096a7ced87f4840a6` received independent
 All installer, payout and production gates remain pending. Publication evidence
 is recorded in .audit/extraction.tsv. Follow-up protocol-only commits do not change
 that reviewed implementation. Next implementation work is item1 above.
+
+## Latest documentation change
+
+README simplified from509 to249words (77 to42lines) at the user's request.
+It retains Haskell-record configuration instructions, import-only keys, one
+install command and the incomplete/public-off status. Independent read-only
+`/root/readme_simplify_review` PASS for SHA256
+`a2b0ccbbcdba19faa703046487a87ad0c2316a343aaf4d8203e209958cc3f28a`. Six links and git diff --check verified; no build required for
+this documentation-only edit. Next implementation work remains payout rounds.

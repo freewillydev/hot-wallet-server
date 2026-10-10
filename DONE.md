@@ -38,3 +38,8 @@ staged tree `9c2778f88db423b1b17fd4f096a7ced87f4840a6`; committed as
 `10e36ae6def507bb7ecb6ed04d992668f0c84f68`. GitHub
 `freewillydev/hot-wallet-server` is PRIVATE and its main branch matched that commit
 at publication. This does not mark the broader finish line complete.
+
+README simplification: scoped PASS by `/root/readme_simplify_review`, bound to
+SHA256 `a2b0ccbbcdba19faa703046487a87ad0c2316a343aaf4d8203e209958cc3f28a`. Configuration syntax,
+all six links and the single install command checked against source. No readiness
+gate changed and no new runtime acceptance is claimed.
