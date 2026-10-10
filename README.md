@@ -10,9 +10,19 @@ settings are unfinished. Keep public access off; see [remaining work](Docs/DONE.
 
 ## Configure
 
-Save a copy of [example.conf](example.conf) as a private `server.conf` outside
-Git, then replace the placeholders. It contains one Haskell record:
-`InstallConfig { field = value, ... }`. Keep **every field** from the template.
+On the Ubuntu server, create a root-only copy of [example.conf](example.conf)
+outside Git. Run the copy commands only for first setup; afterward edit the
+existing file to preserve your keys/settings:
+
+```sh
+sudo install -d -o root -g root -m 700 /root/hot-wallet
+sudo install -o root -g root -m 600 example.conf /root/hot-wallet/server.conf
+sudo nano /root/hot-wallet/server.conf
+```
+
+Directory mode `700` and file mode `600` restrict access to root. Replace the
+placeholders, keeping **every field**. The file contains one Haskell record:
+`InstallConfig { field = value, ... }`.
 
 - Text uses double quotes: `domain = "swap.example.com"`.
 - Whole numbers are unquoted: `minimumPayoutIntervalHours = 48`.
@@ -29,18 +39,25 @@ requires unused custody; existing custody needs ledger restoration.
 
 ## Custom website
 
-Set `websiteDirectory = Just "/opt/my-website"` in your configuration (`Nothing`
-keeps the bundled interface). Supply `index.html`, `style.css` and `dist/wallet.js`;
-HTML should load `/style.css` and `/wallet.js`. Use local scripts/styles, without
-inline code or CDN dependencies. Installation preserves the site across upgrades.
-See [website details](Docs/OPERATIONS.md#custom-website).
+Set this field in `server.conf`:
+
+```haskell
+websiteDirectory = Just "/opt/my-website"
+```
+
+Supply `index.html`, `style.css` and `dist/wallet.js` in that directory. HTML loads
+`/style.css` and `/wallet.js`. Use root-owned files (`644`) and directories (`755`),
+with local scripts/styles rather than inline code or CDN dependencies.
+
+`Nothing` keeps the default interface. Custom files survive code upgrades;
+the customer API is unchanged. See [website details](Docs/OPERATIONS.md#custom-website).
 
 ## Install
 
 From the repository directory:
 
 ```sh
-sudo ./build/install.sh /absolute/private/server.conf
+sudo ./build/install.sh /root/hot-wallet/server.conf
 ```
 
 Rerun the same command with unchanged configuration to resume. Keep independent

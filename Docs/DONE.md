@@ -77,3 +77,7 @@ Independent `/root/website_final_verifier` PASS for staged tree
 `b8091c3fb943b134642664e8c519f9c55295e42a`; no blocking findings.
 Ubuntu custom-site install/reboot/upgrade acceptance remains unrun; this
 feature does not close the broader installer or production gates.
+
+README permissions/custom-site instructions: independent `readme_permissions_verifier`
+PASS for SHA256 `c4be49c2d98ee1a626a533bbc2eaf3ee17376dfaaac65e7b6af1cd2b6e7bf0d1`.
+Shell syntax and all ten links verified; documentation only, no deployment claim.
