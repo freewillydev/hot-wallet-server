@@ -685,3 +685,9 @@ confirmed and unresolved; dependency/spool uncertainties and real deployment
 acceptance remain open. The Low test-log issue was corrected in0bf22c0 with
 focused process/PG tests and separate source review. The earlier Deep launch
 failure is not a Standard-scan failure or evidence of a passing security gate.
+
+Backup-spool path race subsequently confirmed and corrected: Ubuntu24.04 GNU
+install reproduction, least-privilege replacement, fresh/repeat controls, shell
+syntax and separate patch review PASS. This is a scoped helper check on ARM64,
+not the pending full x86_64 clean-install gate; larger Native-history recovery and
+remaining dependency/security gates stay open.

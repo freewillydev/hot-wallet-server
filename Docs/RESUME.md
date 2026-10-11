@@ -1150,3 +1150,21 @@ The large-history finding and real-node conflict acceptance remain open.
 Fresh native_conflict_patch_reviewer: PASS, static four-file scope; no actionable
 bypass/regression found. Scanner-to-ledger-to-inspection combined fixture and
 real-node conflict execution are not established by these separate contracts.
+
+### Backup spool privilege boundary (2026-10-11)
+
+Resolved the scan's GNU-install uncertainty in a disposable Ubuntu24.04.4 ARM64
+VM (1CPU/1GiB RAM, no host mounts). With coreutils9.4, a symlink substituted after
+the precheck made the old root install-d command change a root-owned target to
+ecxnode ownership. The script now runs spool creation as ecxnode:ecxnode using
+runuser, before traversing the mutable path. The same substitution cannot mutate
+the protected target; fresh and repeated normal creation preserve0700 and content.
+Shell syntax and deterministic Linux before/after contract PASS; fresh separate
+backup_spool_patch_reviewer PASS for source scope. No Haskell code changed.
+
+The VM was stopped/deleted. Evidence is retained through Codex Security as
+artifacts/spool-permission-check.sh and .log (logSHA256
+ac58f0c4b644202a7d5b263bf2f68e147dba73517a297dac2812a16cb8329600).
+This closes the backup helper's root path-following issue, not node-originated
+denial of service or whole-host x86_64 installation acceptance. Other managed-node
+root filesystem operations still warrant separate review. Public access stays off.

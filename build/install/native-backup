@@ -35,7 +35,9 @@ for directory in "$base" "$spool" /run/ecx-native-backup; do
   [ ! -L "$directory" ] || fail 'symlink directory refused'
 done
 install -d -o root -g ecxnode -m 0750 "$base"
-install -d -o ecxnode -g ecxnode -m 0700 "$spool"
+# The node owns this parent and can replace entries after the symlink precheck.
+# Drop privilege before traversing it; never chown a substituted target as root.
+runuser -u ecxnode -g ecxnode -- install -d -m 0700 "$spool"
 staging=$(mktemp -d "$base/.install-XXXXXXXX")
 trap 'rm -rf -- "$staging"' EXIT
 jq '{profile,nativeRpc,nativeWallet,nativeCheckpointHeight,nativeCheckpointHash,nativeCookie:"/var/lib/ecx-betanet/.cookie"}' "$config" > "$staging/config.json"
