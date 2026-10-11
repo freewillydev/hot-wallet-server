@@ -58,6 +58,7 @@ import Network.HTTP.Types (Status,ResponseHeaders,status200,status429,status500,
 import Data.Time.Clock (getCurrentTime,addUTCTime)
 import Data.Time.Format (formatTime,defaultTimeLocale)
 import Test.QuickCheck hiding (label)
+import Numeric (showHex)
 
 checks :: IO [Result]
 checks = (\deployment native solana identity observation administration common->deployment<>native<>solana<>identity<>observation<>administration<>common) <$> deploymentChecks <*> NativePaymentCheck.checks <*> SolanaPaymentCheck.checks <*> ((<>) <$> solanaIdentityChecks <*> solanaPairChecks) <*> ObservationCheck.checks <*> administrationChecks <*> sequence
@@ -124,6 +125,49 @@ checks = (\deployment native solana identity observation administration common->
           case outcome of Left (_::HTTP.HttpException)->pure (); Right _->fail "consumer failure swallowed"
         emitted<-readIORef count
         pure (total==2001 && requests==1 && emitted==1 && replayRequests==1 && BL.length good>4*1024*1024)
+  , check "native transaction projection exceeds RPC size/output limits but validates the entire capture" $ once $ ioProperty $
+      withPrivateDirectory $ \directory->do
+        let tx=T.replicate 64 "a"; cookie=directory</>"cookie"
+            output n=object ["n" .= n,"value" .= (0.00001::Double)
+              ,"scriptPubKey" .= object ["hex" .= ("0014"<>T.replicate 40 "1"),"address" .= ("fixture"::Text),"asm" .= ("discarded"::Text)]]
+            decoded=object ["txid" .= tx,"vin" .= replicate 2000 (object ["txid" .= tx]),"vout" .= map output [0..1100::Int]]
+            detail category=object ["category" .= (category::Text),"address" .= ("fixture"::Text),"vout" .= (1100::Int),"amount" .= (0.00001::Double)]
+            result=object ["txid" .= tx,"confirmations" .= (6::Int),"amount" .= (0.00001::Double)
+              ,"decoded" .= decoded,"details" .= map detail ["send","receive"],"hex" .= T.replicate (4*1024*1024+1) "0"]
+            good=encode $ object ["id" .= (1::Int),"result" .= result,"error" .= Null]
+            small=object ["txid" .= tx,"decoded" .= decoded,"details" .= ([]::[Value])]
+            wrap value=encode $ object ["id" .= (1::Int),"result" .= value]
+            variants=[(good<>"{}","rpc_invalid_json"),(BL.take (BL.length good-1) good,"rpc_invalid_json")
+              ,("{\"id\":1,\"result\":"<>encode small<>",\"error\":{\"code\":-1}}","rpc_error_-1")
+              ,("{\"id\":1,\"result\":{\"txid\":\"a\",\"txid\":\"b\"}}","rpc_duplicate_field")
+              ,(wrap $ object ["decoded" .= object ["vout" .= [output (1::Int)]]],"native_output_index_invalid")
+              ,("{\"id\":1,\"result\":{\"ignored\":[0,]}}","rpc_invalid_json")]
+            run bytes action=Warp.testWithApplication (pure $ \request respond->do
+              body<-Wai.strictRequestBody request
+              unless (body==encode(object ["jsonrpc" .= ("2.0"::Text),"id" .= (1::Int),"method" .= ("gettransaction"::Text)
+                ,"params" .= [String tx,Bool False,Bool True]]) && Wai.rawPathInfo request=="/wallet/test"
+                && lookup "Authorization" (Wai.requestHeaders request)==Just "Basic dGVzdDpzZWNyZXQ=")
+                (fail "incorrect transaction transport")
+              respond $ Wai.responseLBS status200 [] bytes) $ \port->
+                action $ readNativeTransaction (NativeSettings L2LSignetDevnet ("http://127.0.0.1:"<>show port) cookie "test" 1 tx) tx
+        BS.writeFile cookie "test:secret"
+        projected<-run good id
+        outputs<-fieldValue "decoded" projected >>= fieldValue "vout" :: IO [Value]
+        details<-fieldValue "details" projected :: IO [Value]
+        captureHash<-fieldValue "rpcCaptureHash" projected :: IO Text
+        forM_ variants $ \(bytes,reason)->run bytes (rejects reason) >>= \ok->unless ok (fail "invalid transaction capture accepted")
+        other<-run (good<>" ") id
+        otherHash<-fieldValue "rpcCaptureHash" other :: IO Text
+        let conflict n=let digits=T.pack(showHex n "") in T.replicate (64-T.length digits) "0"<>digits
+            conflictResponse=wrap $ object ["decoded" .= object ["vout" .= [output (0::Int)]]
+              ,"walletconflicts" .= map conflict [1..111112::Int]]
+        manyConflicts<-run conflictResponse id
+        conflictCount<-fieldValue "walletconflicts" manyConflicts :: IO Integer
+        invalidConflict<-run (wrap $ object ["walletconflicts" .= (["invalid"]::[Text])]) (rejects "invalid_native_source_conflicts")
+        pure (length outputs==1101 && length details==2 && BL.length good>4*1024*1024
+          && BL.length(encode projected)<512*1024 && captureHash/=otherHash
+          && conflictCount==111112 && BL.length(encode manyConflicts)<1024 && invalidConflict
+          && case projected of Object fields->not(KM.member "hex" fields); _->False)
   , check "owner descriptor resolution is public-only, fixed-path and refuses custody destinations" $ \(private::Bool) (ranged::Bool) (solvable::Bool) (owned::Bool)->
       forAll (elements [0,1,2::Int]) $ \count->ioProperty $ do
         let key="xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz"

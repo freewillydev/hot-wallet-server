@@ -400,8 +400,28 @@ pages idempotently. No offset into a new RPC response is treated as coverage.
 Recovery candidates use immutable deposit-ID keyset pages of 128 rows, advancing
 past examined sources even when they remain pending. Only adjacent duplicate
 transaction IDs are coalesced; nonadjacent duplicates are reread and committed
-idempotently. Individual transaction/evidence limits and long-scan freshness remain
-separate availability limitations under review.
+idempotently. Incoming/source `gettransaction` uses the same private capture
+transport with a projected token reader. It discards raw hex, decoded inputs and
+unused metadata before constructing aggregate Values. Output/detail ceilings
+(111,111/222,222) and the aggregate 1,000,000-byte script budget derive from the
+pinned ECX stripped-transaction weight rule; they are not customer size policy.
+Individual strings are still materialized by Aeson, and local wallet metadata has
+no established scalar bound. This is not a constant-memory decoder for every input.
+
+Receipt writes split into at most 1,000 deposits per page; only the final page
+publishes that transaction's complete receipt commitment. Every partial page keeps
+scan health unavailable. Treasury verifies the commitment against paged durable
+receipts, unchanged anchors and non-regressing depths; focused source refresh can
+advance a sibling's confirmations without invalidating that proof.
+
+Wallet conflicts have no consensus count bound. Projection validates each hash and
+retains only their count, while `rpcCaptureHash` binds the complete response bytes.
+Source recovery compares both projected observations, including that hash, so a
+change in omitted fields still refuses the transition. Byte-equivalent captures
+are required; different JSON formatting also refuses and requires a fresh check.
+This hash is distinct from historical `rpcPayloadHash` of Aeson-reencoded results.
+Authored native payout/family validation retains the full ordinary bounded RPC and
+its signing restrictions. Long-scan freshness and live acceptance remain open.
 
 Paused recovery can record observed effects and recover owned input locks, but
 cannot prepare/broadcast new payments. Foreign locks stay untouched. Cancellation

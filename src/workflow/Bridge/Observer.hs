@@ -29,7 +29,7 @@ observeOnce manager settings reader writer = do
         previous<-evalRead reader (ReadCheckpoint "Native")
         depth<-evalRead reader (MaximumNativeDepth $ defaultNativeDepth settings)
         now<-epoch
-        scanNativeWith (nativeCall manager native) (withNativeHistory native) native (defaultNativeDepth settings) depth previous now
+        scanNativeWith (nativeCall manager native) (withNativeHistory native) (readNativeTransaction native) native (defaultNativeDepth settings) depth previous now
           (evalRead reader . NativeSourcePage) lookupInstruction (evalWrite writer . CommitNativePage)
       commit chain result=do
         saved<-try ((either (\(BridgeError code)->reject code) (evalWrite writer . CommitScan) result)

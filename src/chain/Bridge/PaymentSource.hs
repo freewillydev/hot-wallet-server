@@ -19,8 +19,8 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Text.Read (readMaybe)
 
-verifyPaymentSource :: NativeRPC -> SolanaRPC -> Maybe SolanaRPC -> W.Profile -> H.SolanaPolicy -> W.PaymentSource -> IO W.Deposit
-verifyPaymentSource native solana independent profile config binding = do
+verifyPaymentSource :: NativeRPC -> (Text -> IO Value) -> SolanaRPC -> Maybe SolanaRPC -> W.Profile -> H.SolanaPolicy -> W.PaymentSource -> IO W.Deposit
+verifyPaymentSource native transaction solana independent profile config binding = do
   let deposit=W.sourceDeposit binding; policy=W.sourcePolicy binding
       instruction=W.sourceInstruction binding; request=W.sourceRequest binding
   require (W.deploymentFingerprint policy==H.fingerprint config && W.solanaCommitment policy=="finalized"
@@ -31,7 +31,7 @@ verifyPaymentSource native solana independent profile config binding = do
         ["native",tx,n] | T.length tx==64,T.all (`elem` ("0123456789abcdef"::String)) tx,
           Just i<-readMaybe (T.unpack n),i>=0->pure(tx,i::Int)
         _->reject "invalid_native_deposit_id"
-      value<-native True "gettransaction" [toJSON txid,Bool False,Bool True]
+      value<-transaction txid
       actual<-fieldValue "txid" value
       decoded<-fieldValue "decoded" value
       decodedId<-fieldValue "txid" decoded
@@ -46,8 +46,9 @@ verifyPaymentSource native solana independent profile config binding = do
       ownedScript<-fieldValue "scriptPubKey" address :: IO Text
       require (owned && actualIndex==index && quantity==W.depositAmount deposit && script==ownedScript) "source_binding_mismatch"
       depth<-fieldValue "confirmations" value
-      conflicts<-fieldValue "walletconflicts" value :: IO [Text]
-      if depth<W.nativeDepth policy || not(null conflicts)
+      conflicts<-fieldValue "walletconflicts" value :: IO Integer
+      require (conflicts>=0) "invalid_native_source_conflicts"
+      if depth<W.nativeDepth policy || conflicts/=0
         then pure deposit {W.depositAnchor="unconfirmed",W.depositConfirmations=max 0 depth,W.depositEligible=False}
         else do
           anchor<-fieldValue "blockhash" value
@@ -72,8 +73,8 @@ verifyPaymentSource native solana independent profile config binding = do
 
 -- The caller verifies network identity and supplies a closed ledger snapshot.
 -- Negative wallet confirmation alone is insufficient to book a missing source.
-inspectNativeSource :: NativeRPC -> N.NativeSettings -> Int -> Text -> W.Deposit -> Maybe (Text,W.PolicySnapshot) -> (Text,Value) -> IO W.SourceCheck
-inspectNativeSource call c minimumDepth identity source binding observation=do
+inspectNativeSource :: NativeRPC -> (Text -> IO Value) -> N.NativeSettings -> Int -> Text -> W.Deposit -> Maybe (Text,W.PolicySnapshot) -> (Text,Value) -> IO W.SourceCheck
+inspectNativeSource call transaction c minimumDepth identity source binding observation=do
   require (W.depositAsset source==Native && minimumDepth>0) "invalid_native_source_receipt"
   wallet <- N.nativeWalletInfoWith call c
   position <- fieldValue "lastprocessedblock" wallet
@@ -84,7 +85,7 @@ inspectNativeSource call c minimumDepth identity source binding observation=do
   (txid,index)<-case T.splitOn ":" (W.depositId source) of
     ["native",tx,n] | transactionId tx,Just i<-readMaybe (T.unpack n),i>=0->pure(tx,i::Int)
     _->reject "invalid_native_deposit_id"
-  value <- call True "gettransaction" [toJSON txid,Bool False,Bool True]
+  value <- transaction txid
   actual <- fieldValue "txid" value
   processed <- fieldValue "lastprocessedblock" value
   decoded <- fieldValue "decoded" value
@@ -93,7 +94,7 @@ inspectNativeSource call c minimumDepth identity source binding observation=do
   details <- fieldValue "details" value :: IO [Value]
   confirmations <- fieldValue "confirmations" value :: IO Int
   require (actual==txid && decodedId==txid && processed==position && index<length outputs
-    && length outputs<=1000 && length details<=1000) "native_source_binding_mismatch"
+    && length outputs<=111111 && length details<=222222) "native_source_binding_mismatch"
   matched <- filterM (\detail->(==index) <$> (fieldValue "vout" detail :: IO Int)) details
   let output=outputs!!index
   -- A conflicted incoming transaction has no receive details in Core. Its
@@ -122,15 +123,18 @@ inspectNativeSource call c minimumDepth identity source binding observation=do
         && W.nativeDepth policy>0 && W.nativeDepth policy<=1008) "native_source_binding_mismatch"
       pure (W.nativeDepth policy)
   anchor <- parseValue (withObject "source" (.:? "blockhash")) value :: IO (Maybe Text)
-  conflicts <- fieldValue "walletconflicts" value :: IO [Text]
-  require (length conflicts<=100 && all transactionId conflicts) "invalid_native_source_conflicts"
+  conflicts <- fieldValue "walletconflicts" value :: IO Integer
+  require (conflicts>=0) "invalid_native_source_conflicts"
+  captureHash<-fieldValue "rpcCaptureHash" value :: IO Text
+  require (transactionId captureHash) "invalid_native_source_capture"
   let (observationHash,event)=observation
   recordedDepth <- fieldValue "proof" event >>= fieldValue "confirmations"
   recordedAnchor <- fieldValue "anchor" event
   require (recordedDepth==confirmations && recordedAnchor==maybe "unconfirmed" id anchor
     && W.depositConfirmations source==max 0 confirmations && W.depositAnchor source==recordedAnchor) "source_recovery_scan_not_current"
   let proof=object ["transaction" .= txid,"output" .= index,"confirmations" .= confirmations,"block" .= anchor
-        ,"nodeBlock" .= nodeAnchor,"nodeHeight" .= nodeHeight,"conflicts" .= conflicts,"observationHash" .= observationHash]
+        ,"nodeBlock" .= nodeAnchor,"nodeHeight" .= nodeHeight,"conflictCount" .= conflicts
+        ,"rpcCaptureHash" .= captureHash,"observationHash" .= observationHash]
   result <- if confirmations<0 then do
     mempool <- try (call False "getmempoolentry" [toJSON txid]) :: IO (Either BridgeError Value)
     require (case mempool of Left (BridgeError "rpc_error_-5")->True; _->False) "native_source_conflict_not_proven"
@@ -138,7 +142,7 @@ inspectNativeSource call c minimumDepth identity source binding observation=do
     require (unspent==Null) "native_source_conflict_not_proven"
     pure (W.SourceMissing proof)
    else do
-    require (null conflicts && category/=Just "orphan") "native_source_conflict_requires_review"
+    require (conflicts==0 && category/=Just "orphan") "native_source_conflict_requires_review"
     if confirmations==0 then do
       mempool <- call False "getmempoolentry" [toJSON txid]
       size <- fieldValue "vsize" mempool :: IO Int
@@ -150,6 +154,6 @@ inspectNativeSource call c minimumDepth identity source binding observation=do
     pure $ if confirmations>=needed then W.SourceRestored proof else W.SourcePending proof
   -- A wallet catching up or a changing source cannot authorize a bookkeeping
   -- transition. The ledger separately fences changes to its saved observation.
-  again <- call True "gettransaction" [toJSON txid,Bool False,Bool True]
+  again <- transaction txid
   require (again==value) "native_source_view_changed"
   pure result

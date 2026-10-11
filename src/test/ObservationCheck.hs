@@ -4,7 +4,7 @@ import Bridge.Domain (Amount, Asset(..), Direction(..), amount, units)
 import qualified Bridge.Wire as W
 import Bridge.PaymentSource (verifyPaymentSource,inspectNativeSource)
 import qualified Bridge.SolanaHelper as H
-import Bridge.Identity (emptyNativeReceipts,addNativeReceipt,nativeReceiptCommitment)
+import Bridge.Identity (digest,emptyNativeReceipts,addNativeReceipt,nativeReceiptCommitment)
 import Bridge.Error
 import Bridge.RPC (fieldValue)
 import Bridge.Native (NativeSettings(..),signetChallenge)
@@ -29,6 +29,13 @@ import qualified Data.Text as T
 import Paths_ecx_bridge (getDataFileName)
 import Test.QuickCheck
 
+fixtureTransaction :: (Bool -> Text -> [Value] -> IO Value) -> Text -> IO Value
+fixtureTransaction call tx=do
+  value<-call True "gettransaction" [toJSON tx,Bool False,Bool True]
+  conflicts<-fieldValue "walletconflicts" value :: IO [Text]
+  pure $ replace ["walletconflicts"] (toJSON $ length conflicts) $
+    replace ["rpcCaptureHash"] (toJSON $ digest $ BL.toStrict $ encode value) value
+
 -- Fixtures collect emitted pages only to assert their contents; production does not.
 collectNative :: (Bool -> Text -> [Value] -> IO Value) -> NativeSettings
   -> Int -> Int -> Maybe Text -> Int64 -> [W.Deposit]
@@ -43,8 +50,8 @@ collectNative call settings defaultDepth depth previous now sources binding = do
         mapM_ (emit next) (removed<>current::[Value])
         pure next
       recovery after=pure $ take 128 $ filter (\d->maybe True (<W.depositId d) after) $ sortOn W.depositId $ nub sources
-  final<-NativeObservation.scanNativeWith call history settings defaultDepth depth previous now recovery binding
-    (\page->modifyIORef' pages (page:))
+  final<-NativeObservation.scanNativeWith call history (\tx->call True "gettransaction" [toJSON tx,Bool False,Bool True]) settings defaultDepth depth previous now recovery binding
+    (\page->require (length(W.scanDeposits page)<=1000) "fixture_native_page_too_large" >> modifyIORef' pages (page:))
   emitted<-reverse <$> readIORef pages
   pure final {W.scanDeposits=concatMap W.scanDeposits emitted,W.scanEvents=concatMap W.scanEvents emitted}
 
@@ -81,7 +88,7 @@ checks=do
           require (version==1 && signature==boundSignature expected && commitment=="finalized") "wrong_source_request"
           pure value
         _->fail "unexpected source RPC"
-      verifySource value verifier=verifyPaymentSource (\_ _ _->fail "unexpected native RPC") (sourceCall value) verifier W.L2LSignetDevnet sourcePolicy
+      verifySource value verifier=verifyPaymentSource (\_ _ _->fail "unexpected native RPC") (\_->fail "unexpected native transaction") (sourceCall value) verifier W.L2LSignetDevnet sourcePolicy
   versioned<-versionZero (boundCustody expected) payProof
   local<-sequence
     [ check "v1 deposits preserve proofs and reject lookup accounts and future versions" $ once $
@@ -277,6 +284,7 @@ nativeChecks=do
         settings 1 3 previous 200 [] lookupOrder
   let deposit=W.Deposit ("native:"<>tx<>":1") (Just "order") Native (amt 100000) tip 3 True 200
       recheck change=verifyPaymentSource (\_ method params->change method <$> response method params)
+        (fixtureTransaction $ \_ method params->change method <$> response method params)
         (\_ _->fail "unexpected Solana RPC") Nothing W.L2LSignetDevnet
         (H.SolanaPolicy "source-test" "profile" "" "" "" (amt 1) (amt 0)) (W.PaymentSource deposit request policy address)
   sequence
@@ -291,7 +299,7 @@ nativeChecks=do
               "getmempoolentry"->if depth<0 then reject "rpc_error_-5" else pure $ object ["vsize" .= (120::Int)]
               "gettxout"->pure Null
               _->response method params
-            inspect depth rpc=inspectNativeSource rpc settings 3 "profile" (source depth) (Just(address,policy)) (evidence depth)
+            inspect depth rpc=inspectNativeSource rpc (fixtureTransaction rpc) settings 3 "profile" (source depth) (Just(address,policy)) (evidence depth)
         missing<-inspect (-1) (call (-1))
         restored<-inspect 3 (call 3)
         shallow<-inspect 1 (call 1)
@@ -301,12 +309,12 @@ nativeChecks=do
           if method=="gettxout" then pure (object []) else call (-1) wallet method params
         mempoolRefused<-rejects "native_source_conflict_not_proven" $ inspect (-1) $ \wallet method params->
           if method=="getmempoolentry" then pure (object []) else call (-1) wallet method params
-        stale<-rejects "source_recovery_scan_not_current" $ inspectNativeSource (call (-1)) settings 3 "profile" (source (-1)) (Just(address,policy)) (evidence 3)
+        stale<-rejects "source_recovery_scan_not_current" $ inspectNativeSource (call (-1)) (fixtureTransaction $ call (-1)) settings 3 "profile" (source (-1)) (Just(address,policy)) (evidence 3)
         missingConfirmed<-rejects "native_source_receipt_ambiguous" $ inspect 3 $ \wallet method params->
           if method=="gettransaction" then pure (replace ["details"] (toJSON ([]::[Value])) $ transactionAt 3)
           else call 3 wallet method params
         wrongBinding<-rejects "native_source_binding_mismatch" $
-          inspectNativeSource (call (-1)) settings 3 "profile" (source (-1)) (Just("other-address",policy)) (evidence (-1))
+          inspectNativeSource (call (-1)) (fixtureTransaction $ call (-1)) settings 3 "profile" (source (-1)) (Just("other-address",policy)) (evidence (-1))
         unowned<-rejects "native_input_or_change_not_owned" $ inspect (-1) $ \wallet method params->
           if method=="getaddressinfo" then pure $ object ["ismine" .= False,"scriptPubKey" .= scriptHex]
           else call (-1) wallet method params
@@ -349,7 +357,7 @@ nativeChecks=do
             case (W.scanDeposits batch,W.scanEvents batch) of
               ([source],[event])->do
                 let evidence=object ["anchor" .= W.chainEventAnchor event,"proof" .= W.chainEventEvidence event]
-                recovered<-inspectNativeSource call settings 3 "profile" source (Just(address,policy)) ("saved-hash",evidence)
+                recovered<-inspectNativeSource call (fixtureTransaction call) settings 3 "profile" source (Just(address,policy)) ("saved-hash",evidence)
                 pure (count==1 && source==deposit {W.depositConfirmations=4}
                   && W.scanPrevious batch==Just tip && W.scanNext batch==tip && W.chainEventId event==tx
                   && case recovered of W.SourceRestored _->True; _->False)
@@ -385,17 +393,21 @@ nativeChecks=do
               emit tip (object ["txid" .= ("invalid"::Text)])
               pure tip
         refused<-rejects "invalid_native_transaction_id" $
-          NativeObservation.scanNativeWith call history settings 1 3 (Just origin) 200
+          NativeObservation.scanNativeWith call history (\tx->call True "gettransaction" [toJSON tx,Bool False,Bool True]) settings 1 3 (Just origin) 200
             (const $ pure []) binding (\page->modifyIORef' emitted (page:))
         pages<-readIORef emitted
         pure (refused && length pages==1 && all ((==Just origin).W.scanPrevious) pages
           && concatMap W.scanDeposits pages==[deposit])
     , check "many native receipts keep compact evidence without dropping any receipt" $ once $ ioProperty $ do
-        let indices=[0..199::Int]
+        let indices=[0..1100::Int]
             expanded=replace ["amount"] (Number 0.2) $
               replace ["decoded","vout"] (toJSON [replace ["n"] (toJSON n) output | n<-indices]) $
               replace ["details"] (toJSON [replace ["vout"] (toJSON n) detail | n<-indices]) transaction
         batch<-scan (\method->if method=="gettransaction" then const expanded else id) (Just origin) binding
+        let source=last $ W.scanDeposits batch
+        verified<-verifyPaymentSource (\_ method params->response method params) (fixtureTransaction $ \_ _ _->pure expanded)
+          (\_ _->fail "unexpected Solana RPC") Nothing W.L2LSignetDevnet
+          (H.SolanaPolicy "source-test" "profile" "" "" "" (amt 1) (amt 0)) (W.PaymentSource source request policy address)
         commitment<-either (fail . T.unpack) pure $ foldM addNativeReceipt emptyNativeReceipts $ sortOn (\d->(T.length $ W.depositId d,W.depositId d)) $ W.scanDeposits batch
         case W.scanEvents batch of
           [event]->do
@@ -403,7 +415,7 @@ nativeChecks=do
             count<-fieldValue "count" actual :: IO Int
             let oldProof=object ["receipts" .= [object ["id" .= W.depositId d,"amount" .= W.depositAmount d,
                   "order" .= W.depositOrder d,"eligible" .= W.depositEligible d] | d<-W.scanDeposits batch]]
-            pure (count==200 && length(W.scanDeposits batch)==200 && actual==nativeReceiptCommitment commitment
+            pure (verified==source && count==1101 && length(W.scanDeposits batch)==1101 && actual==nativeReceiptCommitment commitment
               && BL.length(encode $ W.chainEventEvidence event)<8192 && BL.length(encode oldProof)>8192)
           _->pure False
     , check "native eligibility honors saved depth and negative confirmations retain receipt" $ once $ ioProperty $ do

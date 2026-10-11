@@ -1282,3 +1282,37 @@ Native-history finding remains open: individual transaction RPC/output limits an
 long-scan freshness still need completion. Test PostgreSQL stopped and removed;
 no funds/deployment/public access changed. Refunds bypass batching, normal swaps
 remain batched, and all existing refund safety checks remain required.
+
+### Incoming transaction projection and receipt pages (2026-10-11)
+
+Incoming/source gettransaction now uses private capture plus projected token
+decoding, shared with the existing history transport. Authored payout/family RPC
+and signing bounds remain unchanged. Pinned ECX ca64033c consensus permits at most
+1,000,000 stripped bytes: conservative output/detail ceilings are 111,111/222,222,
+with at most 1,000,000 script bytes. The observer indexes outputs, avoids quadratic
+duplicate checks, and emits at most 1,000 deposits per page with full transaction
+evidence only on the final page. Source verification/recovery use this same reader.
+
+Fresh native_projection_candidate_review identified that wallet conflict history
+is not consensus-bounded. Parent confirmed GetConflicts/mapTxSpends in pinned Core,
+then replaced aggregate conflicts with a strict count while validating each hash.
+The full-response rpcCaptureHash binds omitted fields and the complete conflict
+list; repeat-read recovery still refuses any capture difference, including JSON
+formatting differences. Scalar strings still materialize; metadata scalar size,
+disk capacity and long-scan freshness are not proven unbounded-safe.
+
+Final bridge-test reports PASS: >4MiB response, 1,101 outputs/receipts and paged
+deposits, late source index, malformed/truncated/duplicate fields, send+receive
+details and 111,112 conflicts reduced to compact evidence. Its Cabal wrapper then
+failed writing a configured build-summary to the full external disk. A private
+per-run config moved both logs-dir and build-summary internally, leaving user
+config and shared caches unchanged. Final Cabal build session53979 exit0 and full
+default PostgreSQL/process/backup contract session37271 exit0. No second independent
+PASS is claimed. Logs and report are retained in Codex Security artifacts:
+native-projection-final-{build,suite,pg}.log and findings/native-projection-checkpoint.md.
+
+Net +150 production lines across six existing files, +56 test lines across two.
+No new module, dependency, schema or endpoint. Disposable PostgreSQL stopped and
+removed; no funds/deployment/public access changed. Next: prove long-scan freshness
+and real-node conflict behavior before closing the finding, then continue the
+remaining DONE.md production gates. Refund batching policy is unchanged.

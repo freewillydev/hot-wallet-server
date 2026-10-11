@@ -11,7 +11,9 @@ import Data.Aeson
 import qualified Data.ByteString.Lazy as LBS
 import Data.Int (Int64)
 import Data.IORef
-import Data.List (nub,sortOn)
+import Data.List (sortOn)
+import qualified Data.IntMap.Strict as IM
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Text.Read (readMaybe)
@@ -25,11 +27,11 @@ isHash value = T.length value==64 && T.all (`elem` ("0123456789abcdef"::String))
 -- Complete capture is validated before any callback. Pages keep the original
 -- checkpoint; only the returned empty completion batch may advance coverage.
 scanNativeWith :: (Bool -> Text -> [Value] -> IO Value)
-  -> (Text -> Int -> (Text -> Value -> IO ()) -> IO Text) -> NativeSettings
+  -> (Text -> Int -> (Text -> Value -> IO ()) -> IO Text) -> (Text -> IO Value) -> NativeSettings
   -> Int -> Int -> Maybe Text -> Int64 -> (Maybe Text -> IO [Deposit])
   -> (Text -> IO (Maybe (Text,OrderRequest,PolicySnapshot)))
   -> (ScanBatch -> IO ()) -> IO ScanBatch
-scanNativeWith call history c defaultDepth depth previous now recoveryPage lookupInstruction emit = do
+scanNativeWith call history transaction c defaultDepth depth previous now recoveryPage lookupInstruction emit = do
   require (defaultDepth>=1 && depth>=defaultDepth && now>=0) "invalid_native_scan_policy"
   require (maybe True isHash previous) "invalid_native_scan_cursor"
   info <- nativeIdentityWith call c
@@ -52,7 +54,10 @@ scanNativeWith call history c defaultDepth depth previous now recoveryPage looku
         lastSeen<-readIORef lastTransaction
         when (lastSeen/=Just tx) $ do
           (deposits,events)<-readTransaction tx
-          emit (batch next deposits events)
+          let pages remaining=case splitAt 1000 remaining of
+                (page,[])->emit (batch next page events)
+                (page,rest)->emit (batch next page []) >> pages rest
+          pages deposits
           writeIORef lastTransaction (Just tx)
       recover next after=do
         sources<-recoveryPage after
@@ -74,7 +79,7 @@ scanNativeWith call history c defaultDepth depth previous now recoveryPage looku
   pure (batch next [] [])
  where
   readTransaction txid = do
-    value <- call True "gettransaction" [toJSON txid,Bool False,Bool True]
+    value <- transaction txid
     actual <- fieldValue "txid" value
     require (actual==txid) "native_transaction_identity_mismatch"
     confirmations <- fieldValue "confirmations" value :: IO Int
@@ -90,15 +95,15 @@ scanNativeWith call history c defaultDepth depth previous now recoveryPage looku
     let walletUnits=toInteger (units magnitude) * if walletAmount<0 then -1 else 1
     outputs <- fieldValue "vout" decoded :: IO [Value]
     details <- fieldValue "details" value :: IO [Value]
-    require (length outputs<=1000 && length details<=1000) "native_transaction_too_large"
+    require (length outputs<=111111 && length details<=222222) "native_transaction_consensus_bound"
+    let indexed=IM.fromDistinctAscList (zip [0..] outputs)
     rows <- forM details $ \detail -> do
       category <- fieldValue "category" detail :: IO Text
       if category=="send" then pure ([],True) else do
         require (category `elem` ["receive","generate","immature","orphan"]) "native_category_unsupported"
         address <- fieldValue "address" detail
         outpoint <- fieldValue "vout" detail :: IO Int
-        require (outpoint>=0 && outpoint<length outputs) "native_output_index_invalid"
-        let output=outputs!!outpoint
+        output<-maybe (reject "native_output_index_invalid") pure (IM.lookup outpoint indexed)
         outputIndex <- fieldValue "n" output :: IO Int
         detailAmount <- fieldValue "amount" detail >>= either reject pure . nativeAmount
         outputAmount <- fieldValue "value" output >>= either reject pure . nativeAmount
@@ -119,13 +124,14 @@ scanNativeWith call history c defaultDepth depth previous now recoveryPage looku
               (maybe "unconfirmed" id anchor) (max 0 confirmations) (confirmations>=required && category/="orphan") now
         pure ([receipt],False)
     let deposits=concatMap fst rows
-    require (length (nub $ map depositId deposits)==length deposits) "duplicate_native_receipt"
+    require (Set.size (Set.fromList $ map depositId deposits)==length deposits) "duplicate_native_receipt"
     commitment<-foldM (\state receipt->either reject pure $ addNativeReceipt state receipt) emptyNativeReceipts (sortOn (\d->(T.length $ depositId d,depositId d)) deposits)
+    captureHash<-optionalField "rpcCaptureHash" value :: IO (Maybe Text)
     let sending=or (map snd rows)
         evidence=object ["txid" .= txid,"confirmations" .= confirmations,"blockhash" .= anchor
           ,"walletNetUnits" .= T.pack(show walletUnits),"feeUnits" .= feeAmount
           ,"receiptCommitment" .= nativeReceiptCommitment commitment
-          ,"rpcPayloadHash" .= digest (LBS.toStrict $ encode value)]
+          ,"rpcCaptureHash" .= maybe (digest $ LBS.toStrict $ encode value) id captureHash]
         kind | sending = "outgoing"
              | any ((/=Nothing) . depositOrder) deposits = "incoming"
              | not (null deposits) = "unmatched_incoming"

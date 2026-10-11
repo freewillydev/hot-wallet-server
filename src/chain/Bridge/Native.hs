@@ -3,7 +3,7 @@ module Bridge.Native
   ( NativeSettings(..), validateNativeSettings, nativeCall, nativeIdentity, nativeIdentityWith
   , verifyNativeBoundaryWith, validateNativeRecipientWith, nativeWalletInfoWith, nativeWalletKeysWith, nativeWalletReadyWith
   , NativeRecovery(..), evalNativeRecoveryWith
-  , ownerAddressWith, recoverNativeAddressWith, nativeHistory, withNativeHistory, nativeAmount, nativeNumber, signetChallenge ) where
+  , ownerAddressWith, recoverNativeAddressWith, nativeHistory, withNativeHistory, readNativeTransaction, nativeAmount, nativeNumber, signetChallenge ) where
 
 import qualified Bridge.AdminKey as Private
 import qualified Bridge.NativeBackup as BackupTransfer
@@ -82,6 +82,11 @@ withNativeHistory c cursor depth consume = do
   require (depth>0 && T.length cursor==64 && T.all (`elem` ("0123456789abcdef"::String)) cursor) "invalid_native_scan_policy"
   (url,auth)<-nativeConnection c True
   History.readHistory url auth cursor depth consume
+readNativeTransaction :: NativeSettings -> Text -> IO Value
+readNativeTransaction c tx = do
+  require (T.length tx==64 && T.all (`elem` ("0123456789abcdef"::String)) tx) "invalid_native_transaction_id"
+  (url,auth)<-nativeConnection c True
+  History.readTransaction url auth tx
 nativeIdentity :: Manager -> NativeSettings -> IO Value
 nativeIdentity manager c = nativeIdentityWith (nativeCall manager c) c
 nativeIdentityWith :: (Bool -> Text -> [Value] -> IO Value) -> NativeSettings -> IO Value

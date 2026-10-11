@@ -771,7 +771,7 @@ instance WorkerOperations (WorkerCommand 'Critical result) where
             result<-tryBridge $ do
               _<-N.nativeIdentity rpc native
               (binding,evidence)<-evalRead reader (ReadNativeSourceInspection $ W.depositId source)
-              inspectNativeSource (N.nativeCall rpc native) native (defaultNativeDepth settings) (H.fingerprint config) source binding evidence
+              inspectNativeSource (N.nativeCall rpc native) (N.readNativeTransaction native) native (defaultNativeDepth settings) (H.fingerprint config) source binding evidence
             let unavailable code=W.SourceUnavailable $ object ["reason" .= code]
                 checked=either (\(BridgeError code)->unavailable code) id result
             recorded<-tryBridge (evalWrite writer $ RecordSourceCheck source checked)
@@ -1090,7 +1090,7 @@ proveMissing :: CriticalEnvironment -> W.Deposit -> IO Value
 proveMissing (CriticalEnvironment rpc settings config _ _ reader _) source = do
   _<-N.nativeIdentity rpc native
   (binding,evidence)<-evalRead reader (ReadNativeSourceInspection $ W.depositId source)
-  result<-inspectNativeSource (N.nativeCall rpc native) native (defaultNativeDepth settings) (H.fingerprint config) source binding evidence
+  result<-inspectNativeSource (N.nativeCall rpc native) (N.readNativeTransaction native) native (defaultNativeDepth settings) (H.fingerprint config) source binding evidence
   case result of W.SourceMissing proof->pure proof; _->reject "source_loss_not_proven"
  where
   native=nativeSettings settings
@@ -1109,7 +1109,7 @@ refreshSource environment@(CriticalEnvironment rpc settings config _ _ reader wr
         Native->N.nativeIdentity rpc native >> pure ()
         Wrapped->S.solanaIdentity rpc solana >> pure ()
         Sol->reject "unsupported_source_asset"
-      observed<-verifyPaymentSource (N.nativeCall rpc native) (S.solanaCall rpc solana)
+      observed<-verifyPaymentSource (N.nativeCall rpc native) (N.readNativeTransaction native) (S.solanaCall rpc solana)
         (fmap (\url->RPC.rpc rpc url Nothing) $ S.solanaVerifierRpc solana) (N.profile native) config binding
       evalWrite writer (RefreshPaymentSource saved observed)
     evalRead reader (CheckPaymentSource identifier)
