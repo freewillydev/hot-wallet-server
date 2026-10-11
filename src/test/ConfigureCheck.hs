@@ -250,6 +250,7 @@ importContract parent executable key=do
   (second,reout,reerr)<-invoke conf output
   after<-mapM B.readFile privateFiles
   config<-Bootstrap.setupConfig output
+  require (units (C.maxWithdrawal config)==1000000000000) "owner_withdrawal_cap_not_10000_ecx"
   let recipients=C.OwnerFeeRecipients (T.pack xpub) "5oNDL3swdJJF1g9DzJiZ4ynHXgszjAEpUkxVYejchzrY"
   require (C.ownerFeeRecipients config==Just recipients
     && (eitherDecodeStrict' (L.toStrict $ encode config) :: Either String C.Config)==Right config) "owner_policy_not_retained"

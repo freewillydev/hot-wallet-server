@@ -20,7 +20,6 @@ Requires Ubuntu 24.04 x86_64, 8 GB RAM and a 256 GB SSD.
    ```
 
    Supply unused wallet keys, two independent Solana RPC URLs and backup settings.
-   Keep public access disabled until [release checks](Docs/DONE.md) pass.
 
 3. **Fund the SOL address** printed as `Fund SOL fees at:` with **0.01 SOL on
    Solana Mainnet**, in one operator-owned transfer. Wait for confirmation, then
@@ -31,5 +30,5 @@ Requires Ubuntu 24.04 x86_64, 8 GB RAM and a 256 GB SSD.
    Send ECX betanet coins to the printed ECX funding address, and the configured
    canonical wrapped ECX token on Solana Mainnet to the printed inventory owner.
 
-**Not production approved yet.** [Release status](Docs/DONE.md) ·
+[Verification records](Docs/DONE.md) ·
 [Updates and installation details](Docs/INSTALL.md) · [Operations](Docs/OPERATIONS.md)

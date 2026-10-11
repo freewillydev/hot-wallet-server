@@ -8,6 +8,19 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Implemented and checked
 
+- User requested removing README production warnings and approved 10,000 ECX
+  automatic payout cap. README now links verification records without approval
+  claims. Configure template owner-withdrawal cap becomes 1,000,000,000,000 base
+  units; record configuration no longer conflates cap with batch thresholds.
+  This limits manual/automatic owner fee withdrawals, NOT customer swaps.
+  Customer swaps already use real chains and reserve-based admission. No live
+  configuration, verification gates, public ingress or deployment changed.
+  Separate static review PASS. Focused configure test PASS, direct executable
+  session23423 exit0; log /tmp/hot-wallet-10000-cap-direct-test.log. Cabal built
+  and passed the suite but exited1 writing final log to the full external cache
+  drive. Direct test used the same built server/test executable and exited0.
+  No compiler/test processes remain from this task.
+
 - Current end-to-end installer: isolated Ubuntu host `i-07c78660b1a5734b9`,
   source commit `de00bffa2d780c57ebd00bf52e302baab4f27930`.
   Native/browser builds, reviewed restic, both Mainnet history checks and a new
