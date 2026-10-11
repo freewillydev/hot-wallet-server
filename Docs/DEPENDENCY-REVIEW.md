@@ -1,5 +1,42 @@
 # Dependency review status
 
+## Standalone server refresh — 2026-10-10
+
+Reviewed source baseline: `790f0400840518a2449615e45f696aaaf5eb78ba`.
+Unpublished payout changes are excluded from this result. A fresh cargo-audit
+0.22.2 scan of `build/solana-helper/Cargo.lock` checked 148 dependencies against
+RustSec commit `7eebec69c352c7191b1f13eb95dd510eeca5d1de` (1,296 advisories).
+It reports zero matched vulnerability advisories and retains the unmaintained
+bincode 1.3.3 warning. This is a lockfile scan, not application security approval.
+The report and source hashes are recorded in `.audit/layout.tsv`.
+
+The current helper exposes **two**, not six, production FFI entry points:
+`ecx_solana_prepare_v1` and `ecx_associated_prepare_v1`. Both use `prepare_ffi`,
+which bounds configuration/request/output buffers to 4,096/8,192/8,192 bytes
+before JSON decoding. Production bincode calls serialize constructed messages
+and transactions; all direct deserialization calls in this source are inside
+test modules. This does not establish transitive reachability or remove bincode's
+maintenance risk. The older token/pool review below is historical.
+
+The primary advisory pages were rechecked on 2026-10-10: the linked bincode,
+Cabal and base advisories below still list no applicable fixed version. The
+native freeze uses Cabal 3.16.0.0 and base 4.22.0.0; the browser freeze uses
+base 4.21.0.0. The record installer now builds a separate commit-specific tree as
+an unprivileged account; its saved configuration copy is root-private. This
+limits the Cabal deletion issue's scope; it does not patch Cabal or make the
+build account/toolchain untrusted. The new `InstallConfig` record contains
+strings, optional strings and integral fields, with an 8,192-byte input bound;
+it adds no floating-point `Read` field. The broader `readFloat` reachability
+finding remains open.
+
+Codex Security was confirmed available but **not installed** in this session.
+Installation was requested through the app; no scan was started or claimed.
+The upstream scan receipts do not cover this standalone server. A current
+whole-application review, including the eventual payout fix and installation
+artifact, remains a release gate.
+
+## Earlier dependency evidence
+
 The capability integration uses `operation-capabilities-0.1.1.0` from
 [freewillydev/operation-capabilities](https://github.com/freewillydev/operation-capabilities)
 at immutable commit `d10f6168cddcb01e89517546dd5c4b8749829c3e`. Its library depends

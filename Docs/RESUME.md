@@ -203,3 +203,11 @@ Next installer work: validate original configuration permissions before copying,
 then complete whole-host unattended install/repeat/reboot acceptance. Source-stage
 checks do not certify the toolchain bootstrap, service provisioning or production.
 Payout-policy choice remains pending and failed payout work remains unpublished.
+
+Security setup: Codex Security was confirmed available/not installed and its app
+installation was requested. No current standalone scan is running; prior upstream
+receipts are not acceptance. Fresh cargo-audit found zero matched vulnerabilities
+among148 dependencies, retaining bincode maintenance warning; details/hashes in
+DEPENDENCY-REVIEW.md and .audit/layout.tsv. Await plugin installation confirmation,
+then run whole-source review on the actual candidate including any completed
+payout changes. Keep Cabal/base reachability findings and production gate open.

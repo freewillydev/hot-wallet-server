@@ -206,3 +206,15 @@ remain stopped. No live deployment or custody changed.
 
 Fresh separate single_schema_callgraph review: **PASS** for the exact installer
 hash, test harness and final execution log above; broader gates remain open.
+
+## Standalone dependency refresh (2026-10-10)
+
+Fresh cargo-audit checks 148 dependencies against 1,296 RustSec advisories: no
+matched vulnerability advisories, unmaintained bincode still flagged. Current FFI
+and record-config boundaries are described in DEPENDENCY-REVIEW.md. This does not
+waive bincode, Cabal or base findings, certify transitive reachability, or close
+the independent security gate. Codex Security is available but not installed;
+installation has been requested through the app and no new scan was run.
+
+Fresh separate single_schema_callgraph review PASS for the refreshed report,
+source boundaries, frozen versions and advisory status; security gate remains open.
