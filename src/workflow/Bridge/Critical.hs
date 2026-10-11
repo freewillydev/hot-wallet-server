@@ -765,19 +765,27 @@ instance WorkerOperations (WorkerCommand 'Critical result) where
     mapM_ (either throwIO pure) outcomes
   recoverNativeSources _ = workerEffect True $ \(CriticalEnvironment rpc settings config _ _ reader writer) -> do
     let native=nativeSettings settings
-    sources<-evalRead reader NativeSourceCandidates
-    outcomes<-forM sources $ \source->tryBridge $ do
-      result<-tryBridge $ do
-        _<-N.nativeIdentity rpc native
-        (binding,evidence)<-evalRead reader (ReadNativeSourceInspection $ W.depositId source)
-        inspectNativeSource (N.nativeCall rpc native) native (defaultNativeDepth settings) (H.fingerprint config) source binding evidence
-      let unavailable code=W.SourceUnavailable $ object ["reason" .= code]
-          checked=either (\(BridgeError code)->unavailable code) id result
-      recorded<-tryBridge (evalWrite writer $ RecordSourceCheck source checked)
-      case recorded of
-        Right ()->pure ()
-        Left (BridgeError code)->evalWrite writer (RecordSourceCheck source $ unavailable code)
-    mapM_ (either throwIO pure) outcomes
+    let recover after failure=do
+          sources<-evalRead reader (NativeSourcePage after)
+          outcomes<-forM sources $ \source->tryBridge $ do
+            result<-tryBridge $ do
+              _<-N.nativeIdentity rpc native
+              (binding,evidence)<-evalRead reader (ReadNativeSourceInspection $ W.depositId source)
+              inspectNativeSource (N.nativeCall rpc native) native (defaultNativeDepth settings) (H.fingerprint config) source binding evidence
+            let unavailable code=W.SourceUnavailable $ object ["reason" .= code]
+                checked=either (\(BridgeError code)->unavailable code) id result
+            recorded<-tryBridge (evalWrite writer $ RecordSourceCheck source checked)
+            case recorded of
+              Right ()->pure ()
+              Left (BridgeError code)->evalWrite writer (RecordSourceCheck source $ unavailable code)
+          let failed=case failure of
+                Just err->Just err
+                Nothing->case [err | Left err<-outcomes] of err:_->Just err; []->Nothing
+          -- Do not retain a lazy chain of successful pages until sweep EOF.
+          failed `seq` case reverse sources of
+            []->maybe (pure ()) throwIO failed
+            source:_->recover (Just $ W.depositId source) failed
+    recover Nothing Nothing
   recoverNativeLocks _ = workerEffect True $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) -> guarded environment $ do
     let native=nativeSettings settings
     _<-N.nativeIdentity rpc native

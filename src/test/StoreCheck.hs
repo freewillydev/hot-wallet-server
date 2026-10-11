@@ -1546,7 +1546,7 @@ ledgerMain = do
         before<-evalRead reader ReadBalances
         initial<-evalRead reader ReadState
         record (W.SourcePending proof)
-        candidates<-evalRead reader NativeSourceCandidates
+        candidates<-evalRead reader (NativeSourcePage Nothing)
         check (did `elem` map W.depositId candidates)
         (_,evidence)<-evalRead reader (ReadNativeSourceInspection did)
         check (fst evidence==hash)
@@ -1643,7 +1643,28 @@ ledgerMain = do
             commit b=evalWrite writer (CommitScan b)
         previous<-evalRead reader (ReadCheckpoint "Native")
         before<-evalRead reader ReadBalances
-        commit (batch previous "scan-1" (receipt:unrelated:siblings) [event])
+        let page b=evalWrite writer (CommitNativePage b)
+            firstPage=batch previous "scan-1" (receipt:unrelated:siblings) [event]
+        page firstPage
+        partial<-evalRead reader ReadBalances
+        evalRead reader (ReadCheckpoint "Native") >>= check . (==previous)
+        (_,partialFailure,_)<-fixture fixtures (ReadScanHealth "Native")
+        check (partialFailure==Just "native_history_catching_up")
+        evalRead reader ReadState >>= check . not . ledgerPaused
+        expectStore "scanners_not_fresh" (evalRead reader $ CheckIntake 100)
+        -- An interrupted capture can replay its durable page from the old cursor.
+        page firstPage
+        evalRead reader ReadBalances >>= check . (==partial)
+        expectStore "stale_scan_cursor" $ page firstPage {W.scanPrevious=Just "not-the-cursor"}
+        expectStore "scan_origin_mismatch" $ page firstPage {W.scanOrigin="different-origin"}
+        expectStore "invalid_native_scan_page" $ page firstPage {W.scanChain="Solana"}
+        expectStore "invalid_observation_kind" $ page firstPage
+          {W.scanDeposits=[receipt {W.depositId="native:partial-rollback:0"}],W.scanEvents=[event {W.chainEventKind="invalid"}]}
+        expectStore "source_deposit_missing" (evalRead reader $ ReadSource "native:partial-rollback:0")
+        evalRead reader (ReadCheckpoint "Native") >>= check . (==previous)
+        commit (batch previous "scan-1" [] [])
+        evalRead reader ReadState >>= check . not . ledgerPaused
+        fixture fixtures (ReadScanHealth "Native") >>= check . (==(Just 100,Nothing,100))
         observed<-evalRead reader ReadBalances
         check (M.findWithDefault 0 (Native,Principal) observed==M.findWithDefault 0 (Native,Principal) before+10)
         commit (batch (Just "scan-1") "scan-1" [receipt {W.depositSeenAt=999}] [event])
@@ -1790,6 +1811,36 @@ ledgerMain = do
                 check (problem==Just "unsafe_read_database_role")
       customerProjectionContract fixtures reader
       archiveContract settings fixtures reader
+      withWriter settings (store policy limits) (const $ pure ()) $ \writer->do
+        -- A still-pending first page must not starve later recovery sources.
+        previous<-evalRead reader (ReadCheckpoint "Native")
+        let tx=T.replicate 64 "d"
+            receipt=W.Deposit "" Nothing Native (money 10) "block-page" 0 False 100
+            batch deposits=W.ScanBatch "Native" "scan-origin" previous (maybe "scan-origin" id previous) 100 deposits []
+            page deposits=evalWrite writer (CommitNativePage $ batch deposits)
+            pendingSources=[receipt {W.depositId="native:"<>T.replicate 64 "d"<>":"<>T.pack(show n),
+              W.depositOrder=Nothing,W.depositEligible=False,W.depositConfirmations=0} | n<-[1..1101::Int]]
+            writePages rows=mapM_ page [take 600 rows,drop 600 rows]
+            collectSources after=do
+              rows<-evalRead reader (NativeSourcePage after)
+              check (length rows<=128 && all (\d->maybe True (<W.depositId d) after) rows)
+              case reverse rows of
+                []->pure []
+                lastRow:_->(map W.depositId rows<>) <$> collectSources (Just $ W.depositId lastRow)
+        writePages pendingSources
+        pendingSourcesSeen<-collectSources Nothing
+        check (all ((`elem` pendingSourcesSeen).W.depositId) pendingSources)
+        -- Eligibility changes remove examined rows without skipping the next key.
+        let restoreSources after=do
+              rows<-evalRead reader (NativeSourcePage after)
+              page [d {W.depositEligible=True,W.depositConfirmations=2} | d<-rows,("native:"<>tx<>":") `T.isPrefixOf` W.depositId d]
+              case reverse rows of
+                []->pure ()
+                lastRow:_->restoreSources (Just $ W.depositId lastRow)
+        restoreSources Nothing
+        remaining<-collectSources Nothing
+        check (all ((`notElem` remaining).W.depositId) pendingSources)
+        evalWrite writer (CommitScan $ batch [])
       beforeLarge<-evalRead reader ReadBalances
       fixture fixtures LargeBalances
       huge <- evalRead reader ReadBalances

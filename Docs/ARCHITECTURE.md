@@ -389,6 +389,20 @@ provider disagreement and preparation failure against PostgreSQL.
 Recovering native receipts are reread beyond the incremental
 cursor so their deposit state and matching evidence are committed together.
 
+Native history uses a fully validated temporary RPC capture, replayed one entry at
+a time. Each `CommitNativePage` atomically saves classified receipts/evidence and
+unhealthy scan status while retaining the original checkpoint. This status blocks
+readiness without changing the operator's pause state; genuine scanner failures
+and chain reviews still pause. Only after replay and the complete recovery-source
+sweep does an empty `CommitScan` advance coverage, using the original scan-start
+time. Restart recaptures from the unchanged real checkpoint and replays durable
+pages idempotently. No offset into a new RPC response is treated as coverage.
+Recovery candidates use immutable deposit-ID keyset pages of 128 rows, advancing
+past examined sources even when they remain pending. Only adjacent duplicate
+transaction IDs are coalesced; nonadjacent duplicates are reread and committed
+idempotently. Individual transaction/evidence limits and long-scan freshness remain
+separate availability limitations under review.
+
 Paused recovery can record observed effects and recover owned input locks, but
 cannot prepare/broadcast new payments. Foreign locks stay untouched. Cancellation
 journals exact cleanup, excludes recorded signatures and retains liabilities;

@@ -7,7 +7,7 @@ import qualified Bridge.SolanaHelper as H
 import Bridge.Error
 import Bridge.RPC (fieldValue)
 import Bridge.Native (NativeSettings(..),signetChallenge)
-import Bridge.NativeObservation (scanNativeWith)
+import qualified Bridge.NativeObservation as NativeObservation
 import Bridge.Solana (SignatureInfo(..),collectSignatures,tokenProgram)
 import qualified Bridge.Solana as S
 import Bridge.SolanaObservation (scanSolanaWith,scanSolanaOperatingWith)
@@ -20,11 +20,30 @@ import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import Data.Int (Int64)
 import Data.IORef
-import Data.List (elemIndex)
+import Data.List (elemIndex,nub,sortOn)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Paths_ecx_bridge (getDataFileName)
 import Test.QuickCheck
+
+-- Fixtures collect emitted pages only to assert their contents; production does not.
+collectNative :: (Bool -> Text -> [Value] -> IO Value) -> NativeSettings
+  -> Int -> Int -> Maybe Text -> Int64 -> [W.Deposit]
+  -> (Text -> IO (Maybe (Text,W.OrderRequest,W.PolicySnapshot))) -> IO W.ScanBatch
+collectNative call settings defaultDepth depth previous now sources binding = do
+  pages<-newIORef []
+  let history cursor confirmations emit=do
+        result<-call True "listsinceblock" [toJSON cursor,toJSON confirmations,Bool False,Bool True]
+        next<-fieldValue "lastblock" result
+        current<-fieldValue "transactions" result
+        removed<-fieldValue "removed" result
+        mapM_ (emit next) (removed<>current::[Value])
+        pure next
+      recovery after=pure $ take 128 $ filter (\d->maybe True (<W.depositId d) after) $ sortOn W.depositId $ nub sources
+  final<-NativeObservation.scanNativeWith call history settings defaultDepth depth previous now recovery binding
+    (\page->modifyIORef' pages (page:))
+  emitted<-reverse <$> readIORef pages
+  pure final {W.scanDeposits=concatMap W.scanDeposits emitted,W.scanEvents=concatMap W.scanEvents emitted}
 
 checks :: IO [Result]
 checks=do
@@ -251,7 +270,7 @@ nativeChecks=do
         ("gettransaction",[String key,Bool False,Bool True]) | key==tx->pure transaction
         ("getaddressinfo",[String a]) | a==address->pure $ object ["ismine" .= True,"scriptPubKey" .= scriptHex]
         _->fail ("unexpected native observation RPC "<>T.unpack method)
-      scan change previous lookupOrder=scanNativeWith (\_ method params->change method <$> response method params)
+      scan change previous lookupOrder=collectNative (\_ method params->change method <$> response method params)
         settings 1 3 previous 200 [] lookupOrder
   let deposit=W.Deposit ("native:"<>tx<>":1") (Just "order") Native (amt 100000) tip 3 True 200
       recheck change=verifyPaymentSource (\_ method params->change method <$> response method params)
@@ -304,7 +323,7 @@ nativeChecks=do
         pure (unchanged==deposit && not(W.depositEligible shallow) && W.depositAnchor shallow=="unconfirmed" && unowned && forked)
     , check "native observer rereads re-added transactions once and binds saved depth" $ once $ ioProperty $ do
         calls<-newIORef []
-        batch<-scanNativeWith (\_ method params->modifyIORef' calls (<>[method]) >> response method params) settings 1 3 Nothing 200 [] binding
+        batch<-collectNative (\_ method params->modifyIORef' calls (<>[method]) >> response method params) settings 1 3 Nothing 200 [] binding
         seen<-readIORef calls
         pure (W.scanPrevious batch==Nothing && W.scanNext batch==tip && length(filter (=="gettransaction") seen)==1 &&
           W.scanDeposits batch==[W.Deposit ("native:"<>tx<>":1") (Just "order") Native (amt 100000) tip 3 True 200] &&
@@ -322,7 +341,7 @@ nativeChecks=do
                     ,"removed" .= [object ["txid" .= tx] | overlap]]
                   "gettransaction"->modifyIORef' reads (+1) >> pure current
                   _->response method params
-            batch<-scanNativeWith call settings 1 3 (Just tip) 200 (replicate copies stale) binding
+            batch<-collectNative call settings 1 3 (Just tip) 200 (replicate copies stale) binding
             count<-readIORef reads
             case (W.scanDeposits batch,W.scanEvents batch) of
               ([source],[event])->do
@@ -333,26 +352,41 @@ nativeChecks=do
                   && case recovered of W.SourceRestored _->True; _->False)
               _->pure False) [False,True]
           pure (and outcomes)
-    , check "native recovery refuses invalid receipts and bounded history overflow before transaction reads" $ once $ ioProperty $ do
+    , check "native scan completes more than 1000 transactions and recovery sources" $ once $ ioProperty $ do
         reads<-newIORef (0::Int)
-        let call _ method params=do
-              modifyIORef' reads (+1)
-              response method params
-            recover sources=scanNativeWith call settings 1 3 (Just origin) 200 sources binding
-        oversized<-rejects "native_history_batch_too_large" (recover $ replicate 1001 deposit)
-        malformed<-mapM (\source->rejects "invalid_native_deposit_id" (recover [source]))
-          [deposit {W.depositAsset=Wrapped},deposit {W.depositId="native:"<>tx<>":-1"}
-          ,deposit {W.depositId="native:invalid:1"}]
-        callsBeforeHistory<-readIORef reads
-        let many=[T.justifyRight 64 '0' (T.pack $ show n) | n<-[1..1000::Int]]
-            combined _ method params=case method of
-              "listsinceblock"->pure $ object ["lastblock" .= tip,"transactions" .= map (\key->object ["txid" .= key]) many
+        let many=[T.justifyRight 64 '0' (T.pack $ show n) | n<-[1..1101::Int]]
+            call _ method params=case (method,params) of
+              ("listsinceblock",_)->pure $ object ["lastblock" .= tip,"transactions" .= map (\key->object ["txid" .= key]) many
                 ,"removed" .= ([]::[Value])]
-              "gettransaction"->fail "oversized native history reached transaction RPC"
+              ("gettransaction",[String key,_,_])->do
+                modifyIORef' reads (+1)
+                pure $ replace ["txid"] (String key) $ replace ["decoded","txid"] (String key) transaction
               _->response method params
-        combinedOverflow<-rejects "native_history_batch_too_large" $
-          scanNativeWith combined settings 1 3 (Just origin) 200 [deposit {W.depositId="native:"<>tip<>":1"}] binding
-        pure (oversized && and malformed && callsBeforeHistory==0 && combinedOverflow)
+            recover key=deposit {W.depositId="native:"<>key<>":1",W.depositEligible=False}
+        history<-collectNative call settings 1 3 (Just origin) 200 [] binding
+        let recoveryCall wallet method params=if method=="listsinceblock"
+              then pure $ object ["lastblock" .= tip,"transactions" .= ([]::[Value]),"removed" .= ([]::[Value])]
+              else call wallet method params
+        recovery<-collectNative recoveryCall settings 1 3 (Just origin) 200 (map recover many) binding
+        malformed<-mapM (\source->rejects "invalid_native_deposit_id" $
+          collectNative recoveryCall settings 1 3 (Just origin) 200 [source] binding)
+          [deposit {W.depositAsset=Wrapped},deposit {W.depositId="native:"<>tx<>":-1"},deposit {W.depositId="native:invalid:1"}]
+        count<-readIORef reads
+        pure (all ((==many).map W.chainEventId.W.scanEvents) [history,recovery]
+          && all ((==tip).W.scanNext) [history,recovery] && count==2202 && and malformed)
+    , check "native scan failure preserves emitted pages without returning completion" $ once $ ioProperty $ do
+        emitted<-newIORef []
+        let call _ method params=response method params
+            history _ _ emit=do
+              emit tip (object ["txid" .= tx])
+              emit tip (object ["txid" .= ("invalid"::Text)])
+              pure tip
+        refused<-rejects "invalid_native_transaction_id" $
+          NativeObservation.scanNativeWith call history settings 1 3 (Just origin) 200
+            (const $ pure []) binding (\page->modifyIORef' emitted (page:))
+        pages<-readIORef emitted
+        pure (refused && length pages==1 && all ((==Just origin).W.scanPrevious) pages
+          && concatMap W.scanDeposits pages==[deposit])
     , check "native eligibility honors saved depth and negative confirmations retain receipt" $ once $ ioProperty $ do
         let changed n method=if method=="gettransaction" then replace ["confirmations"] (Number n) else id
         shallow<-scan (changed 2) (Just origin) binding

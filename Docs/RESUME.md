@@ -1222,3 +1222,38 @@ Remaining: observer capture/page commits, large individual transactions and
 receipt evidence, source recovery paging, full live-chain/security acceptance.
 Disk capacity and per-entry size still bound feasible captures; this is not an
 arbitrary-history liveness guarantee. Public access remains off.
+
+### Native observer pages and recovery enumeration (2026-10-11)
+
+Observer now consumes the validated Native history capture incrementally. The
+closed CommitNativePage saves receipts/evidence and unhealthy scan status in one
+transaction, without advancing coverage or changing the operator pause state.
+Only complete history replay plus the recovery-source sweep returns the empty
+final CommitScan. Original scan time, cursor/origin checks, review pauses and
+idempotent financial postings remain. Both observer and source recovery enumerate
+128-row deposit-ID keyset pages rather than failing above 1,000 candidates.
+
+Fresh native_pages_patch_review returned FAIL on a lazy recovery-error accumulator
+which retained prior successful pages. Parent confirmed and forced it before
+recursion. The focused GHC -O1 reproducer grew from 5,255,672 to 41,305,528 bytes
+maximum residency for the old 2,000/16,000-page loops; the corrected loop stayed at
+44,328 bytes, with identical first-error and complete-traversal results. This is
+an accumulator reproduction, not a whole-worker memory benchmark. No second
+independent PASS is claimed.
+
+Final Cabal bridge-test and full default PostgreSQL contract PASS after that fix
+(session32410 exit0). Coverage includes 1,101 transactions/recovery sources,
+partial-page replay/rollback, stale cursor/origin rejection, unhealthy readiness,
+unchanged normal pause state, and pending/removing candidates across keyset pages.
+The initial bulk fixture crowded the separate bounded treasury listing; it was
+moved after that contract without weakening either assertion. Retained final
+evidence: Codex Security artifacts/native-pages-reviewed-suite.log,
+native-pages-reviewed-pg.log and native-pages-heap-*.log. Net +26 production lines
+across four existing modules, +85 test lines across two existing files; no new
+module, dependency, schema, configuration or signer route.
+
+Next: large individual gettransaction responses/output lists and receipt evidence
+still have independent caps. Complete their bounded representation and verify
+treasury/source/custody consumers before closing native-history-nonprogress.
+Long-scan freshness, actual node conflict acceptance and the remaining release
+gates are still open. No funds or deployment were changed; public access stays off.

@@ -6,10 +6,11 @@ import Bridge.Native
 import Bridge.RPC
 import Bridge.Error
 import Bridge.Identity (digest)
-import Control.Monad (forM,when)
+import Control.Monad (forM,forM_,when)
 import Data.Aeson
 import qualified Data.ByteString.Lazy as LBS
 import Data.Int (Int64)
+import Data.IORef
 import Data.List (nub)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -21,19 +22,16 @@ optionalField key = parseValue (withObject "RPC object" (.:? key))
 isHash :: Text -> Bool
 isHash value = T.length value==64 && T.all (`elem` ("0123456789abcdef"::String)) value
 
--- Recovering receipts are reread even outside the incremental history window.
--- Only CommitScan persists their fresh receipts and matching evidence together.
-scanNativeWith :: (Bool -> Text -> [Value] -> IO Value) -> NativeSettings
-  -> Int -> Int -> Maybe Text -> Int64 -> [Deposit]
-  -> (Text -> IO (Maybe (Text,OrderRequest,PolicySnapshot))) -> IO ScanBatch
-scanNativeWith call c defaultDepth depth previous now recovering lookupInstruction = do
+-- Complete capture is validated before any callback. Pages keep the original
+-- checkpoint; only the returned empty completion batch may advance coverage.
+scanNativeWith :: (Bool -> Text -> [Value] -> IO Value)
+  -> (Text -> Int -> (Text -> Value -> IO ()) -> IO Text) -> NativeSettings
+  -> Int -> Int -> Maybe Text -> Int64 -> (Maybe Text -> IO [Deposit])
+  -> (Text -> IO (Maybe (Text,OrderRequest,PolicySnapshot)))
+  -> (ScanBatch -> IO ()) -> IO ScanBatch
+scanNativeWith call history c defaultDepth depth previous now recoveryPage lookupInstruction emit = do
   require (defaultDepth>=1 && depth>=defaultDepth && now>=0) "invalid_native_scan_policy"
   require (maybe True isHash previous) "invalid_native_scan_cursor"
-  require (length recovering<=1000) "native_history_batch_too_large"
-  recoveryIds<-forM recovering $ \source->case T.splitOn ":" (depositId source) of
-    ["native",tx,n] | depositAsset source==Native,isHash tx,
-      Just index<-(readMaybe (T.unpack n)::Maybe Int),index>=0->pure tx
-    _->reject "invalid_native_deposit_id"
   info <- nativeIdentityWith call c
   wallet <- nativeWalletInfoWith call c
   tip <- fieldValue "blocks" info :: IO Int64
@@ -47,21 +45,33 @@ scanNativeWith call c defaultDepth depth previous now recovering lookupInstructi
     header <- call False "getblockheader" [toJSON (nativeCheckpointHash c)]
     checkpointTime <- fieldValue "time" header :: IO Int64
     require (born>=checkpointTime) "native_wallet_predates_scan_origin"
-  history <- call True "listsinceblock" [toJSON $ maybe (nativeCheckpointHash c) id previous,toJSON depth,Bool False,Bool True]
-  current <- fieldValue "transactions" history :: IO [Value]
-  removed <- fieldValue "removed" history :: IO [Value]
-  next <- fieldValue "lastblock" history
-  require (isHash next && length current+length removed<=1000) "native_history_batch_too_large"
-  historyIds <- mapM (fieldValue "txid") (removed<>current)
-  let txids=nub (historyIds<>recoveryIds)
-  require (length txids<=1000) "native_history_batch_too_large"
-  require (all isHash txids) "invalid_native_transaction_id"
-  -- gettransaction supplies current canonical status, including transactions
-  -- that appear in both lists after being re-added on the active branch.
-  observations <- mapM readTransaction txids
-  let deposits=concatMap fst observations
-      events=concatMap snd observations
-  pure (ScanBatch "Native" (nativeCheckpointHash c) previous next now deposits events)
+  lastTransaction<-newIORef Nothing
+  let batch next deposits events=ScanBatch "Native" (nativeCheckpointHash c) previous next now deposits events
+      observe next tx=do
+        require (isHash tx) "invalid_native_transaction_id"
+        lastSeen<-readIORef lastTransaction
+        when (lastSeen/=Just tx) $ do
+          (deposits,events)<-readTransaction tx
+          emit (batch next deposits events)
+          writeIORef lastTransaction (Just tx)
+      recover next after=do
+        sources<-recoveryPage after
+        forM_ sources $ \source->case T.splitOn ":" (depositId source) of
+          ["native",tx,n] | depositAsset source==Native,isHash tx,
+            Just index<-(readMaybe (T.unpack n)::Maybe Int),index>=0->observe next tx
+          _->reject "invalid_native_deposit_id"
+        case reverse sources of
+          []->pure ()
+          source:_->do
+            let key=depositId source
+            require (maybe True (<key) after) "invalid_native_recovery_cursor"
+            recover next (Just key)
+  next<-history (maybe (nativeCheckpointHash c) id previous) depth $ \anchor entry->do
+    require (isHash anchor) "invalid_native_scan_cursor"
+    fieldValue "txid" entry >>= observe anchor
+  require (isHash next) "invalid_native_scan_cursor"
+  recover next Nothing
+  pure (batch next [] [])
  where
   readTransaction txid = do
     value <- call True "gettransaction" [toJSON txid,Bool False,Bool True]

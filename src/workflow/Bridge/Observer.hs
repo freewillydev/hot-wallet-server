@@ -28,9 +28,9 @@ observeOnce manager settings reader writer = do
       nativeScan = do
         previous<-evalRead reader (ReadCheckpoint "Native")
         depth<-evalRead reader (MaximumNativeDepth $ defaultNativeDepth settings)
-        recovering<-evalRead reader NativeSourceCandidates
         now<-epoch
-        scanNativeWith (nativeCall manager native) native (defaultNativeDepth settings) depth previous now recovering lookupInstruction
+        scanNativeWith (nativeCall manager native) (withNativeHistory native) native (defaultNativeDepth settings) depth previous now
+          (evalRead reader . NativeSourcePage) lookupInstruction (evalWrite writer . CommitNativePage)
       commit chain result=do
         saved<-try ((either (\(BridgeError code)->reject code) (evalWrite writer . CommitScan) result)
           `catch` (\(_::IOException)->reject "observer_io_unavailable"))

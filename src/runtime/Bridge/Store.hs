@@ -179,7 +179,7 @@ data StoreRead a where
   ReadNativeFamily :: Text -> StoreRead [(RecordedAttempt,N.NativeSigned)]
   ReadReplacementDecision :: Text -> Amount -> Text -> StoreRead (Maybe (Int64,Bool))
   ReadLossCover :: Text -> Int64 -> StoreRead (Maybe (Amount,Amount,Text))
-  NativeSourceCandidates :: StoreRead [W.Deposit]
+  NativeSourcePage :: Maybe Text -> StoreRead [W.Deposit]
   ReadNativeSourceInspection :: Text -> StoreRead (Maybe (Text,W.PolicySnapshot),(Text,Value))
   ReadCoveredApproval :: Text -> Int64 -> StoreRead (Maybe Text)
   CheckCoveredSource :: Text -> Int64 -> StoreRead ()
@@ -263,6 +263,7 @@ data StoreWrite a where
   AdmitPayoutRounds :: Int64 -> StoreWrite ()
   SaveDraft :: Text -> Int -> Text -> StoreWrite ()
   CommitScan :: W.ScanBatch -> StoreWrite ()
+  CommitNativePage :: W.ScanBatch -> StoreWrite ()
   RecordHistoryProgress :: Text -> Maybe Solana.HistoryProgress -> Solana.HistoryProgress -> StoreWrite ()
   CommitHistoryScan :: Maybe Solana.HistoryProgress -> W.ScanBatch -> Bool -> StoreWrite ()
   ScanFailed :: Text -> Int64 -> Text -> StoreWrite ()
@@ -399,7 +400,7 @@ evalRead (Reader settings identity remote) operation = bracket connect PG.close 
         pure $ W.ServiceStatus (S.paused row/=0) (S.pauseReason row) (S.criticalSequence row) (S.backupSequence row)
           [W.ScannerStatus chain success failure checked | (chain,success,failure,checked)<-health]
       ReadLossCover key recovery -> lossCover c key recovery
-      NativeSourceCandidates -> nativeSourceCandidates c
+      NativeSourcePage after -> nativeSourcePage c after
       ReadNativeSourceInspection key -> nativeSourceInspection c key
       ReadSourceApproval key restoration -> sourceApproval c False key restoration
       ReadCoveredApproval key recovery -> sourceApproval c True key recovery
@@ -500,6 +501,9 @@ evalWrite writer@(Writer _ config _) operation = transaction writer $ \c ->
   AdmitPayoutRounds now -> admitPayoutRounds c config now
   SaveDraft identifier generation draft -> saveDraft c (deploymentFingerprint $ paymentPolicy policy) identifier generation draft
   CommitScan batch -> commitScan c batch
+  CommitNativePage batch -> do
+    require (W.scanChain batch=="Native") "invalid_native_scan_page"
+    commitObservation c False batch
   RecordHistoryProgress chain expected next -> do
     require (Solana.historyProgressValid next) "invalid_solana_history_progress"
     checkHistoryProgress c chain expected (Solana.progressOrigin next) (Solana.progressPrevious next)
@@ -1671,7 +1675,11 @@ scanFailed c chain now code = do
   pauseScan c ((if code=="rpc_rate_limited" then "rpc_rate_limited:" else "scanner_unavailable:")<>chain)
 
 commitScan :: PG.Connection -> W.ScanBatch -> IO ()
-commitScan c batch = do
+commitScan c = commitObservation c True
+
+-- Partial Native evidence is durable, but never coverage or signing readiness.
+commitObservation :: PG.Connection -> Bool -> W.ScanBatch -> IO ()
+commitObservation c complete batch = do
   let chain=W.scanChain batch; now=W.scanTime batch; origin=W.scanOrigin batch; next=W.scanNext batch
       deposits=W.scanDeposits batch; events=W.scanEvents batch; text=O.sqlStrictText; num=O.sqlInt8
   -- Validate the envelope before selecting its closed stream; then bind current
@@ -1733,10 +1741,10 @@ commitScan c batch = do
         O.uWhere= \r->S.eventChain r O..== text chain O..&& S.eventId r O..== text identifier,O.uReturning=O.rCount} >> pure ()
       _->reject "duplicate_chain_event"
     when review (pauseScan c $ "chain_review:"<>chain<>":"<>kind)
-  case previous of
+  when complete $ case previous of
     Nothing->O.runInsert c O.Insert {O.iTable=S.checkpoints,O.iRows=[(text chain,text next)],O.iReturning=O.rCount,O.iOnConflict=Nothing} >> pure ()
     Just _->O.runUpdate c O.Update {O.uTable=S.checkpoints,O.uUpdateWith=const(text chain,text next),O.uWhere= \(key,_)->key O..== text chain,O.uReturning=O.rCount} >> pure ()
-  scanHealth c chain now Nothing
+  scanHealth c chain now (if complete then Nothing else Just "native_history_catching_up")
 
 -- Core omits conflicted incoming details. Negative status still invalidates
 -- every saved outpoint; it is not by itself proof of an economic loss.
@@ -3355,17 +3363,17 @@ approveSourceRecovery c policy sourceProof now key restoration reason = do
       require (count==1) "source_approval_changed"
       audit c "source_recovery_approved" key
 
-nativeSourceCandidates :: PG.Connection -> IO [W.Deposit]
-nativeSourceCandidates c = do
-  rows<-O.runSelect c $ O.limit 1001 $ O.orderBy (O.asc S.depositSeen <> O.asc S.depositId) $ do
+nativeSourcePage :: PG.Connection -> Maybe Text -> IO [W.Deposit]
+nativeSourcePage c after = do
+  rows<-O.runSelect c $ O.limit 128 $ O.orderBy (O.asc S.depositId) $ do
     deposit<-O.selectTable S.deposits
     recovering<-Exists.exists $ do
       (key,state)<-S.sourceRecovery
       O.where_ (key O..== S.depositId deposit O..&& state O../= O.sqlStrictText "restored")
       pure ()
     O.where_ (S.depositAsset deposit O..== O.sqlStrictText "Native" O..&& (S.depositEligible deposit O..== O.sqlInt8 0 O..|| recovering))
+    forM_ after $ \key->O.where_ (S.depositId deposit O..> O.sqlStrictText key)
     pure deposit
-  require (length rows<=1000) "source_recovery_backlog"
   mapM asDeposit rows
 
 nativeSourceInspection :: PG.Connection -> Text -> IO (Maybe (Text,W.PolicySnapshot),(Text,Value))
