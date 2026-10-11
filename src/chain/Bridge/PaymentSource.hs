@@ -91,28 +91,36 @@ inspectNativeSource call c minimumDepth identity source binding observation=do
   decodedId <- fieldValue "txid" decoded
   outputs <- fieldValue "vout" decoded :: IO [Value]
   details <- fieldValue "details" value :: IO [Value]
+  confirmations <- fieldValue "confirmations" value :: IO Int
   require (actual==txid && decodedId==txid && processed==position && index<length outputs
     && length outputs<=1000 && length details<=1000) "native_source_binding_mismatch"
   matched <- filterM (\detail->(==index) <$> (fieldValue "vout" detail :: IO Int)) details
-  detail <- case matched of [d]->pure d; _->reject "native_source_receipt_ambiguous"
-  category <- fieldValue "category" detail :: IO Text
-  address <- fieldValue "address" detail
-  detailAmount <- fieldValue "amount" detail >>= either reject pure . nativeAmount
-  require (category `elem` ["receive","generate","immature","orphan"] && detailAmount==W.depositAmount source) "native_source_binding_mismatch"
   let output=outputs!!index
+  -- A conflicted incoming transaction has no receive details in Core. Its
+  -- immutable saved outpoint still binds amount, owned script and instruction.
+  (category,address)<-case matched of
+    [detail]->do
+      kind<-fieldValue "category" detail :: IO Text
+      address<-fieldValue "address" detail
+      detailAmount<-fieldValue "amount" detail >>= either reject pure . nativeAmount
+      require (kind `elem` ["receive","generate","immature","orphan"] && detailAmount==W.depositAmount source) "native_source_binding_mismatch"
+      pure (Just kind,address)
+    [] | confirmations<0->do
+      address<-fieldValue "scriptPubKey" output >>= fieldValue "address"
+      pure (Nothing,address)
+    _->reject "native_source_receipt_ambiguous"
   number <- fieldValue "n" output :: IO Int
   quantity <- fieldValue "value" output >>= either reject pure . nativeAmount
   script <- fieldValue "scriptPubKey" output >>= fieldValue "hex"
   owned <- ownedScript call address
   require (number==index && quantity==W.depositAmount source && owned==script) "native_source_binding_mismatch"
   needed <- case W.depositOrder source of
-    Nothing->pure $ if category=="receive" then minimumDepth else max 101 (minimumDepth)
+    Nothing->pure $ if category==Just "receive" then minimumDepth else max 101 minimumDepth
     Just _->do
       (instruction,policy)<-maybe (reject "native_source_policy_invalid") pure binding
-      require (category=="receive" && instruction==address && W.deploymentFingerprint policy==identity
+      require (category `elem` [Nothing,Just "receive"] && instruction==address && W.deploymentFingerprint policy==identity
         && W.nativeDepth policy>0 && W.nativeDepth policy<=1008) "native_source_binding_mismatch"
       pure (W.nativeDepth policy)
-  confirmations <- fieldValue "confirmations" value :: IO Int
   anchor <- parseValue (withObject "source" (.:? "blockhash")) value :: IO (Maybe Text)
   conflicts <- fieldValue "walletconflicts" value :: IO [Text]
   require (length conflicts<=100 && all transactionId conflicts) "invalid_native_source_conflicts"
@@ -130,7 +138,7 @@ inspectNativeSource call c minimumDepth identity source binding observation=do
     require (unspent==Null) "native_source_conflict_not_proven"
     pure (W.SourceMissing proof)
    else do
-    require (null conflicts && category/="orphan") "native_source_conflict_requires_review"
+    require (null conflicts && category/=Just "orphan") "native_source_conflict_requires_review"
     if confirmations==0 then do
       mempool <- call False "getmempoolentry" [toJSON txid]
       size <- fieldValue "vsize" mempool :: IO Int

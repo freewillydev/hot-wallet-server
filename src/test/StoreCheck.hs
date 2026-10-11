@@ -1637,11 +1637,13 @@ ledgerMain = do
         let tx=T.replicate 64 "b"; did="native:"<>tx<>":0"
             receipt=W.Deposit did (Just oid) Native (money 10) "block-1" 2 True 100
             event=W.ChainEvent tx "incoming" "block-1" (object ["receipt" .= did])
+            siblings=[receipt {W.depositId="native:"<>tx<>":"<>T.pack(show n),W.depositOrder=Nothing} | n<-[1..129::Int]]
+            unrelated=receipt {W.depositId="native:"<>T.replicate 64 "c"<>":0",W.depositOrder=Nothing}
             batch previous next deposits events=W.ScanBatch "Native" "scan-origin" previous next 100 deposits events
             commit b=evalWrite writer (CommitScan b)
         previous<-evalRead reader (ReadCheckpoint "Native")
         before<-evalRead reader ReadBalances
-        commit (batch previous "scan-1" [receipt] [event])
+        commit (batch previous "scan-1" (receipt:unrelated:siblings) [event])
         observed<-evalRead reader ReadBalances
         check (M.findWithDefault 0 (Native,Principal) observed==M.findWithDefault 0 (Native,Principal) before+10)
         commit (batch (Just "scan-1") "scan-1" [receipt {W.depositSeenAt=999}] [event])
@@ -1662,7 +1664,27 @@ ledgerMain = do
         let obligation=("convert:"<>oid,oid,did,"conversion"::T.Text,"Wrapped"::T.Text,9::Int64,"recipient"::T.Text)
             expectedHash=digest $ BL.toStrict $ encode (toJSON [obligation]:replicate 5 (toJSON ([]::[Value])))
         check (workHash==expectedHash)
-        commit (batch (Just "scan-1") "scan-2" [receipt {W.depositEligible=False,W.depositConfirmations=0,W.depositAnchor="unconfirmed"}] [event {W.chainEventAnchor="unconfirmed"}])
+        -- Real ECX gettransaction omits conflicted incoming details. The saved
+        -- receipt must still lose eligibility, without reposting its principal.
+        let conflicted=event {W.chainEventKind="reference",W.chainEventAnchor="unconfirmed",
+              W.chainEventEvidence=object ["txid" .= tx,"confirmations" .= (-1::Int),"receipts" .= ([]::[Value])]}
+        expectStore "invalid_native_observation" $ commit $ batch (Just "scan-1") "bad-conflict" []
+          [conflicted {W.chainEventEvidence=object ["txid" .= T.replicate 64 "c","confirmations" .= (-1::Int)]}]
+        expectStore "invalid_observation_kind" $ commit $ batch (Just "scan-1") "rollback-conflict" []
+          [conflicted,event {W.chainEventKind="invalid"}]
+        evalRead reader (ReadSource did) >>= check . W.depositEligible
+        evalRead reader (ReadCheckpoint "Native") >>= check . (==Just "scan-1")
+        commit (batch (Just "scan-1") "scan-2" [] [conflicted])
+        lost<-evalRead reader (ReadSource did)
+        check (not(W.depositEligible lost) && W.depositConfirmations lost==0 && W.depositAnchor lost=="unconfirmed")
+        forM_ siblings $ \source->evalRead reader (ReadSource $ W.depositId source) >>= check . not . W.depositEligible
+        evalRead reader (ReadSource $ W.depositId unrelated) >>= check . W.depositEligible
+        (_,(_,sourceEvidence))<-evalRead reader (ReadNativeSourceInspection did)
+        fieldValue "kind" sourceEvidence >>= check . (==("incoming"::T.Text))
+        proof<-fieldValue "proof" sourceEvidence
+        check (proof==W.chainEventEvidence conflicted)
+        commit (batch (Just "scan-2") "scan-2" [] [conflicted])
+        evalRead reader (ReadSource did) >>= check . ((==100).W.depositSeenAt)
         fixture fixtures (CheckSuspended oid did workHash) >>= check
         lossState<-evalRead reader ReadState
         check (ledgerPaused lossState && ledgerReason lossState=="source_reorg_review")

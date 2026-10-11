@@ -676,3 +676,12 @@ permissions. Do not retry unchanged or claim a scan is running/passed. A managed
 permission-profile session is required for that plugin gate. Daybreak access check
 also returned not_granted (advisory only, not the launch blocker). The installed
 plugin remains available; temporary UI driver was stopped.
+
+### Current security gate (2026-10-11)
+
+The Standard Codex Security scan dd391a4d-041c-4fb7-a16e-12378cb8f1ad completed
+against1c8da93. Production security remains FAIL: Native-history nonprogress is
+confirmed and unresolved; dependency/spool uncertainties and real deployment
+acceptance remain open. The Low test-log issue was corrected in0bf22c0 with
+focused process/PG tests and separate source review. The earlier Deep launch
+failure is not a Standard-scan failure or evidence of a passing security gate.

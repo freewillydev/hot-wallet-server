@@ -262,7 +262,8 @@ nativeChecks=do
         let position=object ["height" .= (20::Int),"hash" .= tip]
             source depth=deposit {W.depositConfirmations=max 0 depth,W.depositEligible=depth>=3}
             evidence depth=("saved-hash",object ["anchor" .= tip,"proof" .= object ["confirmations" .= (depth::Int)]])
-            transactionAt depth=replace ["lastprocessedblock"] position $ replace ["confirmations"] (toJSON (depth::Int)) transaction
+            transactionAt depth=replace ["details"] (toJSON [detail | depth>=0]) $
+              replace ["lastprocessedblock"] position $ replace ["confirmations"] (toJSON (depth::Int)) transaction
             call depth _ method params=case method of
               "gettransaction"->pure (transactionAt depth)
               "getmempoolentry"->if depth<0 then reject "rpc_error_-5" else pure $ object ["vsize" .= (120::Int)]
@@ -279,13 +280,21 @@ nativeChecks=do
         mempoolRefused<-rejects "native_source_conflict_not_proven" $ inspect (-1) $ \wallet method params->
           if method=="getmempoolentry" then pure (object []) else call (-1) wallet method params
         stale<-rejects "source_recovery_scan_not_current" $ inspectNativeSource (call (-1)) settings 3 "profile" (source (-1)) (Just(address,policy)) (evidence 3)
+        missingConfirmed<-rejects "native_source_receipt_ambiguous" $ inspect 3 $ \wallet method params->
+          if method=="gettransaction" then pure (replace ["details"] (toJSON ([]::[Value])) $ transactionAt 3)
+          else call 3 wallet method params
+        wrongBinding<-rejects "native_source_binding_mismatch" $
+          inspectNativeSource (call (-1)) settings 3 "profile" (source (-1)) (Just("other-address",policy)) (evidence (-1))
+        unowned<-rejects "native_input_or_change_not_owned" $ inspect (-1) $ \wallet method params->
+          if method=="getaddressinfo" then pure $ object ["ismine" .= False,"scriptPubKey" .= scriptHex]
+          else call (-1) wallet method params
         reads<-newIORef (0::Int)
         changed<-rejects "native_source_view_changed" $ inspect (-1) $ \wallet method params->
           if method/="gettransaction" then call (-1) wallet method params else do
             n<-atomicModifyIORef' reads (\n->(n+1,n))
             pure (transactionAt $ if n==0 then -1 else 3)
         pure (case (missing,restored,shallow) of
-          (W.SourceMissing _,W.SourceRestored _,W.SourcePending _)->and [timeoutRefused,unspentRefused,mempoolRefused,stale,changed]
+          (W.SourceMissing _,W.SourceRestored _,W.SourcePending _)->and [timeoutRefused,unspentRefused,mempoolRefused,stale,changed,missingConfirmed,wrongBinding,unowned]
           _->False)
     , check "focused native source checks bind outpoint ownership depth and canonical block" $ once $ ioProperty $ do
         unchanged<-recheck (const id)

@@ -1124,3 +1124,29 @@ Retained pinned-source SHA256:
 5b635c860e448452518bef165c2571474daff9a5991528423d60cffb2343c01a.
 Investigation: Codex Security standalone findings/native-history-pinned-rpc-investigation.md.
 No services started, funds moved, limits raised or runtime changes made.
+
+### Native empty-detail conflict repair (2026-10-11)
+
+The real-ledger regression failed before the patch (session98057 exit1 at the
+saved eligibility assertion). CommitScan now invalidates all saved Native
+outpoints for an identity-matched negative transaction event, in128-row keyset
+pages inside its existing transaction. Immutable receipt fields and balances are
+preserved; observeDeposit retains normal source suspension/review behavior.
+Reference event role is derived from retained receipts without fabricating RPC
+details. The normalized evidence remains usable by independent source inspection.
+
+Source inspection permits absent matching details only for negative status,
+binding the saved outpoint to decoded amount/script, wallet ownership and saved
+instruction. Matching scanner status, synchronized wallet view, mempool absence,
+spent output and identical second transaction read remain mandatory before loss
+classification. Positive/shallow sources still require their ordinary details.
+
+Build plus default PostgreSQL contract PASS (session73768 exit0), covering130
+outpoints, unrelated-transaction isolation, malformed identity, late-error rollback,
+source-review replay and unchanged accounting. Full Cabal bridge-test PASS
+(session87967 exit0), including empty-details loss inspection and refusal controls.
+Both disposable PostgreSQL clusters stopped and removed; no live funds moved.
+The large-history finding and real-node conflict acceptance remain open.
+Fresh native_conflict_patch_reviewer: PASS, static four-file scope; no actionable
+bypass/regression found. Scanner-to-ledger-to-inspection combined fixture and
+real-node conflict execution are not established by these separate contracts.

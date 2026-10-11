@@ -1687,7 +1687,9 @@ commitScan c batch = do
   when (null origins) $ void $ O.runInsert c O.Insert {O.iTable=S.scanOrigins,
     O.iRows=[(text chain,text origin)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
   mapM_ (observeDeposit c) deposits
-  forM_ events $ \event->do
+  forM_ events $ \observed->do
+    _<-checked (checkObservation chain observed)
+    event<-if chain=="Native" then invalidateNativeReceipts c observed else pure observed
     let identifier=W.chainEventId event; anchor=W.chainEventAnchor event; kind=W.chainEventKind event
         paymentChain=if chain=="SolanaOperating" then "Solana" else chain
     evidence<-checked (checkObservation chain event)
@@ -1735,6 +1737,37 @@ commitScan c batch = do
     Nothing->O.runInsert c O.Insert {O.iTable=S.checkpoints,O.iRows=[(text chain,text next)],O.iReturning=O.rCount,O.iOnConflict=Nothing} >> pure ()
     Just _->O.runUpdate c O.Update {O.uTable=S.checkpoints,O.uUpdateWith=const(text chain,text next),O.uWhere= \(key,_)->key O..== text chain,O.uReturning=O.rCount} >> pure ()
   scanHealth c chain now Nothing
+
+-- Core omits conflicted incoming details. Negative status still invalidates
+-- every saved outpoint; it is not by itself proof of an economic loss.
+invalidateNativeReceipts :: PG.Connection -> W.ChainEvent -> IO W.ChainEvent
+invalidateNativeReceipts c event = do
+  depth<-either (const $ reject "invalid_native_observation") pure $
+    parseEither (withObject "native observation" (.:? "confirmations")) (W.chainEventEvidence event)
+  if maybe False (<(0::Int)) depth then do
+    actual<-either (const $ reject "invalid_native_observation") pure $
+      parseEither (withObject "native observation" (.: "txid")) (W.chainEventEvidence event)
+    require (actual==tx && T.length tx==64 && T.all (`elem` ("0123456789abcdef"::String)) tx) "invalid_native_observation"
+    kind<-page "" Nothing
+    pure $ case (W.chainEventKind event,kind) of
+      ("reference",Just bound)->event {W.chainEventKind=if bound then "incoming" else "unmatched_incoming"}
+      _->event
+  else pure event
+ where
+  tx=W.chainEventId event
+  page after bound=do
+    rows<-O.runSelect c $ O.limit 128 $ O.orderBy (O.asc S.depositId) $ do
+      row<-O.selectTable S.deposits
+      O.where_ (S.depositAsset row O..== O.sqlStrictText "Native"
+        O..&& O.like (S.depositId row) (O.sqlStrictText $ "native:"<>tx<>":%")
+        O..&& S.depositId row O..> O.sqlStrictText after)
+      pure row
+    forM_ rows $ \row->do
+      saved<-asDeposit row
+      observeDeposit c saved {W.depositAnchor=W.chainEventAnchor event,W.depositConfirmations=0,W.depositEligible=False}
+    case reverse rows of
+      []->pure bound
+      lastRow:_->page (S.depositId lastRow) (Just $ maybe False id bound || any ((/=Nothing).S.depositOrder) rows)
 
 lookupInstruction :: PG.Connection -> Text -> IO (Maybe (Text,W.OrderRequest,W.PolicySnapshot))
 lookupInstruction connection instruction = do
