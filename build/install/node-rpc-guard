@@ -1,0 +1,88 @@
+#!/bin/sh
+# Bind managed loopback RPC replies to the native node's socket UID.
+set -eu
+umask 077
+fail() { echo "Native RPC guard: $*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] && [ "$#" = 0 ] || fail 'root required; no arguments accepted'
+uid=$(id -u ecxnode)
+[ "$uid" -gt 0 ] || fail 'dedicated node identity required'
+command -v nft >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nftables
+exec 8>/run/lock/ecx-node-rpc-guard.lock
+flock -n 8 || fail 'another guard installation is running'
+rules=/etc/ecx-node-rpc.nft
+unit=/etc/systemd/system/ecx-node-rpc-guard.service
+if ! systemctl is-active --quiet ecx-node-rpc-guard.service; then
+  for service in ecx-bridge-worker ecx-bridge-signer; do
+    pid=$(systemctl show "$service.service" -p MainPID --value)
+    [ "${pid:-0}" = 0 ] || fail 'stop bridge processes before enabling the guard'
+  done
+fi
+temporary=$(mktemp -d /etc/.ecx-rpc-guard-XXXXXXXX)
+trap 'rm -rf -- "$temporary"' EXIT
+trap 'exit 1' HUP INT TERM
+publish() {
+  if [ -e "$2" ] || [ -L "$2" ]; then
+    [ -f "$2" ] && [ ! -L "$2" ] && [ "$(stat -c '%u:%a:%h' "$2")" = "0:$3:1" ] && cmp -s "$1" "$2" || fail "existing file differs: $2"
+  else
+    chmod "$3" "$1"
+    mv -T -- "$1" "$2"
+  fi
+}
+cat > "$temporary/rules" <<RULES
+add table inet ecx_node_rpc
+flush table inet ecx_node_rpc
+add chain inet ecx_node_rpc output { type filter hook output priority -150; policy accept; }
+add rule inet ecx_node_rpc output oifname "lo" tcp sport 28532 meta skuid $uid accept
+add rule inet ecx_node_rpc output oifname "lo" tcp sport 28532 drop
+RULES
+publish "$temporary/rules" "$rules" 600
+# Include the guard in ordinary nftables reloads: a flush/reload is one atomic
+# transaction containing this policy. Do not load or flush the host's other rules.
+main=/etc/nftables.conf
+include='include "/etc/ecx-node-rpc.nft"'
+if [ -e "$main" ] || [ -L "$main" ]; then
+  [ -f "$main" ] && [ ! -L "$main" ] && [ "$(stat -c '%u:%h' "$main")" = 0:1 ] || fail 'unsafe nftables configuration'
+  permissions=$(stat -c %a "$main")
+  [ "$((0$permissions & 022))" = 0 ] || fail 'writable nftables configuration'
+  cp -- "$main" "$temporary/main"
+else
+  : > "$temporary/main"
+fi
+if grep -Fq '/etc/ecx-node-rpc.nft' "$temporary/main"; then
+  [ "$(grep -Fc '/etc/ecx-node-rpc.nft' "$temporary/main")" = 1 ] && [ "$(tail -n 1 "$temporary/main")" = "$include" ] || fail 'guard include must occur exactly once, last'
+else
+  printf '\n%s\n' "$include" >> "$temporary/main"
+fi
+nft --check --file "$temporary/main"
+chmod 644 "$temporary/main"
+mv -T -- "$temporary/main" "$main"
+cat > "$temporary/unit" <<'UNIT'
+[Unit]
+Description=Authenticate local ECX RPC socket ownership
+After=nftables.service
+PartOf=nftables.service
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/nft -f /etc/ecx-node-rpc.nft
+ExecReload=/usr/sbin/nft -f /etc/ecx-node-rpc.nft
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+UNIT
+publish "$temporary/unit" "$unit" 644
+for service in ecx-betanet ecx-bridge-worker ecx-bridge-signer; do
+  directory=/etc/systemd/system/$service.service.d
+  [ ! -L "$directory" ] || fail 'service drop-in directory is a symlink'
+  install -d -o root -g root -m 0755 "$directory"
+  cat > "$temporary/dropin" <<'UNIT'
+[Unit]
+BindsTo=ecx-node-rpc-guard.service
+After=ecx-node-rpc-guard.service
+PartOf=ecx-node-rpc-guard.service
+UNIT
+  publish "$temporary/dropin" "$directory/20-rpc-guard.conf" 644
+done
+systemctl daemon-reload
+systemctl enable ecx-node-rpc-guard.service
+systemctl start ecx-node-rpc-guard.service
+systemctl reload ecx-node-rpc-guard.service

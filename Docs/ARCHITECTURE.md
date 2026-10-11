@@ -986,3 +986,20 @@ evaluator entry through success/refusal. TLC exhausts 61,745 distinct states;
 lock-bypass, early-release and leaked-lock mutations violate `GateOwnership`.
 This is bounded abstract safety evidence, not a runtime refinement, liveness or
 cryptographic proof. Worker serialization remains an explicit model assumption.
+
+### Managed native RPC ownership
+
+The managed Ubuntu node uses a dedicated ecxnode UID. Before initializing its
+wallet, installation applies an nftables output rule allowing loopback TCP replies
+from port 28532 only from that UID. This prevents another local UID from accepting
+a new credential-bearing RPC connection during a node outage. The packaged guard
+is ordered before node/worker/signer services; stopping it stops those services.
+Its include survives ordinary nftables reload/restart. Rule replacement is atomic
+and installation does not flush unrelated tables. Socket UID semantics:
+https://www.netfilter.org/projects/nftables/manpage.html
+
+This is a host-network socket-ownership boundary, not executable attestation.
+Same-UID processes, privileged firewall changes and previously exposed credentials
+remain trusted/outside its protection. Initial adoption requires all existing
+credential-bearing clients to be stopped; service checks cannot discover standalone
+CLI clients. Advanced external nodes need their own authenticated boundary.

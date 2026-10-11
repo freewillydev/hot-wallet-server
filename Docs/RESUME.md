@@ -263,3 +263,13 @@ credentials. A different local UID can bind the port during node downtime. Chain
 identity replies are not server authentication. Resolve with authenticated node
 transport or an enforced OS binding/network boundary, and test restart/takeover
 refusal before production. No live endpoint or credentials were exercised.
+
+### Managed native RPC guard checkpoint
+
+Implemented managed loopback socket-UID enforcement, packaged helper, systemd
+dependencies and early endpoint validation. Disposable Ubuntu socket, lifecycle,
+cold-boot and re-enable refusal checks passed; isolated configure-only suite passed.
+See .audit/layout.tsv for exact evidence. No live wallet/service/funds touched.
+Next: real-node/full-install acceptance and remaining cancellation/release gates;
+keep public access off. This does not resolve external node transport or arbitrary
+privileged firewall changes. Unrelated payout/schema work remains unpublished.

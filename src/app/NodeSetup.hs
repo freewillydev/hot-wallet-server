@@ -80,6 +80,9 @@ provision directory=do
       (parseEither (withObject "setup" (\o->o .:? "managedNode" .!= False)) setup)
     when managed $ do
       require (path=="/var/lib/ecx-betanet/bitcoin.conf" && service=="ecx-betanet.service") "managed_node_identity_changed"
+      bootstrap<-decode =<< readPrivate (directory</>"bootstrap.json")
+      endpoint<-fieldValue "nativeRpc" bootstrap :: IO String
+      require (endpoint=="http://127.0.0.1:28532") "managed_node_requires_guarded_rpc"
       method<-fieldValue "method" setup :: IO String
       require (method `elem` ["source","bundle"]) "managed_node_release_bootstrap_required"
       root<-fieldValue "sourceRoot" setup

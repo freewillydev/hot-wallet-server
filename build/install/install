@@ -361,6 +361,10 @@ if [ "$mode" = fresh ] || [ "$mode" = recover ]; then
 else
   systemctl stop ecx-bridge-worker ecx-bridge-signer
 fi
+if [ -f /etc/systemd/system/ecx-betanet.service ]; then
+  [ "$(jq -er .nativeRpc "$config/worker/config.json")" = http://127.0.0.1:28532 ] || fail 'managed node requires guarded loopback RPC'
+  sh "$bundle/node-rpc-guard"
+fi
 # Retried fresh installs must still match their immutable custom-site snapshot.
 if [ -n "$website_directory" ]; then verify_website "$config/worker/website"; fi
 # Publishing a release never changes keys, configuration, ledger or saved attempts.

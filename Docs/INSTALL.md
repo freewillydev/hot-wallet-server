@@ -556,3 +556,12 @@ retained minimum sequence. Separate menu actions stage the original wallet and a
 paused database, then activate through checked reconciliation after permanent source
 exclusion. Follow the recovery procedure in OPERATIONS; verification alone does not
 activate custody.
+
+### Managed node RPC guard
+
+Installation automatically installs nftables and a dedicated RPC ownership guard
+before managed node initialization. Keep the final ecx-node-rpc.nft include in
+/etc/nftables.conf. Before first adoption, stop separately launched bridge setup,
+restore or RPC clients as well as services: an existing connection is not repaired
+by these rules. Root firewall changes and external-node transports require their
+own review. No wallet credentials are rotated by this change.

@@ -36,6 +36,7 @@ fi
 if ! getent passwd ecxnode >/dev/null; then
   useradd --system --user-group --home-dir "$home" --shell /usr/sbin/nologin ecxnode
 fi
+sh "$(dirname -- "$0")/node-rpc-guard"
 install -d -o ecxnode -g ecxnode -m 0700 "$home"
 [ ! -L "$home/bitcoin.conf" ] || fail 'configuration symlink refused'
 if [ ! -e "$home/bitcoin.conf" ]; then

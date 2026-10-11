@@ -282,3 +282,15 @@ OPEN: native RPC server authentication/local port ownership. Current managed
 loopback HTTP does not prevent another local UID from impersonating a stopped
 node. Require an enforced boundary and restart/adversarial acceptance; client
 passwords and chain identity checks alone do not close this finding.
+
+### Managed RPC boundary verification
+
+PASS (scoped): the managed-node guard blocks other socket UIDs on fresh IPv4/IPv6
+loopback connections, preserves unrelated nftables tables, survives cold boot and
+ordinary firewall/guard reload/restart, and stops dependent services on invalid
+rules. Re-enabling an inactive guard refuses running worker/signer services.
+Configure-only Cabal checks passed on an isolated published-source candidate.
+Tests used disposable Ubuntu 24.04 socket and service fixtures, not a real node.
+This supersedes the managed-path portion of the native RPC finding above; external
+node authentication, real-node/full-install acceptance and the overall production
+security gate remain open. Initial standalone-client quiescence remains required.
