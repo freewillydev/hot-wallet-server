@@ -1028,3 +1028,15 @@ fixture nor its subsequent HTTPS signing phase certifies real-chain acceptance.
 Final build and both Canonical/Devnet PostgreSQL+HTTPS contracts PASS (session54232
 exit0). Temporary PostgreSQL and worker/signer/test processes were stopped and
 removed. Exact source/log hashes are recorded in .audit/payout.tsv.
+
+### Worker owner-preview fee-cap acceptance (2026-10-11)
+
+The canonical worker fixture now supplies a validated Native preview with input100,
+owner output3, change95 and fee2 against the saved cap1. Required decode/prevout
+calls prove it reaches fee validation. The worker defers that optional withdrawal,
+reserves Wrapped3 and remains unpaused, without address allocation, UTXO locking,
+signing or broadcast. Build and both Canonical/Devnet PostgreSQL+HTTPS contracts
+PASS (session48729 exit0); temporary PostgreSQL cleaned. Devnet still uses manual
+reservation. This closes the scheduler fee-cap fixture gap above, not active-Native
+work scheduling or funded acceptance. No production code changed. Refunds continue
+to bypass batching; ordinary swaps retain their configured thresholds and interval.

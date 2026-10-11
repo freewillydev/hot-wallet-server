@@ -4393,6 +4393,13 @@ tlsMain=do
       payer=object ["owner" .= ("11111111111111111111111111111111"::T.Text),"executable" .= False,"data" .= ["","base64"::T.Text],"lamports" .= (10000100::Int)]
       headSignature=SolanaMessage.base58 (BS.replicate 64 2)
       nativeHead=object ["hash" .= N.nativeCheckpointHash native,"height" .= N.nativeCheckpointHeight native]
+      ownerScript="001495ea668e0322bd99dac54ffdc9089d68e56c3aa1"::T.Text
+      changeScript="0014"<>T.replicate 40 "a"
+      previewInput=T.replicate 64 "3"
+      previewTx=object ["txid" .= T.replicate 64 "4","version" .= (2::Int),"locktime" .= (499999999::Int),
+        "vin" .= [object ["txid" .= previewInput,"vout" .= (0::Int),"sequence" .= (4294967294::Integer)]],
+        "vout" .= [object ["n" .= index,"value" .= N.nativeNumber (money n),"scriptPubKey" .= object ["hex" .= script]]
+          | (index,(n,script))<-zip [0::Int ..] [(3,ownerScript),(95,changeScript)]]]
       tokenBalance=object ["accountIndex" .= (1::Int),"mint" .= mint,"owner" .= owner,
         "uiTokenAmount" .= object ["amount" .= ("1010"::T.Text),"decimals" .= (8::Int)]]
       referenceTransaction=object ["slot" .= (100::Int),"transaction" .= object
@@ -4429,9 +4436,15 @@ tlsMain=do
             [String requested]->pure $ object ["descriptor" .= (requested<>"#fixture"),"hasprivatekeys" .= False,"isrange" .= False,"issolvable" .= True]
             _->fail "unexpected descriptor request"
           "deriveaddresses"->pure $ toJSON ["bc1qjh4xdrsry27enkk9fl7ujzyadrjkcw4p2uy76c"::T.Text]
-          "getaddressinfo"->pure $ object ["ismine" .= False,"scriptPubKey" .= ("001495ea668e0322bd99dac54ffdc9089d68e56c3aa1"::T.Text)]
+          "getaddressinfo"->let change=params==[String "fixture-change"] in
+            pure $ object ["ismine" .= change,"scriptPubKey" .= if change then changeScript else ownerScript]
           "decodescript"->pure $ object ["type" .= ("witness_v0_keyhash"::T.Text)]
-          "listunspent"->pure $ toJSON ([]::[Value]) -- Expected optional Native capacity refusal.
+          "listunspent"->pure $ toJSON [object ["safe" .= True,"spendable" .= True,"solvable" .= True,
+            "confirmations" .= (100::Int),"address" .= ("fixture-change"::T.Text)]]
+          "walletcreatefundedpsbt"->pure $ object ["psbt" .= ("fixture-owner-preview"::T.Text),"fee" .= N.nativeNumber (money 2),"changepos" .= (1::Int)]
+          "decodepsbt"->pure $ object ["tx" .= previewTx,"fee" .= N.nativeNumber (money 2)]
+          "gettxout"->pure $ object ["value" .= N.nativeNumber (money 100),"confirmations" .= (100::Int),"coinbase" .= False,
+            "scriptPubKey" .= object ["hex" .= changeScript,"address" .= ("fixture-change"::T.Text)]]
           "getSignaturesForAddress"->pure $ toJSON [object ["signature" .= headSignature,"slot" .= (100::Int),"err" .= Null,"confirmationStatus" .= ("finalized"::T.Text)]]
           "getTransaction"->pure $ if take 1 params==[toJSON headSignature] then referenceTransaction else Null
           "getSignatureStatuses"->pure Null -- Deliberate unavailable observation, never a successful chain effect.
@@ -4492,9 +4505,10 @@ tlsMain=do
             check (M.filterWithKey (\(asset,_) _->asset==Native) before==M.filterWithKey (\(asset,_) _->asset==Native) after)
             evalRead reader PendingAttempts >>= check . null
             methods<-readIORef calls
-            check ("listunspent" `elem` methods && all (`notElem` methods) ["walletprocesspsbt","sendTransaction","sendrawtransaction"])
+            check (all (`elem` methods) ["walletcreatefundedpsbt","decodepsbt","gettxout"]
+              && all (`notElem` methods) ["getnewaddress","getrawchangeaddress","lockunspent","walletprocesspsbt","sendTransaction","sendrawtransaction"])
             writeIORef calls []
-            putStrLn "PASS: actual worker scans, reconciles and reserves Wrapped owner payout after optional Native funding refusal"
+            putStrLn "PASS: actual worker scans, reconciles and reserves Wrapped owner payout after Native preview exceeds its saved fee cap"
             pure result
         let outgoing=withdrawalPayment withdrawal; identifier=paymentId outgoing
             plan=SP.SolanaPlan identity recipient (money 3) (payoutReference identity identifier) (SP.RecentBlockhash hash 1000 100) (money 10000) (money 2100000)
