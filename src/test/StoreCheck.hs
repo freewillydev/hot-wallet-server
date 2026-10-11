@@ -2263,6 +2263,7 @@ data Fixture a where
   SourceRecipient :: T.Text -> T.Text -> Fixture ()
   SourceAnchor :: T.Text -> T.Text -> Fixture ()
   TLSFunds :: Fixture ()
+  WorkerHeads :: T.Text -> T.Text -> Fixture ()
   FreshAt :: Int64 -> Fixture ()
   ChangeTreasuryAnchor :: T.Text -> T.Text -> Fixture ()
   SeedTreasuryEvidence :: T.Text -> T.Text -> T.Text -> T.Text -> Int64 -> Value -> Fixture ()
@@ -2630,6 +2631,11 @@ fixture c TLSFunds = PG.withTransaction c $ do
   let text=O.sqlStrictText
   void $ O.runInsert c O.Insert {O.iTable=S.events,O.iRows=[(text "tls-funds",text "offline signing contract funds")],O.iReturning=O.rCount,O.iOnConflict=Nothing}
   void $ O.runInsert c O.Insert {O.iTable=S.postings,O.iRows=[(Nothing,text "tls-funds",text asset,text account,O.sqlInt8 n) | (asset,account,n)<-[("Wrapped","earned",10),("Wrapped","external",-10),("Sol","operating",10000000),("Sol","external",-10000000)]],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+fixture c (WorkerHeads native signature) = PG.withTransaction c $
+  forM_ [("Native",native),("Solana",signature),("SolanaOperating",signature)] $ \(chain,head)->do
+    void $ O.runUpdate c O.Update {O.uTable=S.checkpoints,O.uUpdateWith= \(key,_)->(key,O.sqlStrictText head),
+      O.uWhere= \(key,_)->key O..== O.sqlStrictText chain,O.uReturning=O.rCount}
+    void $ O.runInsert c O.Insert {O.iTable=S.scanOrigins,O.iRows=[(O.sqlStrictText chain,O.sqlStrictText head)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
 fixture c (FreshAt now) = do
   void $ O.runUpdate c O.Update {O.uTable=S.scanHealth,O.uUpdateWith= \(chain,_,_,_)->(chain,O.toNullable $ O.sqlInt8 now,O.null,O.sqlInt8 now),O.uWhere=const $ O.sqlBool True,O.uReturning=O.rCount}
   void $ O.runUpdate c O.Update {O.uTable=S.custody,O.uUpdateWith= \(key,revision,_,_,_)->(key,revision,O.toNullable revision,O.toNullable $ O.sqlInt8 now,O.null),O.uWhere=const $ O.sqlBool True,O.uReturning=O.rCount}
@@ -4381,16 +4387,29 @@ tlsMain=do
       check ok=unless ok (fail $ "TLS signing contract failed\n"<>prettyCallStack callStack)
       context value=object ["context" .= object ["slot" .= (100::Int)],"value" .= value]
       token=object ["owner" .= Solana.tokenProgram,"executable" .= False,"data" .= object ["space" .= (165::Int),"parsed" .= object ["type" .= ("account"::T.Text),"info" .= object
-        ["mint" .= mint,"owner" .= owner,"state" .= ("initialized"::T.Text),"isNative" .= False,"tokenAmount" .= object ["amount" .= ("10000000"::T.Text),"decimals" .= (8::Int)]]]]]
+        ["mint" .= mint,"owner" .= owner,"state" .= ("initialized"::T.Text),"isNative" .= False,"tokenAmount" .= object ["amount" .= ("1010"::T.Text),"decimals" .= (8::Int)]]]]]
       mintAccount=object ["owner" .= Solana.tokenProgram,"executable" .= False,"data" .= object ["space" .= (82::Int),"parsed" .= object ["type" .= ("mint"::T.Text),"info" .= object
         ["decimals" .= (8::Int),"isInitialized" .= True,"freezeAuthority" .= Null,"mintAuthority" .= Null,"supply" .= ("10000000"::T.Text)]]]]
-      payer=object ["owner" .= ("11111111111111111111111111111111"::T.Text),"executable" .= False,"data" .= ["","base64"::T.Text],"lamports" .= (10000000::Int)]
+      payer=object ["owner" .= ("11111111111111111111111111111111"::T.Text),"executable" .= False,"data" .= ["","base64"::T.Text],"lamports" .= (10000100::Int)]
+      headSignature=SolanaMessage.base58 (BS.replicate 64 2)
+      nativeHead=object ["hash" .= N.nativeCheckpointHash native,"height" .= N.nativeCheckpointHeight native]
+      tokenBalance=object ["accountIndex" .= (1::Int),"mint" .= mint,"owner" .= owner,
+        "uiTokenAmount" .= object ["amount" .= ("1010"::T.Text),"decimals" .= (8::Int)]]
+      referenceTransaction=object ["slot" .= (100::Int),"transaction" .= object
+        ["signatures" .= [headSignature],"message" .= object ["accountKeys" .= [owner,custody],"instructions" .= ([]::[Value])]],
+        "meta" .= object ["err" .= Null,"fee" .= (0::Int),"preBalances" .= ([10000100,2039280]::[Int]),
+          "postBalances" .= ([10000100,2039280]::[Int]),"preTokenBalances" .= [tokenBalance],"postTokenBalances" .= [tokenBalance]]]
   calls<-newIORef ([]::[T.Text])
   barrier<-newIORef Nothing
+  workerProbe<-newIORef (pure False :: IO Bool)
+  workerRelease<-newEmptyMVar
   let rpcApplication request respond=do
         raw<-Wai.strictRequestBody request
         value<-either fail pure (eitherDecodeStrict' $ BL.toStrict raw)
         method<-fieldValue "method" value; params<-fieldValue "params" value :: IO [Value]; requestId<-fieldValue "id" value :: IO Value
+        when (method=="getblockchaininfo") $ do
+          reserved<-readIORef workerProbe >>= id
+          when reserved (takeMVar workerRelease)
         when (method=="getGenesisHash") $ do
           blocked<-atomicModifyIORef' barrier (\old->(Nothing,old))
           forM_ blocked $ \(entered,release)->putMVar entered () >> takeMVar release
@@ -4401,12 +4420,30 @@ tlsMain=do
           "getblockhash"->pure $ String (N.nativeCheckpointHash native)
           "getconnectioncount"->pure $ Number 1
           "getwalletinfo"->pure $ object ["walletname" .= N.nativeWallet native,"descriptors" .= True
-            ,"scanning" .= False,"private_keys_enabled" .= True,"external_signer" .= False]
+            ,"scanning" .= False,"private_keys_enabled" .= True,"external_signer" .= False,"lastprocessedblock" .= nativeHead]
+          "listlockunspent"->pure $ toJSON ([]::[Value])
+          "listsinceblock"->pure $ object ["transactions" .= ([]::[Value]),"removed" .= ([]::[Value]),"lastblock" .= N.nativeCheckpointHash native]
+          "getbalances"->pure $ object ["mine" .= object ["trusted" .= N.nativeNumber (money 2100),
+            "immature" .= (0::Int),"untrusted_pending" .= (0::Int)],"lastprocessedblock" .= nativeHead]
+          "getdescriptorinfo"->case params of
+            [String requested]->pure $ object ["descriptor" .= (requested<>"#fixture"),"hasprivatekeys" .= False,"isrange" .= False,"issolvable" .= True]
+            _->fail "unexpected descriptor request"
+          "deriveaddresses"->pure $ toJSON ["bc1qjh4xdrsry27enkk9fl7ujzyadrjkcw4p2uy76c"::T.Text]
+          "getaddressinfo"->pure $ object ["ismine" .= False,"scriptPubKey" .= ("001495ea668e0322bd99dac54ffdc9089d68e56c3aa1"::T.Text)]
+          "decodescript"->pure $ object ["type" .= ("witness_v0_keyhash"::T.Text)]
+          "listunspent"->pure $ toJSON ([]::[Value]) -- Expected optional Native capacity refusal.
+          "getSignaturesForAddress"->pure $ toJSON [object ["signature" .= headSignature,"slot" .= (100::Int),"err" .= Null,"confirmationStatus" .= ("finalized"::T.Text)]]
+          "getTransaction"->pure $ if take 1 params==[toJSON headSignature] then referenceTransaction else Null
           "getSignatureStatuses"->pure Null -- Deliberate unavailable observation, never a successful chain effect.
           "getGenesisHash"->pure $ toJSON (Solana.solanaGenesis profile)
           "getAccountInfo"->pure $ context $ if take 1 params==[toJSON mint] then mintAccount else token
           "getBlockHeight"->pure $ Number 900
-          "getMultipleAccounts"->pure $ context $ toJSON [token,Null,payer]
+          "getMultipleAccounts"->do
+            addresses<-case params of value:_->either fail pure (eitherDecodeStrict' $ BL.toStrict $ encode value) :: IO [T.Text]; _->fail "missing accounts"
+            pure $ context $ toJSON $ if addresses==[mint,custody,owner] then [mintAccount,token,payer]
+              else if length addresses==4 then [Null,Null,token,payer] else [token,Null,payer]
+          "getLatestBlockhash"->pure $ context $ object ["blockhash" .= hash,"lastValidBlockHeight" .= (1000::Int)]
+          "isBlockhashValid"->pure $ context $ Bool True
           "getMinimumBalanceForRentExemption"->pure $ Number 1488440
           "getFeeForMessage"->pure $ context $ Number 5000
           "simulateTransaction"->pure $ context $ object ["err" .= Null]
@@ -4417,13 +4454,55 @@ tlsMain=do
     withReader settings {PG.connectUser=role} identity True $ \reader->
       withWriter settings store (const $ pure ()) $ \writer->do
         fixture fixtures ReadyIntake
-        withdrawal<-evalWrite writer (ReserveAutomaticFees 100 Wrapped recipient)
-          >>= maybe (fail "automatic owner reservation missing") pure
+        withdrawal<-if not canonical then
+          evalWrite writer (ReserveAutomaticFees 100 Wrapped recipient)
+            >>= maybe (fail "automatic owner reservation missing") pure
+          else withTestSigningKey $ \unusedKey->do
+            let directory=takeDirectory unusedKey; cookie=directory</>"native-cookie"
+                configuredNative=native {N.nativeCookie=cookie}
+                public=W.PublicConfiguration profile cluster (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing Nothing)
+                  "codec-fixture" mint owner 8 (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)])
+                  True False (W.Availability False "starting") Nothing immediatePayouts
+                recipients=Config.OwnerFeeRecipients
+                  "xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz" recipient
+                saved=do
+                  roots<-fixture fixtures PaymentRoots
+                  pure [key | root<-roots,Just key<-[S.rootWithdrawal root]]
+            writeFile cookie "fixture:fixture"; setFileMode cookie 0o600
+            endpoint<-signingEndpoint directory
+            fixture fixtures (WorkerHeads (N.nativeCheckpointHash native) headSignature)
+            before<-evalRead reader ReadBalances
+            Warp.testWithApplication (pure rpcApplication) $ \rpcPort->
+              bracket (newManager defaultManagerSettings {managerModifyRequest= \request->pure request {HTTP.secure=False,HTTP.host="127.0.0.1",HTTP.port=rpcPort}}) closeManager $ \manager->do
+                -- Stop the next cycle at its first identity RPC even if the
+                -- assertion thread is delayed; never race a signing attempt.
+                writeIORef workerProbe ((not.null) <$> saved)
+                flip finally (writeIORef workerProbe (pure False) >> void (tryPutMVar workerRelease ())) $
+                 withWorkerProcess manager reader writer (ObserverSettings configuredNative solana 1 headSignature headSignature) config
+                  (Just $ CustomerSettings public store sdk $ Just recipients) endpoint $ \_ _->do
+                    awaitCondition "automatic worker owner reservation" ((==1) . length <$> saved)
+                    evalRead reader ReadState >>= check . not . ledgerPaused
+            keys<-saved
+            key<-case keys of [one]->pure one; _->fail "owner reservation count changed"
+            result<-evalRead reader (ReadWithdrawal key) >>= maybe (fail "owner reservation missing") pure
+            evalRead reader ReadState >>= check . not . ledgerPaused
+            (_,prepared,attempts)<-evalRead reader (ReadPaymentWork $ paymentId $ withdrawalPayment result)
+            check (prepared==Nothing && null attempts)
+            after<-evalRead reader ReadBalances
+            check (M.filterWithKey (\(asset,_) _->asset==Native) before==M.filterWithKey (\(asset,_) _->asset==Native) after)
+            evalRead reader PendingAttempts >>= check . null
+            methods<-readIORef calls
+            check ("listunspent" `elem` methods && all (`notElem` methods) ["walletprocesspsbt","sendTransaction","sendrawtransaction"])
+            writeIORef calls []
+            putStrLn "PASS: actual worker scans, reconciles and reserves Wrapped owner payout after optional Native funding refusal"
+            pure result
         let outgoing=withdrawalPayment withdrawal; identifier=paymentId outgoing
             plan=SP.SolanaPlan identity recipient (money 3) (payoutReference identity identifier) (SP.RecentBlockhash hash 1000 100) (money 10000) (money 2100000)
         check (paymentAmount outgoing==money 3 && paymentRecipient outgoing==recipient)
         fixture fixtures ReadyIntake
-        evalWrite writer (AdmitPayoutRounds 100)
+        preparationTime<-floor <$> getPOSIXTime
+        fixture fixtures (FreshAt preparationTime)
+        evalWrite writer (AdmitPayoutRounds preparationTime)
         evalRead reader PaymentCandidates >>= check . elem identifier
         reply<-do
           -- The expected signature is computed independently from the unsigned SDK
@@ -4437,7 +4516,7 @@ tlsMain=do
                 H.replyTransaction=TE.decodeUtf8 $ B64.encode $ BS.singleton 1<>signature<>message}
           _<-either reject pure (H.validateHelperReply config (SP.solanaPayoutRequest config plan) expected)
           pure expected
-        _<-evalWrite writer (PreparePayment 100 identifier (money 2110000) (encoded plan))
+        _<-evalWrite writer (PreparePayment preparationTime identifier (money 2110000) (encoded plan))
         evalWrite writer (SaveDraft identifier 0 (encoded $ SP.solanaPayoutRequest config plan))
         fixture fixtures CoverBackup
         fixture fixtures ReadyIntake
@@ -4607,7 +4686,10 @@ tlsMain=do
               writeIORef calls []
               prior<-fixture fixtures RecoveryPauseCount
               withWorkerProcess manager reader writer (ObserverSettings native solana 1 "origin" "origin") config Nothing endpoint $ \_ _->do
-                awaitCondition "both payment recoveries" $ (>=prior+3) <$> fixture fixtures RecoveryPauseCount
+                awaitCondition "both payment recoveries" $ do
+                  pauses<-fixture fixtures RecoveryPauseCount
+                  methods<-readIORef calls
+                  pure (pauses>=prior+3 && "getSignatureStatuses" `elem` methods)
                 observed<-readIORef calls
                 check ("getSignatureStatuses" `elem` observed && "sendTransaction" `notElem` observed)
                 evalRead reader ReadState >>= check . ledgerPaused
@@ -4733,8 +4815,9 @@ tlsMain=do
                 readIORef calls >>= check . null
         -- Retrying reopens the same intent. Proved expired signatures remain
         -- history, not a second live transaction or a native replacement family.
-        fixture fixtures SeedCustodyHeads
-        let origins=[("Native","scan-origin"),("Solana","sol-origin"),("SolanaOperating","opening-signature")]
+        unless canonical (fixture fixtures SeedCustodyHeads)
+        let origins=if canonical then [("Native",N.nativeCheckpointHash native),("Solana",headSignature),("SolanaOperating",headSignature)]
+              else [("Native","scan-origin"),("Solana","sol-origin"),("SolanaOperating","opening-signature")]
             proof="{\"expiry\":\"offline custody selection contract\"}"
             pending expected=do
               clock<-floor <$> getPOSIXTime

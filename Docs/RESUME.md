@@ -1001,3 +1001,30 @@ fee-cap rejection without allocation/locking/signing/sending. Separate source
 review PASS. Temporary database and test processes cleaned. These are not real
 worker cross-chain progress, scheduler-error integration or funded acceptance;
 extend the existing serve/HTTPS fixture harness next, without exporting dispatch.
+
+### Canonical worker owner-reservation integration (2026-10-11)
+
+The existing TLS contract now runs the real canonical-profile worker before its
+signer phase. Explicit RPC fixtures provide consistent history and custody totals;
+the observer and reconciler must certify them without fixture freshness overrides
+while the worker runs. Native owner preview finds no available UTXOs and defers;
+the worker reserves exactly one three-unit Wrapped withdrawal. After cancellation
+and join, assertions require an unpaused ledger, unchanged Native allocations, an
+unprepared payment, no attempts and no signing/broadcast calls. The existing real
+HTTPS signer tests then consume that saved reservation. Devnet keeps its manual
+reservation fixture. No production code or evaluator entry point was added.
+
+A next-cycle RPC barrier prevents accidental preparation if the assertion thread
+is delayed. Cancelling inside that guarded recovery can conservatively pause the
+ledger; the post-join assertion detects this as failure rather than accepting it.
+The fixture uses signature-specific transaction lookup and retains worker-created
+history for later custody checks. Recovery waiting now requires the actual Solana
+status request, not just a pause-event count.
+
+Still unverified: scheduling while Native work is active, scheduler handling of
+an actual preview fee-cap refusal, and funded owner transfers. Neither this
+fixture nor its subsequent HTTPS signing phase certifies real-chain acceptance.
+
+Final build and both Canonical/Devnet PostgreSQL+HTTPS contracts PASS (session54232
+exit0). Temporary PostgreSQL and worker/signer/test processes were stopped and
+removed. Exact source/log hashes are recorded in .audit/payout.tsv.
