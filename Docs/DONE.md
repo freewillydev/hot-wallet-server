@@ -26,10 +26,12 @@ resolve older "unimplemented" notes below.
 | Production signing trust | Review source published; no production trust established | Designated key holder, independently published/pinned public key, exact artifact verification and distribution acceptance. User deferred ownership. |
 | Independent security approval and activation | Standard scan and18-file diff complete; subsequent projection patch has scoped static PASS | Close native-history and dependency applicability gates, obtain final current-release verdict, then explicitly verify public-access policy before activation. A partial scan or scoped PASS is insufficient. |
 
-Next executable deployment step: restore authorized AWS access, inspect the existing
-funded deployment read-only, then provision an isolated acceptance host. Do not
-overwrite its ledger, reuse retired custody or treat old schema tests as current.
-No task VM or disposable PostgreSQL instance is currently left running. Details,
+Current deployment check: isolated Ubuntu source installation from `930b547` is
+using dedicated unused keys and a separate backup namespace stopped at emsdk
+environment setup (exit127). The scoped dash fix passed; rerun is pending. First-run
+config creation passed; complete installation/startup/reboot remain unverified.
+The prior funded deployment is stopped and preserved. Do not overwrite its ledger,
+reuse retired custody or treat old schema tests as current. Details,
 source hashes and test scope are in [RESUME.md](RESUME.md) and the records below.
 
 ## Historical verification records

@@ -23,7 +23,10 @@ if [ ! -d "$HOME/.local/share/ecx-emsdk/.git" ]; then
 fi
 "$HOME/.local/share/ecx-emsdk/emsdk" install 3.1.74
 "$HOME/.local/share/ecx-emsdk/emsdk" activate 3.1.74
-. "$HOME/.local/share/ecx-emsdk/emsdk_env.sh"
+# dash cannot infer the sourced script's path; emsdk supports its own cwd.
+cd "$HOME/.local/share/ecx-emsdk"
+. ./emsdk_env.sh
+cd "$root"
 ghcup config add-release-channel cross
 emconfigure ghcup install ghc javascript-unknown-ghcjs-9.12.2
 # Use the installed toolchain directory, not GHCup's optional active symlinks.

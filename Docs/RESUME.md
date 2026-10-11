@@ -8,6 +8,18 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Implemented and checked
 
+- Current end-to-end installer attempt: clean Ubuntu host `i-07c78660b1a5734b9`,
+  commit `930b54729eb121ae3bad3663e6018d5351a0b723`, SSM command
+  `aa02a163-cd7e-403c-9d87-a1338acb3388`. Original source installer exited127 at emsdk environment setup;
+  private log `/root/hot-wallet/install.log`, status `install.exit`. Scoped dash fix
+  passed on the real host; resume with the corrected commit is next.
+  First invocation created root700 directory/root600 config and no services.
+  Dedicated unused custody/config was prepared separately and encrypted in transit;
+  backup namespace `/worker/installer-930b547/` is separate from funded backups.
+  Retained private inputs are outside this repo under aws-ecx/private/installer-930b547.
+  Public ingress remains disabled; old funded host remains stopped. Do not start
+  duplicate installer jobs or reuse those keys as another fresh installation.
+
 - Updater now takes no arguments. Installed `update-settings` safely reads the
   protected Haskell record and returns only the three update paths; wallet process
   protections precede secret reads. Example/README updated. Older binaries need

@@ -7,3 +7,6 @@ separate_static_review	PASS	history_projection_verifier: corrected expanded diff
 production_acceptance	FAIL	No full service upgrade, reboot, funded flow or production security certification in this scoped verification; fixtures do not establish those gates
 no_argument_updater	PASS	Cabal configure-only session65731 exit0; final log sha256=7e6e9de40c0f13eeb7a0393dc262a635c9305524b00470f605e8886e9e76a4ac; exact three-field JSON projection, no secrets, relative/control paths refused; sh -n and diff checks pass
 no_argument_review	PASS	history_projection_verifier scoped static recheck; protects wallet process before config read; quoted paths and signature gates retained; old-binary bootstrap documented; update.sh sha256=6fbb56f638611940dfa5897e29f9dea41a3441d7d8f9ebdcf7ebaa93539bb5ea
+source_install_930b547	FAIL	Actual clean Ubuntu24.04 x86_64 install aa02a163-cd7e-403c-9d87-a1338acb3388 exited127: emsdk_env.sh could not locate sourced script under dash; no bridge services started
+emsdk_dash_fix	PASS	Actual unprivileged build-user shell changed cwd to emsdk before sourcing; emconfigure/emcc found and emcc3.1.74 sanity passed; resume source installer still required
+emsdk_separate_review	PASS	history_projection_verifier scoped static review; toolchain sha256=9d71b6b9a45423eeae07e6e97544e6032565ffc53247782c884e66030852a8dd; full installation pending
