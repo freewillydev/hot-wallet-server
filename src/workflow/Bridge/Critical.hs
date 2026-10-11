@@ -880,27 +880,25 @@ instance WorkerOperations (WorkerCommand 'Critical result) where
           now<-floor <$> getPOSIXTime
           evalWrite writer (AdmitPayoutRounds now)
           candidates<-evalRead reader PaymentCandidates
-          -- Customer/active payments own their inputs first. Optional preview
-          -- must never contest an existing payment's native locks.
-          if null candidates then do
-            _<-scheduleOwnerFees environment
-            pure ()
-          else do
-            forM_ candidates $ \identifier->do
-              freshIntake environment
-              (_,_,attempts)<-evalRead reader (ReadPaymentWork identifier)
-              txid<-case attempts of
-                []->do
-                  evalWorker environment (\cap -> prepareOutgoing cap identifier)
-                  backupDecisions environment
-                  evalWorker environment (\cap -> signPreparedPayment cap identifier)
-                [saved]->pure saved
-                _->do
-                  family<-evalRead reader (ReadNativeFamily identifier)
-                  pure (signedId $ recordedSigned $ fst $ last family)
-              _<-evalWorker environment (\cap -> queuePayment cap txid)
-              backupDecisions environment
-              evalWorker environment (\cap -> broadcastPayment cap txid)
+          forM_ candidates $ \identifier->do
+            freshIntake environment
+            (_,_,attempts)<-evalRead reader (ReadPaymentWork identifier)
+            txid<-case attempts of
+              []->do
+                evalWorker environment (\cap -> prepareOutgoing cap identifier)
+                backupDecisions environment
+                evalWorker environment (\cap -> signPreparedPayment cap identifier)
+              [saved]->pure saved
+              _->do
+                family<-evalRead reader (ReadNativeFamily identifier)
+                pure (signedId $ recordedSigned $ fst $ last family)
+            _<-evalWorker environment (\cap -> queuePayment cap txid)
+            backupDecisions environment
+            evalWorker environment (\cap -> broadcastPayment cap txid)
+          -- Existing payments get first use of capacity, but one active chain
+          -- must not prevent optional work on the other.
+          _<-scheduleOwnerFees environment
+          pure ()
 
   -- Shared workflows take only the private resource context.
   -- Refresh stale evidence after slow checkpoints; never extend quote/backup terms.
@@ -910,7 +908,12 @@ instance WorkerOperations (WorkerCommand 'Critical result) where
 scheduleOwnerFees :: CriticalEnvironment -> IO Bool
 scheduleOwnerFees environment@(CriticalEnvironment rpc settings config configured _ reader writer) =
   case configured of
-    Just c | Just recipients<-ownerFeeRecipients c->go c recipients [Native,Wrapped]
+    Just c | Just recipients<-ownerFeeRecipients c->do
+      priority<-evalRead reader ReadAutomaticFeePriority
+      nativeWork<-evalRead reader ReadNativeLockWork
+      -- Never contest active native inputs. Saved withdrawal history gives
+      -- the less recently served asset priority, including after restart.
+      go c recipients [asset | asset<-priority,asset/=Native || nativeWork==Nothing]
     _->pure False
  where
   go _ _ []=pure False
@@ -945,7 +948,7 @@ scheduleOwnerFees environment@(CriticalEnvironment rpc settings config configure
         case outcome of
           Right (Just _)->pure True
           Right Nothing->go c recipients rest
-          Left (BridgeError code) | code `elem` ["native_admission_funds_unavailable",
+          Left (BridgeError code) | code `elem` ["native_admission_funds_unavailable","native_fee_budget_exceeded",
             "insufficient_operating_sol","insufficient_custody_tokens"]->go c recipients rest
           Left failure->throwIO failure
 

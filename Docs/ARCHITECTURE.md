@@ -1010,8 +1010,13 @@ extended key at `wpkh(xpub/0/0)` (tpub on Signet); the node derives and validate
 without importing a key. Solana uses the configured owner public key. A read first
 checks eligibility; the closed reservation repeats checks atomically under the
 writer lock. A successful reservation ends the cycle for custody reconciliation.
-Expected owner-only funding shortages skip the optional withdrawal; integrity
-failures still stop processing. These withdrawals use the ordinary batched payout
+Immutable withdrawal history prioritizes the less recently served asset, with
+never-used assets first; cancellation and restart retain that history. Active
+native lock work defers only native owner preview, not wrapped owner scheduling.
+Expected owner-only funding shortages and an otherwise valid native preview above
+its fee cap defer the optional withdrawal. Integrity failures still stop
+processing; ordinary payment fee checks remain unchanged.
+These withdrawals use the ordinary batched payout
 and signer pipeline. Funded end-to-end owner acceptance remains pending.
 Initial preparation updates that same hold; it never charges the reservation twice.
 Cancellation releases it only after projecting the remaining unsealed cohort's

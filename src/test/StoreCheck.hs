@@ -1812,6 +1812,7 @@ payoutRoundsMain=do
             ready 100
             pure ("convert:"<>oid)
       -- Automatic withdrawals use only Earned and preserve the manual engine.
+      evalRead reader ReadAutomaticFeePriority >>= check . (==[Native,Wrapped])
       let autoPolicy=policy {admissionLimits=limits {maximumWithdrawal=money 50}}
       withWriter settings autoPolicy (const $ pure ()) $ \writer->do
         ready 100
@@ -1822,6 +1823,7 @@ payoutRoundsMain=do
         fixture fixtures FinancialRecords >>= check . (==before)
         evalRead reader (ReadAutomaticFeeAmount Native (money 50) (money 50)) >>= check . (==Just (money 50))
         saved<-evalWrite writer (ReserveAutomaticFees 100 Native "owner") >>= maybe (fail "missing automatic withdrawal") pure
+        evalRead reader ReadAutomaticFeePriority >>= check . (==[Wrapped,Native])
         let outgoing=withdrawalPayment saved; key=T.drop 4 (paymentId outgoing)
         check (paymentAmount outgoing==money 50 && paymentRecipient outgoing=="owner")
         fixture fixtures (PaymentFeeHold $ paymentId outgoing) >>= check . (==[("Native",10,0)])
@@ -1833,6 +1835,7 @@ payoutRoundsMain=do
         evalWrite writer (Pause "automatic withdrawal fixture cleanup")
         expectStore "intake_paused" (evalWrite writer $ ReserveAutomaticFees 100 Native "owner")
         void $ evalWrite writer (CancelFees key "automatic fixture cleanup")
+        evalRead reader ReadAutomaticFeePriority >>= check . (==[Wrapped,Native])
       withWriter settings policy (const $ pure ()) $ \writer->do
         ready 100
         evalWrite writer (ReserveAutomaticFees 100 Wrapped "owner") >>= check . (==Nothing)
@@ -1859,7 +1862,9 @@ payoutRoundsMain=do
             key=T.drop 4 identifier
         check (paymentAsset outgoing==asset && paymentAmount outgoing==money quantity
           && paymentRecipient outgoing=="original-owner")
+        let priority=if asset==Native then [Wrapped,Native] else [Native,Wrapped]
         withWriter settings changedPolicy (const $ pure ()) $ \writer->do
+          evalRead reader ReadAutomaticFeePriority >>= check . (==priority)
           ready 101
           records<-(,) <$> fixture fixtures FinancialRecords <*> fixture fixtures ArchiveRecords
           evalRead reader (ReadWithdrawal key) >>= check . (==Just saved)
@@ -1871,6 +1876,7 @@ payoutRoundsMain=do
           void $ evalWrite writer (CancelFees key "restart fixture cleanup")
         after<-evalRead reader ReadBalances
         check (M.filter (/=0) after==M.filter (/=0) before)
+        evalRead reader ReadAutomaticFeePriority >>= check . (==priority)
       -- Owner completion of a pending customer cohort must not make a later
       -- cancellation consume its last closing slot. Refusal is atomic.
       let cancellationKey=T.replicate 64 "c"

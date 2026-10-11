@@ -130,6 +130,10 @@ checks = do
           rejects "native_admission_funds_unavailable" (previewNativePayment call (planProfile plan) (planDepth plan) (planFeeLimit plan) (planRecipient plan) (planAmount plan))
         pure (empty && "walletcreatefundedpsbt" `elem` methods && "gettxout" `elem` methods
           && all (`notElem` methods) ["getnewaddress","getrawchangeaddress","lockunspent","walletprocesspsbt","sendrawtransaction"])
+    , check "native owner preview reports fee-cap pressure without signing or allocating" $ once $ ioProperty $ do
+        (refused,methods)<-contract (\_ value->pure value) $ \call->
+          rejects "native_fee_budget_exceeded" (previewNativePayment call (planProfile plan) (planDepth plan) (amt 1) (planRecipient plan) (planAmount plan))
+        pure (refused && all (`notElem` methods) ["getnewaddress","getrawchangeaddress","lockunspent","walletprocesspsbt","sendrawtransaction"])
     , check "native preview normalizes only funding shortages and preserves other RPC failures" $ once $ ioProperty $ do
         results<-mapM (\(method,code,expected)->do
           (rejected,_)<-contract (\called value->if called==method then reject code else pure value) $ \call->

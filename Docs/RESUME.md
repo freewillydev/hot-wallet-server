@@ -983,3 +983,21 @@ Before a full clean-install VM, recheck disk: internal16GiB, CrucialX9 34MiB,
 T705 2.5GiB available at this check. The documented default betanet snapshot alone
 requires27GiB staging, excluding compiler/dependency/node runtime requirements.
 Do not start that bootstrap with the current capacity or delete shared data.
+
+### Owner scheduling liveness corrections (2026-10-11)
+
+Separate source review found two P2s: active customer work could indefinitely
+exclude owner scheduling on the other chain; native owner preview fee pressure
+could pause all service. The worker now processes candidates then considers owner
+work, skips Native while saved Native lock work exists, and prioritizes the asset
+with the oldest immutable withdrawal sequence (never-used first). Only one new
+reservation is committed per cycle. Optional native_fee_budget_exceeded defers
+owner scheduling; ordinary signing/payment validation and integrity failures are
+unchanged. No schema or runtime dispatch path was added.
+
+Build78006, real PostgreSQL payout6917 and full bridge-test91453 PASS. New checks
+cover priority before/after withdrawal, cancellation and reopened writers, and
+fee-cap rejection without allocation/locking/signing/sending. Separate source
+review PASS. Temporary database and test processes cleaned. These are not real
+worker cross-chain progress, scheduler-error integration or funded acceptance;
+extend the existing serve/HTTPS fixture harness next, without exporting dispatch.

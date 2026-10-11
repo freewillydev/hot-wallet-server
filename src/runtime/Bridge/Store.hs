@@ -207,6 +207,7 @@ data StoreRead a where
   ReadServiceStatus :: StoreRead W.ServiceStatus
   ReadPublicReport :: Int64 -> StoreRead W.PublicReport
   ReadAutomaticFeeAmount :: Asset -> Amount -> Amount -> StoreRead (Maybe Amount)
+  ReadAutomaticFeePriority :: StoreRead [Asset]
   ReadBalances :: StoreRead (M.Map (Asset,Account) Integer)
   ReadPaymentWork :: Text -> StoreRead (PaymentView,Maybe PreparedPayment,[Text])
   ReadPaymentAttempts :: Text -> StoreRead [Text]
@@ -322,6 +323,15 @@ evalRead (Reader settings identity remote) operation = bracket connect PG.close 
     row <- metadata c identity
     case operation of
       ReadAutomaticFeeAmount currency threshold cap -> automaticFeeAmount c currency threshold cap
+      ReadAutomaticFeePriority -> do
+        latest<-forM [Native,Wrapped] $ \asset->do
+          history<-O.runSelect c $ O.limit 1 $ O.orderBy (O.desc id) $ do
+            row<-O.selectTable S.withdrawals
+            O.where_ (S.asset row O..== O.sqlStrictText (T.pack $ show asset))
+            pure (S.sequenceNo row)
+            :: IO [Int64]
+          pure (asset,history)
+        pure (map fst $ sortOn snd latest)
       FindOrder header request -> findOrder c identity header request
       ReadProvisioning header identifier -> do
         row<-authorizedOrder c identity header identifier
