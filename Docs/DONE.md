@@ -691,3 +691,10 @@ install reproduction, least-privilege replacement, fresh/repeat controls, shell
 syntax and separate patch review PASS. This is a scoped helper check on ARM64,
 not the pending full x86_64 clean-install gate; larger Native-history recovery and
 remaining dependency/security gates stay open.
+
+Native freshness checkpoint: build, full PostgreSQL/process/backup contract and
+bridge-test PASS; separate candidate static review PASS. Stale scans now refuse
+intake without adding an operator pause; adjacent-output custody checks reuse one
+proof with per-output checks and revision fences intact. This does not close the
+native-history finding or certify unbounded runtime. See RESUME.md for evidence;
+real-node acceptance and all broader production gates remain required.

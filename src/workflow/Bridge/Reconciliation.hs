@@ -18,6 +18,7 @@ import Control.Concurrent.Async (concurrently)
 import Control.Monad (forM_)
 import Data.Aeson hiding (decode)
 import Data.Int (Int64)
+import Data.IORef (newIORef,readIORef,writeIORef)
 import Data.List (nub,sortOn)
 import Data.Maybe (mapMaybe)
 import qualified Data.Map.Strict as M
@@ -85,16 +86,25 @@ inspectCustodyWith clock identity native history solana verifier settings config
       pure (slot,w,supply)
   cursor<-headFor view "Native"
   depth<-evalRead reader (MaximumNativeDepth $ defaultNativeDepth settings)
+  -- Adjacent outputs share transaction evidence. Keep only one proof; every
+  -- output is checked, and the final revision fence rejects concurrent changes.
+  lastProof<-newIORef Nothing
   next<-history cursor depth $ \captured entry->do
     -- An advanced checkpoint requests a new scan, before inspecting old depths.
     require (captured==cursor) "custody_native_history_advanced"
     txid<-fieldValue "txid" entry
     confirmations<-fieldValue "confirmations" entry :: IO Int
     anchor<-parseValue (withObject "transaction" (.:? "blockhash")) entry
-    known<-evalRead reader (HasCustodyEvent "Native" txid)
-    require known "custody_native_history_advanced"
-    (_,savedAnchor,proof)<-evalRead reader (ReadCustodyEvent "Native" txid)
-    old<-fieldValue "confirmations" proof
+    cached<-readIORef lastProof
+    (savedAnchor,old)<-case cached of
+      Just (previous,anchor,depth) | previous==txid->pure (anchor,depth)
+      _->do
+        known<-evalRead reader (HasCustodyEvent "Native" txid)
+        require known "custody_native_history_advanced"
+        (_,anchor,proof)<-evalRead reader (ReadCustodyEvent "Native" txid)
+        depth<-fieldValue "confirmations" proof
+        writeIORef lastProof (Just (txid,anchor,depth))
+        pure (anchor,depth)
     require (old==confirmations && savedAnchor==maybe "unconfirmed" id anchor) "custody_native_history_changed"
   require (next==cursor) "custody_native_history_advanced"
   after<-nativeBalance native

@@ -2534,7 +2534,9 @@ recordCustody c expected now problem report = do
           "custody_solana_history_advanced"->["Solana","SolanaOperating"]
           _->[]
     forM_ affected $ \chain->scanHealth c chain now (Just code)
-    when (code `notElem` ["custody_native_history_advanced","custody_solana_history_advanced","custody_ledger_changed"]) $ do
+    -- An expired observation refuses intake until refreshed; it is not an
+    -- operator pause. Never clear a pause that was already set.
+    when (code `notElem` ["custody_native_history_advanced","custody_solana_history_advanced","custody_ledger_changed","scanners_not_fresh"]) $ do
       _<-O.runUpdate c O.Update {O.uTable=S.deployment,O.uUpdateWith= \r->r {S.paused=number 1,S.pauseReason=text $ "custody:"<>code},O.uWhere= \r->S.singleton r O..== number 1,O.uReturning=O.rCount}
       pure ()
   _<-O.runUpdate c O.Update {O.uTable=S.custody,

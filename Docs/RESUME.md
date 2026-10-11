@@ -1316,3 +1316,23 @@ No new module, dependency, schema or endpoint. Disposable PostgreSQL stopped and
 removed; no funds/deployment/public access changed. Next: prove long-scan freshness
 and real-node conflict behavior before closing the finding, then continue the
 remaining DONE.md production gates. Refund batching policy is unchanged.
+
+### Custody scan freshness (2026-10-11)
+
+RecordCustody now treats scanners_not_fresh as transient: failed custody still
+blocks intake, original scan timestamps remain, and existing pauses are never
+cleared. Adjacent native outputs reuse one saved transaction proof; each output
+still checks depth/anchor, and both revision fences remain. This is constant-space
+caching, not permission to exceed the 60-second custody deadline.
+
+Build session2219, full default PostgreSQL/process/backup session19104 and complete
+bridge-test session22418 all exit0. Added contracts cover stale refusal without
+new pause, preservation of existing pauses and concurrent event mutation during
+cached inspection. Existing final-output mismatch and timeout controls pass.
+Fresh read-only custody_freshness_candidate_review scoped static PASS. Evidence:
+Codex Security artifacts/native-freshness-{build,pg,suite}.log and
+findings/native-freshness-checkpoint.md. Net +13 production lines in two existing
+files, +23 test lines; no module/dependency/schema/API additions. Disposable PG
+stopped and removed; no funds/deployment/public access changed. Finding remains
+OPEN: real-node long-history/conflict/reorg acceptance and wider release gates
+remain; nonadjacent proofs still reread and a custody timeout still pauses.

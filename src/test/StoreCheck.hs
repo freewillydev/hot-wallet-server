@@ -1100,6 +1100,18 @@ ledgerMain = do
         check (certified==(Just revision,Just 100,Nothing))
         evalRead reader ReadState >>= check . ledgerPaused
         fixture fixtures ReadyIntake
+        -- A completed scan retains its start time. Expiry must refuse intake
+        -- without converting a running deployment into a persistent pause.
+        expectStore "scanners_not_fresh" (evalRead reader $ ReadCustodySnapshot 161 origins False)
+        staleRevision<-evalRead reader ReadCustodyRevision
+        evalWrite writer (RecordCustody staleRevision 161 (Just "scanners_not_fresh") Nothing)
+        evalRead reader ReadState >>= check . not . ledgerPaused
+        fixture fixtures ReadCustodyCheck >>= check . (==(Nothing,Just 161,Just "scanners_not_fresh"))
+        expectStore "scanners_not_fresh" (evalRead reader $ CheckIntake 161)
+        forM_ origins $ \(chain,_)->do
+          (success,problem,_)<-fixture fixtures (ReadScanHealth chain)
+          check (success==Just 100 && problem==Nothing)
+        fixture fixtures ReadyIntake
         forM_ [("custody_native_history_advanced",["Native"]),("custody_solana_history_advanced",["Solana","SolanaOperating"])] $ \(code,affected)->do
           before<-evalRead reader ReadCustodyRevision
           evalWrite writer (RecordCustody before 100 (Just code) Nothing)
@@ -1128,6 +1140,8 @@ ledgerMain = do
           evalWrite writer (RecordCustody revision 100 (Just code) Nothing)
           evalRead reader ReadState >>= check . ledgerPaused
         evalWrite writer (RecordCustody revision 100 (Just "balance_mismatch") (Just $ object ["matches" .= False]))
+        evalRead reader ReadState >>= check . ledgerPaused
+        evalWrite writer (RecordCustody revision 161 (Just "scanners_not_fresh") Nothing)
         evalRead reader ReadState >>= check . ledgerPaused
         evalWrite writer (RecordCustody revision 100 Nothing good)
         evalRead reader ReadState >>= check . ledgerPaused
@@ -3265,6 +3279,15 @@ custodyContract database store fixtures reader = do
   (_,_,largeMatches,_)<-inspect (pure 100) (pure ()) (largeHistory 0) good Nothing settings
   unless largeMatches (fail "large custody history changed balances")
   expectStore "custody_native_history_changed" (inspect (pure 100) (pure ()) (largeHistory 1) good Nothing settings)
+  let repeated action cursor _ consume=do
+        let entry=object ["txid" .= newTx,"confirmations" .= (0::Int)]
+        consume cursor entry
+        action
+        consume cursor entry
+        pure cursor
+  expectStore "custody_ledger_changed" $
+    inspectCustodyWith (pure 100) (pure ()) nativeCall
+      (repeated $ fixture fixtures $ CustodyHeadReview 0) good Nothing settings config reader False
   expectStore "custody_native_history_changed" (inspectAppeared (pure ()) 1)
   expectStore "custody_history_not_current" (inspectAppeared (seed 1) 0) `finally` seed 0
   samples<-newIORef (0::Int)
