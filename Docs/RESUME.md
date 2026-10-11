@@ -967,3 +967,19 @@ permissions. Do not retry unchanged or claim a scan is running/passed. A managed
 permission-profile session is required for that plugin gate. Daybreak access check
 also returned not_granted (advisory only, not the launch blocker). The installed
 plugin remains available; temporary UI driver was stopped.
+
+### Published checkpoint verification (2026-10-11)
+
+Commit b14cec4c94f0fb6cf6da1e7f07e68ea92f227ba6 is published on origin/main;
+its tree matches the independently reviewed 4a376cd checkpoint. Full bridge-test
+on that committed source PASS (session8673). Gitleaks8.30.1 scanned the current
+directory and all27 local Git commits (non-shallow); each returned six flags:
+two public dependency commit hashes, two Go dependency checksums, a disposable
+provisioning-test token and the public xpub fixture. No scanner rules suppressed.
+These results do not certify absence of secrets or replace the independent
+security review, real-chain acceptance or Ubuntu whole-host installation.
+
+Before a full clean-install VM, recheck disk: internal16GiB, CrucialX9 34MiB,
+T705 2.5GiB available at this check. The documented default betanet snapshot alone
+requires27GiB staging, excluding compiler/dependency/node runtime requirements.
+Do not start that bootstrap with the current capacity or delete shared data.
