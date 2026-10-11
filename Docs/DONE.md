@@ -267,3 +267,18 @@ PASS (scoped): flatter dispatch and named local checkpoint steps preserve the ga
 authorization/signing sequence, cleanup and timeout. Separate source-equivalence
 review passed; the full local bridge-test suite passed on HEAD plus only this change.
 Evidence: Docs/.audit/layout.tsv. Production gates remain unchanged.
+
+### Unknown-signature cancellation and signer gate
+
+Production review found a cancellation gap: a lost/withheld signer reply can leave
+valid bytes outside the ledger. Cancelling that preparation could then permit a
+second payment. Complete drafts are now refused before cleanup or generation
+advance; incomplete-draft cancellation remains available. Full safe recovery of
+complete drafts and review of historical cancellations remain FAIL/open.
+The finite signer-gate model passed 61,745 states and three deliberate faulty
+lock transitions were rejected. This does not close whole-system security review.
+
+OPEN: native RPC server authentication/local port ownership. Current managed
+loopback HTTP does not prevent another local UID from impersonating a stopped
+node. Require an enforced boundary and restart/adversarial acceptance; client
+passwords and chain identity checks alone do not close this finding.

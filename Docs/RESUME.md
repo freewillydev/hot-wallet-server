@@ -246,3 +246,20 @@ Configured customer links are now wired through record setup, interface.json and
 the browser (see DONE.md and .audit/layout.tsv). Owner withdrawals still require
 paused operator authorization; automatic sweeps must use a distinct closed ledger
 authorization and the resolved payout-round policy, not bypass that check.
+
+## Security review follow-up
+
+Codex Security remains not installed; no plugin scan was run. A separate read-only
+review of HEAD1ae0700 found that an absent saved attempt wrongly permitted
+cancellation of a potentially signed draft. The protective fix refuses complete
+drafts in Store and lifecycle decisions. Do not represent this as full recovery
+completion: safe complete-draft cancellation and audit of any historical completed
+cancellations remain release work. Public access remains off. The abstract signer
+gate model now explicitly checks mutual exclusion with three failing mutations.
+
+Separate review also confirmed native RPC server impersonation risk: managed node
+uses ordinary loopback HTTP on unprivileged port 28532 with persistent Basic RPC
+credentials. A different local UID can bind the port during node downtime. Chain
+identity replies are not server authentication. Resolve with authenticated node
+transport or an enforced OS binding/network boundary, and test restart/takeover
+refusal before production. No live endpoint or credentials were exercised.

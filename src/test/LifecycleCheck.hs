@@ -299,7 +299,14 @@ checks = sequence
             pending=facts {cancellationPrevious=Just("cancel","{}",False)}
             done=pending {cancellationPrevious=Just("cancel","{}",True),cancellationUnsigned=Nothing}
             decide phase=decideCancellation phase prepared "cancel" "{}"
-        in conjoin [decide BeginCleanup facts===Right RequestCancellation
+            signable=prepared {preparedDraft=Just "saved draft; signature reply may be lost"}
+            unknown phase previous=decideCancellation phase signable "cancel" "{}"
+              facts {cancellationPrevious=previous,cancellationUnsigned=Just signable}
+        in conjoin [checkCancellableDraft prepared===Right ()
+             ,checkCancellableDraft signable===Left "preparation_signature_outcome_unknown"
+             ,unknown BeginCleanup Nothing===Left "preparation_signature_outcome_unknown"
+             ,unknown FinishCleanup (Just("cancel","{}",False))===Left "preparation_signature_outcome_unknown"
+             ,decide BeginCleanup facts===Right RequestCancellation
              ,decide BeginCleanup pending===Right KeepCancellation
              ,decide FinishCleanup pending===Right(CompleteCancellation $ eligible && generation<7)
              ,decide FinishCleanup done===Right KeepCancellation

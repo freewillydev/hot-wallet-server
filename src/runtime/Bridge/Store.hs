@@ -2525,6 +2525,7 @@ cancellationPreparation c identity identifier = do
     pure tx
     :: IO [Text]
   require (null attempts) "preparation_already_signed"
+  checked (checkCancellableDraft saved)
   pure saved
 
 beginCancellation :: PG.Connection -> StorePolicy -> PreparedPayment -> Int64 -> Text -> Text -> IO ()

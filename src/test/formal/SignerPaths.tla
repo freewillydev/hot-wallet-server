@@ -1,5 +1,5 @@
 --------------------------- MODULE SignerPaths ---------------------------
-EXTENDS FiniteSets
+EXTENDS FiniteSets, Naturals
 CONSTANT Requests
 ASSUME Requests # {}
 Paths == {"sign-preparation", "sign-replacement", "draft-replacement", "checkpoint-custody"}
@@ -17,8 +17,8 @@ Result(op) == CASE op = "SignPrepared" -> "PreparedResult"
               [] op = "DraftReplacement" -> "DraftResult"
               [] op = "CheckpointCustody" -> "CheckpointResult"
 Owner(c) == CHOOSE p \in Paths : Result(Handler(p)) = c
-VARIABLES stage, path, authenticated, eligible, stable, operation, dsl, output, paying, dispatched
-vars == <<stage, path, authenticated, eligible, stable, operation, dsl, output, paying, dispatched>>
+VARIABLES stage, path, authenticated, eligible, stable, operation, dsl, output, paying, dispatched, gateOwner
+vars == <<stage, path, authenticated, eligible, stable, operation, dsl, output, paying, dispatched, gateOwner>>
 Init == /\ stage = [r \in Requests |-> "idle"]
         /\ path = [r \in Requests |-> None]
         /\ authenticated = [r \in Requests |-> FALSE]
@@ -29,6 +29,7 @@ Init == /\ stage = [r \in Requests |-> "idle"]
         /\ output = [r \in Requests |-> None]
         /\ paying = [r \in Requests |-> FALSE]
         /\ dispatched = [r \in Requests |-> FALSE]
+        /\ gateOwner = None
 Receive(r,p,a,e,s,mode) ==
   /\ stage[r] = "idle"
   /\ stage' = [stage EXCEPT ![r] = "requested"]
@@ -37,33 +38,35 @@ Receive(r,p,a,e,s,mode) ==
   /\ eligible' = [eligible EXCEPT ![r] = e]
   /\ stable' = [stable EXCEPT ![r] = s]
   /\ paying' = [paying EXCEPT ![r] = mode]
-  /\ UNCHANGED <<operation,dsl,output,dispatched>>
+  /\ UNCHANGED <<operation,dsl,output,dispatched,gateOwner>>
 \* The enclosing worker workflow already holds its gate. Only its private
 \* critical dispatcher can enter this signing-transport branch.
 Dispatch(r) ==
   /\ stage[r] = "requested" /\ paying[r]
   /\ stage' = [stage EXCEPT ![r] = "received"]
   /\ dispatched' = [dispatched EXCEPT ![r] = TRUE]
-  /\ UNCHANGED <<path,authenticated,eligible,stable,operation,dsl,output,paying>>
+  /\ UNCHANGED <<path,authenticated,eligible,stable,operation,dsl,output,paying,gateOwner>>
 Route(r) ==
   /\ stage[r] = "received" /\ authenticated[r] /\ path[r] \in Paths
   /\ stage' = [stage EXCEPT ![r] = "resolved"]
   /\ operation' = [operation EXCEPT ![r] = Handler(path[r])]
-  /\ UNCHANGED <<path,authenticated,eligible,stable,dsl,output,paying,dispatched>>
+  /\ UNCHANGED <<path,authenticated,eligible,stable,dsl,output,paying,dispatched,gateOwner>>
 Resolve(r) ==
   /\ stage[r] = "resolved"
   /\ stage' = [stage EXCEPT ![r] = "dsl"]
   /\ dsl' = [dsl EXCEPT ![r] = Command(operation[r])]
-  /\ UNCHANGED <<path,authenticated,eligible,stable,operation,output,paying,dispatched>>
+  /\ UNCHANGED <<path,authenticated,eligible,stable,operation,output,paying,dispatched,gateOwner>>
 \* Runtime operation_path logs use resolved/dsl/evaluating/done/rejected.
 \* EnterEvaluator corresponds to acquisition of the signer critical gate;
 \* logs themselves are diagnostic, not an additional authorization mechanism.
 EnterEvaluator(r) ==
-  /\ stage[r] = "dsl"
+  /\ stage[r] = "dsl" /\ gateOwner = None
+  /\ gateOwner' = r
   /\ stage' = [stage EXCEPT ![r] = "evaluating"]
   /\ UNCHANGED <<path,authenticated,eligible,stable,operation,dsl,output,paying,dispatched>>
 Evaluate(r) ==
   /\ stage[r] = "evaluating" /\ eligible[r] /\ stable[r]
+  /\ gateOwner' = None
   /\ stage' = [stage EXCEPT ![r] = "done"]
   /\ output' = [output EXCEPT ![r] = Result(dsl[r].operation)]
   /\ UNCHANGED <<path,authenticated,eligible,stable,operation,dsl,paying,dispatched>>
@@ -71,6 +74,7 @@ Reject(r) ==
   /\ \/ stage[r] = "requested" /\ ~paying[r]
      \/ stage[r] = "received" /\ (~authenticated[r] \/ path[r] \notin Paths)
      \/ stage[r] = "evaluating" /\ (~eligible[r] \/ ~stable[r])
+  /\ gateOwner' = IF gateOwner = r THEN None ELSE gateOwner
   /\ stage' = [stage EXCEPT ![r] = "rejected"]
   /\ UNCHANGED <<path,authenticated,eligible,stable,operation,dsl,output,paying,dispatched>>
 Next == \E r \in Requests :
@@ -78,6 +82,7 @@ Next == \E r \in Requests :
           \/ Dispatch(r) \/ Route(r) \/ Resolve(r) \/ EnterEvaluator(r) \/ Evaluate(r) \/ Reject(r)
 Spec == Init /\ [][Next]_vars
 TypeOK ==
+  /\ gateOwner \in Requests \cup {None}
   /\ stage \in [Requests -> {"idle","requested","received","resolved","dsl","evaluating","done","rejected"}]
   /\ path \in [Requests -> Paths \cup {None,"unknown"}]
   /\ authenticated \in [Requests -> BOOLEAN]
@@ -86,6 +91,11 @@ TypeOK ==
   /\ dsl \in [Requests -> {Command(op) : op \in Operations} \cup {NoCommand}]
   /\ output \in [Requests -> Constructors \cup {None}]
   /\ paying \in [Requests -> BOOLEAN] /\ dispatched \in [Requests -> BOOLEAN]
+\* The signer holds its gate across authorization, key work and recheck.
+\* Refusal releases it just as withMVar releases after an exception.
+GateOwnership ==
+  /\ \A r \in Requests : (stage[r] = "evaluating") \equiv (gateOwner = r)
+  /\ Cardinality({r \in Requests : stage[r] = "evaluating"}) <= 1
 OutputStates == {[constructor |-> c] : c \in Constructors}
 GeneratorPaths(state) == {p \in Paths : Result(Handler(p)) = state.constructor}
 UniqueConstructor == \A state \in OutputStates : Cardinality(GeneratorPaths(state)) = 1

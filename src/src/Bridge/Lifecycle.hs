@@ -19,7 +19,7 @@ module Bridge.Lifecycle
   , TreasuryFacts(..), treasurySplit, decideTreasury, decideTreasurySpend
   , CustomerKind(..), CustomerPayment(..), projectCustomer, compactCustomerPayments, parsePaymentStatus
   , scanAssets, scanFacts, checkScanBatch, checkScan, ObservationFacts(..), checkObservation, observationNeedsReview
-  , CleanupPhase(..), CancellationFacts(..), CancellationDecision(..), decideCancellation
+  , CleanupPhase(..), CancellationFacts(..), CancellationDecision(..), decideCancellation, checkCancellableDraft
   , ExpiryFacts(..), decideSolanaExpiry, RetryFacts(..), decideSolanaRetry
   , checkReplacementParent, checkReplacementDraft, checkReplacementSigning
   , NativeSettlementCheck(..), NativeWinnerFacts(..), NativeWinnerEffect(..), decideNativeWinner, decideNativeReview
@@ -673,13 +673,21 @@ data CancellationFacts = CancellationFacts
   , cancellationUnsigned :: Maybe PreparedPayment, cancellationSourceEligible :: Bool } deriving (Eq,Show)
 data CancellationDecision = KeepCancellation | RequestCancellation | CompleteCancellation Bool deriving (Eq,Show)
 
+-- A complete draft may have been signed even when the worker never saved the
+-- reply. Only work that could not yet reach signing is safe to discard.
+checkCancellableDraft :: PreparedPayment -> Either Text ()
+checkCancellableDraft prepared =
+  ensure (preparedDraft prepared==Nothing) "preparation_signature_outcome_unknown"
+
 -- Only the closed reader can supply current unsigned work. Begin requires fresh
 -- custody; finish instead requires the exact saved cleanup to have returned.
 -- Its caller performs cleanup between commits; an unknown result never finishes.
 decideCancellation :: CleanupPhase -> PreparedPayment -> Text -> Text -> CancellationFacts -> Either Text CancellationDecision
 decideCancellation phase expected reason cleanup facts = do
   let operator=cancellationOperator facts
-      current=ensure (cancellationUnsigned facts==Just expected) "preparation_cancellation_not_expected"
+      current=do
+        ensure (cancellationUnsigned facts==Just expected) "preparation_cancellation_not_expected"
+        checkCancellableDraft expected
   ensure (preparedGeneration expected>=0 && preparedGeneration expected<8) "invalid_preparation_generation"
   ensure (operatorPaused operator) "pause_before_operator_action"
   case cancellationPrevious facts of

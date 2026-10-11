@@ -968,3 +968,21 @@ coverage while ignoring auxiliary rows. On re-upgrade, scratch bound to a differ
 real checkpoint is obsolete and ignored; only a subsequent closed write replaces
 it, with no rewind or replay of accounting. Backups include the ordinary checkpoints
 table, including these records; final acceptance must verify their restoration.
+
+### Lost-signature cancellation boundary
+
+A missing attempt row is not evidence that signing never happened. Cancellation
+now refuses every complete draft, in both the closed Store reader and the pure
+Begin/Finish decision, with `preparation_signature_outcome_unknown`. Only an
+incomplete preparation that could not pass signer admission may be discarded.
+The check precedes native input unlock and successor-generation authorization.
+This is a conservative safety restriction, not a completed recovery protocol:
+complete-draft cancellation still needs chain-specific invalidation evidence or a
+durable signer-issuance protocol. Previously cancelled complete drafts require
+operator review before production; this guard does not invalidate old signatures.
+
+The current two-request signer model also tracks exclusive gate ownership from
+evaluator entry through success/refusal. TLC exhausts 61,745 distinct states;
+lock-bypass, early-release and leaked-lock mutations violate `GateOwnership`.
+This is bounded abstract safety evidence, not a runtime refinement, liveness or
+cryptographic proof. Worker serialization remains an explicit model assumption.
