@@ -3,11 +3,12 @@ module Bridge.Native
   ( NativeSettings(..), validateNativeSettings, nativeCall, nativeIdentity, nativeIdentityWith
   , verifyNativeBoundaryWith, validateNativeRecipientWith, nativeWalletInfoWith, nativeWalletKeysWith, nativeWalletReadyWith
   , NativeRecovery(..), evalNativeRecoveryWith
-  , recoverNativeAddressWith, nativeHistory, nativeAmount, nativeNumber, signetChallenge ) where
+  , ownerAddressWith, recoverNativeAddressWith, nativeHistory, nativeAmount, nativeNumber, signetChallenge ) where
 
 import qualified Bridge.AdminKey as Private
 import qualified Bridge.NativeBackup as BackupTransfer
 import Bridge.Identity (digest)
+import Bridge.NativeKey (validNetworkXpub)
 import Crypto.Random (getRandomBytes)
 import System.Directory (removeDirectoryRecursive,listDirectory)
 import qualified System.Posix.Directory as PD
@@ -87,6 +88,24 @@ nativeIdentityWith call c = do
   peers <- call False "getconnectioncount" [] >>= parseValue parseJSON :: IO Int
   require (peers>0) "native_no_peers"
   pure info
+-- Fixed external receive branch/index: no wallet import or private key access.
+-- The node supplies descriptor checksum/address encoding for its actual network.
+ownerAddressWith :: (Bool -> Text -> [Value] -> IO Value) -> Profile -> Text -> IO Text
+ownerAddressWith call profile key = do
+  validNetworkXpub (profile==L2LSignetDevnet) key >>= (`require` "invalid_owner_ecx_xpub")
+  let requested="wpkh("<>key<>"/0/0)"
+  info<-call False "getdescriptorinfo" [String requested]
+  descriptor<-fieldValue "descriptor" info
+  private<-fieldValue "hasprivatekeys" info
+  ranged<-fieldValue "isrange" info
+  solvable<-fieldValue "issolvable" info
+  require (not private && not ranged && solvable
+    && (requested<>"#") `T.isPrefixOf` descriptor) "invalid_owner_descriptor"
+  addresses<-call False "deriveaddresses" [String descriptor] >>= parseValue parseJSON
+  address<-case addresses of [one]->pure one; _->reject "invalid_owner_address_count"
+  _<-validateNativeRecipientWith call address
+  pure address
+
 validateNativeRecipientWith :: (Bool -> Text -> [Value] -> IO Value) -> Text -> IO Text
 validateNativeRecipientWith call address = do
   require (not (T.null address) && T.length address<=128) "invalid_native_address"

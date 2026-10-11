@@ -33,7 +33,8 @@ import qualified Data.ByteString.Base64 as B64
 import qualified Data.Text.Encoding as TE
 import Bridge.Domain
 import Bridge.Wire (PaymentTerms(..),CostLimits(..),PolicySnapshot(..))
-import Bridge.Store
+import Bridge.Store hiding (evalWrite)
+import qualified Bridge.Store as Store
 import Bridge.Signer
 import Bridge.Recovery
 import Bridge.Payment (payoutReference)
@@ -89,6 +90,12 @@ import qualified Opaleye as O
 import System.Exit (ExitCode(..),exitSuccess)
 import System.Environment (getEnv,lookupEnv,getEnvironment)
 
+-- Preserve typed errors while identifying the failing contract call site.
+evalWrite :: HasCallStack => Writer -> StoreWrite a -> IO a
+evalWrite writer operation = Store.evalWrite writer operation `catch` \(err@(BridgeError code)) -> do
+  when (code=="payout_round_not_due") $ putStrLn (prettyCallStack callStack)
+  throwIO err
+
 main :: IO ()
 main=lookupEnv "ECX_PROVISION_CHILD" >>= maybe normal ProvisionCheck.child
  where
@@ -100,6 +107,7 @@ contractMain = do
   credentialsContract
   initialFunding<-lookupEnv "ECX_INITIAL_FUNDING_ONLY"
   historyOnly<-lookupEnv "ECX_REBUILD_HISTORY_ONLY"
+  payoutsOnly<-lookupEnv "ECX_REBUILD_PAYOUT_ONLY"
   cacheOnly<-lookupEnv "ECX_REPORT_CACHE_ONLY"
   live<-lookupEnv "ECX_REBUILD_LIVE_OBSERVER_CONFIG"
   setup<-lookupEnv "ECX_REBUILD_SETUP_ONLY"
@@ -111,7 +119,7 @@ contractMain = do
   custody<-lookupEnv "ECX_REBUILD_CUSTODY_ONLY"
   when (encrypted==Just "1" && (native/=Just "1" || custody/=Just "1"))
     (fail "encrypted native acceptance requires native recovery and custody modes")
-  if initialFunding==Just "1" then initialFundingMain else if historyOnly==Just "1" then historyProgressMain else if cacheOnly==Just "1" then reportCacheMain else case live of
+  if payoutsOnly==Just "1" then payoutRoundsMain else if initialFunding==Just "1" then initialFundingMain else if historyOnly==Just "1" then historyProgressMain else if cacheOnly==Just "1" then reportCacheMain else case live of
     Just path->liveObserverMain path
     Nothing->if setup==Just "1" then setupMain else if native==Just "1" then nativeRecoveryMain else if tls==Just "1" then tlsMain else if fence==Just "1" then fenceMain else if server==Just "1" then serverMain else ledgerMain
 
@@ -292,7 +300,7 @@ liveObserverMain path=do
         identity=Config.fingerprint config
         policy=Config.storePolicy config
         public=Config.publicConfiguration config (Config.defaultInterface $ Config.profile config) False
-        customer=CustomerSettings public policy (Config.solanaSdkLibrary config)
+        customer=CustomerSettings public policy (Config.solanaSdkLibrary config) Nothing
     evalSetup settings (InitializeLedger identity)
     _<-evalRestore settings (AdoptLedger (Config.fenceDirectory config) identity 0)
     withReader settings {PG.connectUser=role} identity (Config.backupRequired config) $ \reader->
@@ -338,8 +346,8 @@ setupMain=do
         (code,_,_)<-Process.readCreateProcessWithExitCode (Process.proc binary ("initialize-ledger":arguments))
           {Process.env=Just $ overrides<>filter (not . T.isPrefixOf "PG" . T.pack . fst) environment} ""
         check (code==ExitSuccess)
-  if residue==Just "1" then bracket (PG.connect settings) PG.close $ \fixtures->do
-    fixture fixtures SetupResidue
+  if residue `elem` [Just "1",Just "cohort"] then bracket (PG.connect settings) PG.close $ \fixtures->do
+    fixture fixtures (SetupResidue $ residue==Just "cohort")
     expectStore "initialization_requires_empty_ledger" initialize
     (rows,attempts,postings)<-fixture fixtures ArchiveRecords
     check (null rows && null attempts && null postings)
@@ -656,13 +664,13 @@ reportCacheMain=do
   let settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
       terms=PaymentTerms (PolicySnapshot 2 "finalized" "contract") (CostLimits (money 10) (money 10) (money 10))
       limits=OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)
-      store=StorePolicy terms limits "contract" True
+      store=StorePolicy terms limits "contract" True immediatePayouts
       key=T.replicate 32 "1"
       native=N.NativeSettings W.L2LSignetDevnet "http://127.0.0.1:29432" "/unused" "workflow" 1 (T.replicate 64 "0")
       chain=ObserverSettings native (Solana.SolanaSettings W.L2LSignetDevnet "https://api.devnet.solana.com" Nothing key key key) 2 "sol-origin" "opening-signature"
       policy=H.SolanaPolicy "contract" "contract" key key key (money 10) (money 10)
       public=W.PublicConfiguration W.L2LSignetDevnet "devnet" (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing Nothing)
-        "contract" key key 8 (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)]) False False (W.Availability False "starting") Nothing
+        "contract" key key 8 (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)]) False False (W.Availability False "starting") Nothing immediatePayouts
       check message ok=unless ok (fail message)
   bracket (PG.connect settings) PG.close $ \fixtures->do
     fixture fixtures Initialize
@@ -670,7 +678,7 @@ reportCacheMain=do
     withReader settings {PG.connectUser=role} "contract" True $ \reader->
       withWriter settings store (const $ pure ()) $ \writer->
       bracket (newManager defaultManagerSettings {managerModifyRequest= \_ -> reject "offline_process_rpc"}) closeManager $ \manager->
-      withWorkerProcess manager reader writer chain policy (Just $ CustomerSettings public store "/unused/sdk") (SigningEndpoint 9443 "/unused/auth") $ \port _->
+      withWorkerProcess manager reader writer chain policy (Just $ CustomerSettings public store "/unused/sdk" Nothing) (SigningEndpoint 9443 "/unused/auth") $ \port _->
       bracket (newManager defaultManagerSettings {HTTP.managerConnCount=16}) closeManager $ \client->
       bracket (PG.connect settings) PG.close $ \lock->do
         let request=do
@@ -740,7 +748,7 @@ initialFundingMain=do
   let settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
       identity=digest "initial-funding-contract"
       policy=PaymentTerms (PolicySnapshot 6 "finalized" identity) (CostLimits (money 10) (money 5000) (money 2000000))
-      store=StorePolicy policy (OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)) identity True
+      store=StorePolicy policy (OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)) identity True immediatePayouts
       owner="9Dfte8EDq1L9F2N4qTuMqtAEZUmDcvXpCu7EGXEHVcjY"; mint="EVHqNdzjCupKi4rQkbuYw52sa1m8A7jeUAMP23S9AVVq"
       account="6YJUhxxb3Udg2SBu2P7JktUfMMCNUw7itdNTHzDk3Xec"
       signature="4t68xvEFwSYUFDhRuD1QGHAjEiMNZnHqexNKPxhnVidtdMxViKgaqrBLGeNRMTn97hxpWS23FQzumAJfcoZW276G"
@@ -842,7 +850,7 @@ ledgerMain = do
       readerSettings=settings {PG.connectUser=readRole}
       policy=PaymentTerms (PolicySnapshot 2 "finalized" "contract") (CostLimits (money 10) (money 10) (money 10))
       limits=OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)
-      store terms config=StorePolicy terms config "contract" True
+      store terms config=StorePolicy terms config "contract" True immediatePayouts
       key=T.replicate 64 "a"
       reserve=ReserveFees 100 key Native (money 100) "recipient" "test owned revenue"
       check :: HasCallStack => Bool -> IO ()
@@ -874,7 +882,7 @@ ledgerMain = do
           timeout 2000000 (wait pending) >>= maybe (fail "deployment lock not released") pure
         replay <- evalWrite writer reserve
         check (first==replay && withdrawalSequence first==1)
-        evalRead reader PaymentCandidates >>= check . (==["fee:"<>key])
+        evalRead reader PaymentCandidates >>= check . null -- reserved, not yet admitted
         feeView<-evalRead reader (ReadPayment $ "fee:"<>key)
         check (savedPayment feeView==withdrawalPayment first && savedTerms feeView==policy && savedStatus feeView==PaymentReady)
         expectStore "payment_not_found" (evalRead reader $ ReadPayment "absent")
@@ -1324,6 +1332,9 @@ ledgerMain = do
         fixture fixtures RefreshCustody
         fixture fixtures (ReviewAdmission historical)
         evalRead reader (ReadOrder auth historical) >>= check . (=="NeedsReview") . W.status
+        cohort<-fixture fixtures PayoutCohort
+        check ((intent,"Wrapped",93,True) `elem` cohort)
+        check (("review-obligation","Wrapped",93,False) `elem` cohort)
         prepared<-evalWrite writer (PreparePayment 100 intent (money 10) "{}")
         evalRead reader (ReadOrder auth historical) >>= check . (=="Preparing") . W.status
         selected<-evalRead reader PaymentCandidates
@@ -1765,6 +1776,332 @@ ledgerMain = do
 
 money :: Integer -> Amount
 money = either (error . T.unpack) id . amount
+
+-- Actual PostgreSQL scheduling, with public fixture funds and no chain IO.
+payoutRoundsMain :: IO ()
+payoutRoundsMain=do
+  database<-getEnv "ECX_REBUILD_CONTRACT_DATABASE"
+  unless ("ecx_rebuild_contract_" `T.isPrefixOf` T.pack database) (fail "disposable database required")
+  user<-getEnv "USER"; role<-getEnv "ECX_REBUILD_CONTRACT_READER"
+  let settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
+      terms=PaymentTerms (PolicySnapshot 2 "finalized" "contract") (CostLimits (money 10) (money 10) (money 10))
+      limits=OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)
+      policy=StorePolicy terms limits "contract" True (W.PayoutPolicy (money 50) (money 99) 172800)
+      check :: HasCallStack => Bool -> IO ()
+      check ok=unless ok (fail $ "payout round contract failed\n"<>prettyCallStack callStack)
+      denied action=do
+        result<-try action :: IO (Either PG.SqlError ())
+        check (case result of Left e->PG.sqlState e `elem` ["23503","23514"]; _->False)
+      refused message action=do
+        result<-try action :: IO (Either PG.SqlError ())
+        check (case result of Left e->PG.sqlState e=="23514" && PG.sqlErrorMsg e==message; _->False)
+  bracket (PG.connect settings) PG.close $ \fixtures->do
+    fixture fixtures Initialize
+    fixture fixtures SeedIntake
+    withReader settings {PG.connectUser=role} "contract" True $ \reader->do
+      let ready now=fixture fixtures ReadyIntake >> fixture fixtures (FreshAt now)
+          create writer key n=do
+            ready 100
+            let header="Bearer "<>T.replicate 64 "0"
+            oid<-evalWrite writer (CreateOrder 100 header $ W.OrderRequest NativeToWrapped (money n) "recipient" "refund" Nothing key)
+            when (key=="round-first") $ fixture fixtures (CohortSchemaContract oid) >>= check
+            claim<-evalWrite writer (ClaimNative 100 header oid)
+            void $ evalWrite writer (RecordNative header oid (allocationLabel claim) ("native-"<>key))
+            fixture fixtures (SeedReceipt key (Just oid) Native (fromInteger n) 2 True 100)
+            evalWrite writer (PromoteDeposit 100 key) >>= check
+            ready 100
+            pure ("convert:"<>oid)
+      -- Automatic withdrawals use only Earned and preserve the manual engine.
+      let autoPolicy=policy {admissionLimits=limits {maximumWithdrawal=money 50}}
+      withWriter settings autoPolicy (const $ pure ()) $ \writer->do
+        ready 100
+        before<-fixture fixtures FinancialRecords
+        -- Wrapped has no earned revenue; customer float is not sweepable.
+        expectStore "automatic_withdrawal_limit_below_threshold"
+          (evalWrite writer $ ReserveAutomaticFees 100 Wrapped "owner")
+        fixture fixtures FinancialRecords >>= check . (==before)
+        evalRead reader (ReadAutomaticFeeAmount Native (money 50) (money 50)) >>= check . (==Just (money 50))
+        saved<-evalWrite writer (ReserveAutomaticFees 100 Native "owner") >>= maybe (fail "missing automatic withdrawal") pure
+        let outgoing=withdrawalPayment saved; key=T.drop 4 (paymentId outgoing)
+        check (paymentAmount outgoing==money 50 && paymentRecipient outgoing=="owner")
+        fixture fixtures (PaymentFeeHold $ paymentId outgoing) >>= check . (==[("Native",10,0)])
+        ready 100
+        reserved<-fixture fixtures FinancialRecords
+        evalRead reader (ReadAutomaticFeeAmount Native (money 50) (money 50)) >>= check . (==Nothing)
+        evalWrite writer (ReserveAutomaticFees 100 Native "changed-owner") >>= check . (==Nothing)
+        fixture fixtures FinancialRecords >>= check . (==reserved)
+        evalWrite writer (Pause "automatic withdrawal fixture cleanup")
+        expectStore "intake_paused" (evalWrite writer $ ReserveAutomaticFees 100 Native "owner")
+        void $ evalWrite writer (CancelFees key "automatic fixture cleanup")
+      withWriter settings policy (const $ pure ()) $ \writer->do
+        ready 100
+        evalWrite writer (ReserveAutomaticFees 100 Wrapped "owner") >>= check . (==Nothing)
+      withWriter settings autoPolicy {admissionLimits=(admissionLimits autoPolicy) {nativeDaily=money 1}} (const $ pure ()) $ \writer->do
+        ready 100
+        before<-(,) <$> fixture fixtures FinancialRecords <*> fixture fixtures ArchiveRecords
+        evalWrite writer (ReserveAutomaticFees 100 Native "owner") >>= check . (==Nothing)
+        after<-(,) <$> fixture fixtures FinancialRecords <*> fixture fixtures ArchiveRecords
+        check (before==after)
+      -- Both assets retain exact automatic work across a closed/reopened writer
+      -- and changed configuration. Restart never redirects or duplicates it.
+      fixture fixtures (SeedWrappedRevenue 100)
+      let restartPolicy=autoPolicy {payoutPolicy=W.PayoutPolicy (money 50) (money 10) 172800}
+          changedPolicy=restartPolicy
+            {admissionLimits=limits {maximumWithdrawal=money 60}
+            ,payoutPolicy=W.PayoutPolicy (money 60) (money 20) 0}
+      forM_ [(Native,50),(Wrapped,50)] $ \(asset,quantity)->do
+        before<-evalRead reader ReadBalances
+        saved<-withWriter settings restartPolicy (const $ pure ()) $ \writer->do
+          ready 100
+          evalWrite writer (ReserveAutomaticFees 100 asset "original-owner")
+            >>= maybe (fail "missing restart withdrawal") pure
+        let outgoing=withdrawalPayment saved; identifier=paymentId outgoing
+            key=T.drop 4 identifier
+        check (paymentAsset outgoing==asset && paymentAmount outgoing==money quantity
+          && paymentRecipient outgoing=="original-owner")
+        withWriter settings changedPolicy (const $ pure ()) $ \writer->do
+          ready 101
+          records<-(,) <$> fixture fixtures FinancialRecords <*> fixture fixtures ArchiveRecords
+          evalRead reader (ReadWithdrawal key) >>= check . (==Just saved)
+          evalWrite writer (ReserveAutomaticFees 101 asset "replacement-owner") >>= check . (==Nothing)
+          current<-(,) <$> fixture fixtures FinancialRecords <*> fixture fixtures ArchiveRecords
+          check (current==records)
+          evalRead reader (ReadWithdrawal key) >>= check . (==Just saved)
+          evalWrite writer (Pause "restart withdrawal fixture cleanup")
+          void $ evalWrite writer (CancelFees key "restart fixture cleanup")
+        after<-evalRead reader ReadBalances
+        check (M.filter (/=0) after==M.filter (/=0) before)
+      -- Owner completion of a pending customer cohort must not make a later
+      -- cancellation consume its last closing slot. Refusal is atomic.
+      let cancellationKey=T.replicate 64 "c"
+          twoSlots=policy {admissionLimits=limits {maximumQueued=2}}
+      cancellationOrder<-withWriter settings twoSlots (const $ pure ()) $ \writer->do
+        ready 100
+        order<-evalWrite writer (CreateOrder 100 ("Bearer "<>T.replicate 64 "0") $
+          W.OrderRequest WrappedToNative (money 10) "recipient" "" Nothing "owner-cancellation-capacity")
+        evalWrite writer (Pause "test owner cohort")
+        fixture fixtures RefreshCustody
+        void $ evalWrite writer (ReserveFees 100 cancellationKey Native (money 41) "owner" "complete cohort")
+        pure order
+      withWriter settings policy {admissionLimits=limits {maximumQueued=1}} (const $ pure ()) $ \writer->do
+        before<-evalRead reader ReadState
+        expectStore "payout_batch_needs_capacity" (evalWrite writer $ CancelFees cancellationKey "release owner")
+        evalRead reader ReadState >>= check . (==before)
+        fixture fixtures (PaymentFeeHold $ "fee:"<>cancellationKey) >>= check . (==[("Native",10,0)])
+        saved<-evalRead reader (ReadWithdrawal cancellationKey)
+        check (fmap withdrawalCancellation saved==Just Nothing)
+      withWriter settings twoSlots (const $ pure ()) $ \writer->do
+        void $ evalWrite writer (CancelFees cancellationKey "release owner")
+        fixture fixtures (PaymentFeeHold $ "fee:"<>cancellationKey) >>= check . (==[("Native",10,1)])
+        _<-evalWrite writer (ExpireQuotes 301)
+        fixture fixtures AssignedPayouts >>= check . null
+        view<-evalRead reader (ReadOrder ("Bearer "<>T.replicate 64 "0") cancellationOrder)
+        check (W.status view=="ExpiredUnfunded")
+        let terminalKey=T.replicate 64 "d"
+        fixture fixtures RefreshCustody
+        void $ evalWrite writer (ReserveFees 100 terminalKey Native (money 50) "owner" "terminal threshold fixture")
+        void $ evalWrite writer (CancelFees terminalKey "cancel before admission")
+        refused "payout member not ready" (fixture fixtures $ ForgedPayoutRound ["fee:"<>terminalKey] 50 172800)
+      (first,second,firstGroup)<-withWriter settings policy {admissionLimits=limits {maximumQueued=2}} (const $ pure ()) $ \writer->do
+        first<-create writer "round-first" 50
+        assigned<-fixture fixtures AssignedPayouts
+        firstGroup<-case assigned of [(group,key,"Wrapped",49,True)] | key==first->pure group; _->fail "missing runtime cohort"
+        fixture fixtures AssignedPayouts >>= check . (==[(firstGroup,first,"Wrapped",49,True)])
+        refused "payout cohort below threshold" (fixture fixtures $ ForgedPayoutRound [first] 1 172800)
+        fixture fixtures (SourceEligibility "round-first" False)
+        fixture fixtures AssignedPayouts >>= check . (==[(firstGroup,first,"Wrapped",49,False)])
+        fixture fixtures (SourceEligibility "round-first" True)
+        ready 100
+        before<-evalRead reader ReadState
+        evalWrite writer (AdmitPayoutRounds 100)
+        evalRead reader ReadState >>= check . (==before)
+        evalRead reader PaymentCandidates >>= check . null
+        expectStore "payout_round_not_due" (evalWrite writer $ PreparePayment 100 first (money 10) "{}")
+        evalRead reader ReadState >>= check . (==before)
+        expectStore "payout_round_not_due" (evalRead reader $ CheckPayoutAdmission first)
+        denied (fixture fixtures $ UnadmittedPreparation first)
+        -- Spending all currently unreserved SOL would strand the closing order.
+        -- The observed fixture outflow must remain unclassified, with no postings.
+        booked<-evalRead reader ReadBalances
+        let spend=M.findWithDefault 0 (Sol,Operating) booked-20
+        check (spend>0)
+        fixture fixtures (SeedTreasuryEvidence "SolanaOperating" "closing-fees-protected" "spend-anchor" "outgoing" 1
+          (object ["delta" .= T.pack(show $ negate spend),"feeUnits" .= money 1]))
+        evalWrite writer (Pause "test closing capacity")
+        expectStore "treasury_spend_exceeds_free_allocation" $
+          evalWrite writer (ClassifyTreasurySpend "SolanaOperating" "closing-fees-protected" "must preserve closer")
+        evalRead reader ReadBalances >>= check . (==booked)
+        ready 100
+        before<-evalRead reader ReadState
+        -- The last slot must remain usable by an order completing the batch.
+        -- Reject the too-small quote before any reservation or address exists.
+        snapshot<-fixture fixtures OrderSnapshot
+        expectStore "payout_batch_needs_capacity" $ evalWrite writer $ CreateOrder 100
+          ("Bearer "<>T.replicate 64 "0")
+          (W.OrderRequest NativeToWrapped (money 50) "recipient" "refund" Nothing "cannot-fill-last-slot")
+        fixture fixtures OrderSnapshot >>= check . (==snapshot)
+        evalRead reader ReadState >>= check . (==before)
+        second<-create writer "round-second" 51
+        assignedPair<-fixture fixtures AssignedPayouts
+        check (sort assignedPair==sort [(firstGroup,first,"Wrapped",49,True),(firstGroup,second,"Wrapped",50,True)])
+        refused "incomplete payout cohort" (fixture fixtures $ ForgedPayoutRound [first] 1 172800)
+        refused "payout cohort policy mismatch" (fixture fixtures $ ForgedPayoutRound [first,second] 98 172800)
+        refused "payout cohort policy mismatch" (fixture fixtures $ ForgedPayoutRound [first,second] 99 0)
+        refused "payout cohort already full" (fixture fixtures $ AppendCohortOrder firstGroup)
+        pure (first,second,firstGroup)
+      (third,native,snapshot)<-withWriter settings policy (const $ pure ()) $ \writer->do
+        ready 100
+        let pendingHeader="Bearer "<>T.replicate 64 "0"
+        pending<-evalWrite writer (CreateOrder 100 pendingHeader $
+          W.OrderRequest NativeToWrapped (money 10) "recipient" "refund" Nothing "pending-cohort")
+        claim<-evalWrite writer (ClaimNative 100 pendingHeader pending)
+        void $ evalWrite writer (RecordNative pendingHeader pending (allocationLabel claim) "pending-cohort-address")
+        fixture fixtures PayoutCohort >>= check . elem (pending,"Wrapped",9,False)
+        pendingRows<-fixture fixtures AssignedPayouts
+        pendingGroup<-case [group | (group,key,"Wrapped",9,False)<-pendingRows,key==pending] of
+          [group]->pure group
+          _->fail "missing pending runtime cohort"
+        -- A terminal refund removes the unresolved conversion promise. Refund
+        -- remains independently payable and cannot advance the conversion clock.
+        fixture fixtures (SeedReceipt "zz-pending-cohort" (Just pending) Native 9 2 True 100)
+        evalWrite writer (Pause "refund unresolved cohort member")
+        fixture fixtures RefreshCustody
+        void $ evalWrite writer (AuthorizeRefund 100 "zz-pending-cohort")
+        fixture fixtures PayoutCohort >>= check . all (\(key,_,_,_)->key/=pending)
+        fixture fixtures AssignedPayouts >>= check . all (\(group,_,_,_,_)->group/=pendingGroup)
+        ready 100
+        evalWrite writer (AdmitPayoutRounds 100)
+        (rounds,members)<-fixture fixtures PayoutRecords
+        check (length rounds==1 && map S.roundTotal rounds==[99] && map S.roundCount rounds==[2]
+          && sort(map fst members)==sort[first,second])
+        fixture fixtures AssignedPayouts >>= check . null
+        refused "payout cohort already sealed" (fixture fixtures $ AppendCohortOrder firstGroup)
+        committed<-evalRead reader ReadState
+        evalWrite writer (AdmitPayoutRounds 100)
+        evalRead reader ReadState >>= check . (==committed)
+        third<-create writer "round-third" 101
+        evalWrite writer (AdmitPayoutRounds 100)
+        fixture fixtures PayoutRecords >>= check . (==(rounds,members))
+        denied (fixture fixtures $ AppendPayoutMember third (S.roundSequence $ head rounds))
+        denied (fixture fixtures $ DeletePayoutMember first)
+        evalRead reader PaymentCandidates >>= check . (notElem third)
+        let native="fee:"<>T.replicate 64 "a"
+        evalWrite writer (Pause "reserve owner fee fixture")
+        void $ evalWrite writer (ReserveFees 100 (T.replicate 64 "a") Native (money 50) "owner" "schedule contract")
+        fixture fixtures (OwnerFeeBinding native) >>= check
+        fixture fixtures (PaymentFeeHold native) >>= check . (==[("Native",10,0)])
+        fixture fixtures (CohortWithdrawalContract (T.drop (T.length "convert:") first) (T.replicate 64 "a")) >>= check
+        ready 100
+        evalWrite writer (AdmitPayoutRounds 100)
+        evalRead reader (CheckPayoutAdmission native)
+        -- A nine-unit refund bypasses the native fifty-unit threshold and
+        -- current 48-hour clock. It must never join or advance either round.
+        let header="Bearer "<>T.replicate 64 "0"
+        refundOrder<-evalWrite writer (CreateOrder 100 header $
+          W.OrderRequest NativeToWrapped (money 10) "recipient" "refund" Nothing "round-refund")
+        claim<-evalWrite writer (ClaimNative 100 header refundOrder)
+        void $ evalWrite writer (RecordNative header refundOrder (allocationLabel claim) "round-refund-address")
+        fixture fixtures (SeedReceipt "round-refund-source" (Just refundOrder) Native 9 2 True 100)
+        evalWrite writer (Pause "authorize immediate refund fixture")
+        fixture fixtures RefreshCustody
+        refund<-evalWrite writer (AuthorizeRefund 100 "round-refund-source")
+        let refundId=W.refundPayment refund
+        priorRefund<-fixture fixtures PayoutRecords
+        rejectedRound<-try (fixture fixtures $ RefundPayoutRound refundId) :: IO (Either PG.SqlError ())
+        check (case rejectedRound of
+          Left err->PG.sqlState err=="23514" && PG.sqlErrorMsg err=="payout round membership mismatch"
+          Right _->False)
+        fixture fixtures PayoutRecords >>= check . (==priorRefund)
+        evalRead reader (CheckPayoutAdmission refundId)
+        ready 100
+        evalWrite writer (AdmitPayoutRounds 100)
+        fixture fixtures PayoutRecords >>= check . (==priorRefund)
+        evalRead reader PaymentCandidates >>= check . elem refundId
+        _<-evalWrite writer (PreparePayment 100 refundId (money 10) "{}")
+        evalWrite writer (SaveDraft refundId 0 "{}")
+        fixture fixtures CoverBackup
+        ready 100
+        void $ evalRead reader (ReadSigningDecision 100 refundId 0)
+        -- Cancellation cannot undo a sealed approval or its interval.
+        evalWrite writer (Pause "cancel owner fee fixture")
+        void $ evalWrite writer (CancelFees (T.replicate 64 "a") "cancel fixture")
+        fixture fixtures (PaymentFeeHold native) >>= check . (==[("Native",10,1)])
+        ready 100
+        _<-evalWrite writer (PreparePayment 100 first (money 10) "{}")
+        evalWrite writer (SaveDraft first 0 "{}")
+        fixture fixtures CoverBackup
+        ready 100
+        saved<-evalRead reader (ReadSigningDecision 100 first 0)
+        -- Saved work remains signable before the next round; settlement may
+        -- continue while paused and cannot remove membership from this round.
+        attempt<-evalWrite writer (RecordAttempt saved $ SignedAttempt "round-fixture-tx" "fixture-bytes" "{}" Nothing)
+        fixture fixtures CoverBackup
+        ready 100
+        _<-evalWrite writer (MarkBroadcast 100 "round-fixture-tx")
+        queued<-evalRead reader (ReadAttempt "round-fixture-tx")
+        evalWrite writer (Pause "settle while future round waits")
+        evalWrite writer (SettlePayment queued (W.PaymentCosts (money 1) (money 0)) "{}")
+        check (recordedPayment attempt==first)
+        -- The opposite-chain refund also bypasses its existing round clock.
+        ready 100
+        unwrap<-evalWrite writer (CreateOrder 100 header $
+          W.OrderRequest WrappedToNative (money 10) "recipient" "" Nothing "round-sol-refund")
+        void $ evalWrite writer (BindSolana 100 header unwrap)
+        let signature="round-sol-refund-signature"; deposit="solana:"<>signature
+            owner="4zvwRjXUKGfvwnParsHAS3HuSVzV5cA4McphgmoCtajS"
+        fixture fixtures (SeedReceipt deposit (Just unwrap) Wrapped 7 2 True 100)
+        instruction<-either (fail . T.unpack) pure (payInstruction unwrap)
+        fixture fixtures (RefundProof signature instruction owner)
+        evalWrite writer (Pause "authorize opposite-chain refund fixture")
+        fixture fixtures RefreshCustody
+        solRefund<-evalWrite writer (AuthorizeRefund 100 deposit)
+        let solRefundId=W.refundPayment solRefund
+        check (W.refundAmount solRefund==money 7 && W.refundRecipient solRefund==owner)
+        beforeSolRefund<-fixture fixtures PayoutRecords
+        ready 100
+        evalWrite writer (AdmitPayoutRounds 100)
+        fixture fixtures PayoutRecords >>= check . (==beforeSolRefund)
+        evalRead reader (CheckPayoutAdmission solRefundId)
+        evalRead reader PaymentCandidates >>= check . elem solRefundId
+        _<-evalWrite writer (PreparePayment 100 solRefundId (money 10) "{}")
+        evalWrite writer (SaveDraft solRefundId 0 "{}")
+        fixture fixtures CoverBackup
+        ready 100
+        void $ evalRead reader (ReadSigningDecision 100 solRefundId 0)
+        let header="Bearer "<>T.replicate 64 "0"
+        expiring<-evalWrite writer (CreateOrder 100 header $
+          W.OrderRequest NativeToWrapped (money 10) "recipient" "refund" Nothing "cohort-expiry")
+        beforeExpiry<-fixture fixtures AssignedPayouts
+        check (length [() | (_,key,"Wrapped",9,False)<-beforeExpiry,key==expiring]==1)
+        evalWrite writer (ExpireQuotes 301)
+        fixture fixtures AssignedPayouts >>= check . (==filter (\(_,key,_,_,_)->key/=expiring) beforeExpiry)
+        records<-fixture fixtures PayoutRecords
+        pure (third,native,records)
+      -- Restart and a shorter new policy must retain the previous round's wait.
+      withWriter settings policy {payoutPolicy=immediatePayouts} (const $ pure ()) $ \writer->do
+        ready 172899
+        evalWrite writer (AdmitPayoutRounds 172899)
+        fixture fixtures PayoutRecords >>= check . (==snapshot)
+        forM_ [first,second,native] $ evalRead reader . CheckPayoutAdmission
+        ready 172900
+        evalWrite writer (AdmitPayoutRounds 172900)
+        (rounds,members)<-fixture fixtures PayoutRecords
+        check (length rounds==3 && length members==4)
+        evalRead reader (CheckPayoutAdmission third)
+        forM_ [first,second,native] $ \key->check (lookup key members==lookup key (snd snapshot))
+        old<-evalRead reader ReadState
+        evalWrite writer (AdmitPayoutRounds 172900)
+        evalRead reader ReadState >>= check . (==old)
+        fixture fixtures (UnassignedQuote True)
+        beforeMissing<-evalRead reader ReadState
+        beforeRecords<-(,) <$> fixture fixtures FinancialRecords <*> fixture fixtures ArchiveRecords
+        expectStore "unassigned_payout_liability" (evalWrite writer $ AdmitPayoutRounds 172900)
+        evalRead reader ReadState >>= check . (==beforeMissing)
+        afterRecords<-(,) <$> fixture fixtures FinancialRecords <*> fixture fixtures ArchiveRecords
+        check (afterRecords==beforeRecords)
+        fixture fixtures (UnassignedQuote False)
+        evalWrite writer (AdmitPayoutRounds 172900)
+  putStrLn "PASS: durable net thresholds, all-member sealing, independent asset clocks, delayed arrivals, direct preparation/signing admission, settled/cancelled retention, restart and immutable interval replay"
 expectStore :: HasCallStack => T.Text -> IO a -> IO ()
 expectStore expected action = do
   result <- try action
@@ -1886,6 +2223,20 @@ customerProjectionContract fixtures reader = do
 -- Fixture operations are closed and use Opaleye. They exist only in this test
 -- component; no arbitrary SQL or connection callback is available to handlers.
 data Fixture a where
+  CohortSchemaContract :: T.Text -> Fixture Bool
+  CohortWithdrawalContract :: T.Text -> T.Text -> Fixture Bool
+  OwnerFeeBinding :: T.Text -> Fixture Bool
+  PaymentFeeHold :: T.Text -> Fixture [(T.Text,Int64,Int64)]
+  AssignedPayouts :: Fixture [(T.Text,T.Text,T.Text,Int64,Bool)]
+  PayoutCohort :: Fixture [(T.Text,T.Text,Int64,Bool)]
+  PayoutRecords :: Fixture ([S.PayoutRound],[(T.Text,Int64)])
+  ForgedPayoutRound :: [T.Text] -> Int64 -> Int64 -> Fixture ()
+  AppendCohortOrder :: T.Text -> Fixture ()
+  UnassignedQuote :: Bool -> Fixture ()
+  RefundPayoutRound :: T.Text -> Fixture ()
+  AppendPayoutMember :: T.Text -> Int64 -> Fixture ()
+  DeletePayoutMember :: T.Text -> Fixture ()
+  UnadmittedPreparation :: T.Text -> Fixture ()
   ReportWaiters :: T.Text -> Fixture [T.Text]
   ReceiptPayment :: T.Text -> Fixture T.Text
   PaymentHistoryRecords :: Fixture [String]
@@ -1896,7 +2247,7 @@ data Fixture a where
   CurrentCustomerOrders :: Fixture [T.Text]
   LiveScanHealth :: Fixture [(T.Text,Maybe Int64,Maybe T.Text)]
   NativeRecoveryEvidence :: Fixture [(T.Text,T.Text,T.Text,T.Text,Int64)]
-  SetupResidue :: Fixture ()
+  SetupResidue :: Bool -> Fixture ()
   SetPause :: Bool -> Fixture ()
   RestoreDatabases :: Fixture [T.Text]
   FinancialRecords :: Fixture [String]
@@ -1934,7 +2285,7 @@ data Fixture a where
   OperatingPhase :: T.Text -> T.Text -> Fixture ()
   HistoricalHolds :: T.Text -> Fixture ()
   PromotionFunds :: Fixture ()
-  SeedWrappedRevenue :: Fixture ()
+  SeedWrappedRevenue :: Int64 -> Fixture ()
   RejectPreparedFeeRelease :: T.Text -> Fixture Bool
   CheckRefundHolds :: T.Text -> Asset -> Fixture Bool
   RefundProof :: T.Text -> T.Text -> T.Text -> Fixture ()
@@ -1972,6 +2323,153 @@ fixture c (HistoricalCancelledDraft key) = PG.withTransaction c $ do
     O.iRows=[(text key,num 1,text "{}",O.toNullable $ text "{}",O.null,num 0)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
   void $ O.runUpdate c O.Update {O.uTable=S.paymentRoots,
     O.uUpdateWith= \r->r {S.rootPhase=text "active",S.rootGeneration=O.toNullable $ num 1},O.uWhere= \r->S.rootId r O..== text key,O.uReturning=O.rCount}
+-- Immutable saved policy and exclusive order ownership; all access is Opaleye.
+fixture c (CohortSchemaContract order) = do
+  let text=O.sqlStrictText; num=O.sqlInt8
+  savedRows<-O.runSelect c $ do
+    row<-O.selectTable S.payoutCohorts
+    (group,subject,_)<-O.selectTable S.payoutAssignments
+    O.where_ (S.cohortId row O..== group O..&& O.matchNullable (O.sqlBool False) (O..== text order) subject)
+    pure row
+    :: IO [S.PayoutCohort]
+  saved<-case savedRows of [row]->pure row; _->fail "missing runtime assignment"
+  numbers<-O.runUpdate c O.Update {O.uTable=S.deployment,
+    O.uUpdateWith= \row->row {S.criticalSequence=S.criticalSequence row+num 2},
+    O.uWhere=const $ O.sqlBool True,O.uReturning=O.rReturning S.criticalSequence}
+  sequenceNo<-case numbers of [n]->pure n; _->fail "missing fixture deployment"
+  let other=saved {S.cohortId="other-cohort",S.cohortSequence=sequenceNo-1}
+      native=other {S.cohortId="native-cohort",S.cohortAsset="Native",S.cohortSequence=sequenceNo}
+      fields row=S.PayoutCohort (text $ S.cohortId row) (text $ S.cohortAsset row)
+        (num $ S.cohortThreshold row) (num $ S.cohortNativeFee row) (num $ S.cohortSolanaFee row)
+        (num $ S.cohortMaximumQueued row) (num $ S.cohortInterval row) (num $ S.cohortSequence row)
+      insert rows=O.runInsert c O.Insert {O.iTable=S.payoutCohorts,
+        O.iRows=map fields rows,O.iReturning=O.rCount,O.iOnConflict=Nothing}
+      assign group subject=O.runInsert c O.Insert {O.iTable=S.payoutAssignments,
+        O.iRows=[(text group,subject,O.null)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+      rejects code action=do
+        outcome<-try action :: IO (Either PG.SqlError Int64)
+        pure $ case outcome of Left err->PG.sqlState err==code; Right _->False
+  void $ insert [native,other]
+  duplicateSequence<-rejects "23505" $ insert [saved {S.cohortId="duplicate-sequence"}]
+  zeroSequence<-rejects "23514" $ insert [saved {S.cohortId="zero-sequence",S.cohortSequence=0}]
+  wrongAsset<-try (assign "native-cohort" (O.toNullable $ text order)) :: IO (Either PG.SqlError Int64)
+  let assetRejected=case wrongAsset of
+        Left err->PG.sqlState err=="23514" && PG.sqlErrorMsg err=="payout cohort asset mismatch"
+        Right _->False
+  changedAsset<-rejects "23514" $ O.runUpdate c O.Update {O.uTable=S.reservations,
+    O.uUpdateWith= \(key,_,n,phase)->(key,text "Native",n,phase),
+    O.uWhere= \(key,_,_,_)->key O..== text order,O.uReturning=O.rCount}
+  removedReservation<-rejects "23514" $ O.runDelete c O.Delete {O.dTable=S.reservations,
+    O.dWhere= \(key,_,_,_)->key O..== text order,O.dReturning=O.rCount}
+  duplicate<-rejects "23505" $ assign "other-cohort" (O.toNullable $ text order)
+  empty<-rejects "23514" $ assign "other-cohort" O.null
+  changed<-rejects "23514" $ O.runUpdate c O.Update {O.uTable=S.payoutCohorts,
+    O.uUpdateWith= \row->row {S.cohortThreshold=num 1000},
+    O.uWhere= \row->S.cohortId row O..== text (S.cohortId saved),O.uReturning=O.rCount}
+  removed<-rejects "23514" $ O.runDelete c O.Delete {O.dTable=S.payoutAssignments,
+    O.dWhere= \(key,_,_)->key O..== text (S.cohortId saved),O.dReturning=O.rCount}
+  rows<-O.runSelect c $ do
+    row<-O.selectTable S.payoutCohorts
+    O.where_ (S.cohortId row O..== text (S.cohortId saved))
+    pure row
+    :: IO [S.PayoutCohort]
+  ordered<-O.runSelect c (O.orderBy (O.asc S.cohortSequence) $ O.selectTable S.payoutCohorts)
+    :: IO [S.PayoutCohort]
+  projected<-fixture c AssignedPayouts
+  pure (duplicateSequence && zeroSequence && assetRejected && changedAsset
+    && removedReservation && duplicate && empty
+    && changed && removed && rows==[saved] && filter (\row->S.cohortId row `elem` map S.cohortId [saved,other,native]) ordered==[saved,other,native]
+    && projected==[(S.cohortId saved,order,"Wrapped",49,False)])
+fixture c (CohortWithdrawalContract order withdrawal) = do
+  let text=O.sqlStrictText
+      assign group subject=O.runInsert c O.Insert {O.iTable=S.payoutAssignments,
+        O.iRows=[(text group,subject,O.toNullable $ text withdrawal)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+      rejects code action=do
+        outcome<-try action :: IO (Either PG.SqlError Int64)
+        pure $ case outcome of Left err->PG.sqlState err==code; Right _->False
+  wrongAsset<-rejects "23514" $ assign "other-cohort" O.null
+  bothSubjects<-rejects "23514" $ assign "other-cohort" (O.toNullable $ text order)
+  duplicate<-rejects "23505" $ assign "native-cohort" O.null
+  projected<-fixture c AssignedPayouts
+  pure (wrongAsset && bothSubjects && duplicate
+    && length [() | (_,key,"Native",50,True)<-projected,key=="fee:"<>withdrawal]==1)
+fixture c (OwnerFeeBinding key) = do
+  let target (identifier,_,_,_)=identifier O..== O.sqlStrictText key
+      update change=O.runUpdate c O.Update {O.uTable=S.feeHolds,O.uUpdateWith=change,O.uWhere=target,O.uReturning=O.rCount}
+      refused message action=do
+        result<-try action :: IO (Either PG.SqlError Int64)
+        pure $ case result of Left err->PG.sqlState err=="23514" && PG.sqlErrorMsg err==message; _->False
+  and <$> sequence
+    [refused "immutable_fee_reservation_identity" $ O.runDelete c O.Delete {O.dTable=S.feeHolds,O.dWhere=target,O.dReturning=O.rCount}
+    ,refused "immutable_fee_reservation_identity" $ update (\(_,a,n,r)->(O.sqlStrictText "changed",a,n,r))
+    ,refused "immutable_fee_reservation_identity" $ update (\(k,_,n,r)->(k,O.sqlStrictText "Sol",n,r))
+    ,refused "withdrawal_fee_reservation_missing" $ update (\(k,a,_,r)->(k,a,O.sqlInt8 0,r))
+    ,refused "withdrawal_fee_reservation_missing" $ update (\(k,a,n,_)->(k,a,n,O.sqlInt8 1))]
+fixture c (PaymentFeeHold key) = O.runSelect c $ do
+  (identifier,asset,n,released)<-O.selectTable S.feeHolds
+  O.where_ (identifier O..== O.sqlStrictText key)
+  pure (asset,n,released)
+fixture c AssignedPayouts = O.runSelect c Projection.assignedPayouts
+fixture c PayoutCohort = O.runSelect c Projection.payoutCohort
+fixture c PayoutRecords = (,)
+  <$> O.runSelect c (O.orderBy (O.asc S.roundSequence) $ O.selectTable S.payoutRounds)
+  <*> O.runSelect c (O.orderBy (O.asc fst) $ O.selectTable S.payoutMembers)
+-- Otherwise valid single-member round; only the member's refund kind is invalid.
+fixture c (RefundPayoutRound key) = fixture c (ForgedPayoutRound [key] 1 0)
+fixture c (ForgedPayoutRound keys threshold interval) = PG.withTransaction c $ do
+  let text=O.sqlStrictText; num=O.sqlInt8
+  rows<-O.runSelect c $ do
+    (key,asset,n)<-Projection.paymentAmounts
+    O.where_ (O.in_ (map text keys) key)
+    pure (asset,n)
+    :: IO [(T.Text,Int64)]
+  asset<-case rows of (a,_):_ | length rows==length keys && all ((==a).fst) rows->pure a; _->fail "missing round fixture"
+  prior<-O.runSelect c $ O.limit 1 $ O.orderBy (O.desc S.roundSequence) $ do
+    row<-O.selectTable S.payoutRounds
+    O.where_ (S.roundAsset row O..== text asset)
+    pure row
+    :: IO [S.PayoutRound]
+  numbers<-O.runUpdate c O.Update {O.uTable=S.deployment,
+    O.uUpdateWith= \r->r {S.criticalSequence=S.criticalSequence r+1},
+    O.uWhere=const $ O.sqlBool True,O.uReturning=O.rReturning S.criticalSequence}
+  n<-case numbers of [one]->pure one; _->fail "missing fixture deployment"
+  let (opened,previous)=case prior of
+        []->(100,O.null)
+        row:_->(S.roundOpened row+S.roundInterval row,O.toNullable $ num $ S.roundSequence row)
+  void $ O.runInsert c O.Insert {O.iTable=S.payoutRounds,
+    O.iRows=[S.PayoutRound (num n) (text asset) (num opened) (num interval) (num threshold) (num $ fromIntegral $ length keys)
+      (O.sqlNumeric $ fromInteger $ sum $ map (toInteger.snd) rows) previous],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+  forM_ keys $ \key->fixture c (AppendPayoutMember key n)
+fixture c (AppendCohortOrder group) = PG.withTransaction c $ do
+  let text=O.sqlStrictText; num=O.sqlInt8; key="forged:"<>group
+  assets<-O.runSelect c $ do
+    row<-O.selectTable S.payoutCohorts
+    O.where_ (S.cohortId row O..== text group)
+    pure $ S.cohortAsset row
+    :: IO [T.Text]
+  asset<-case assets of [one]->pure one; _->fail "missing cohort fixture"
+  void $ O.runInsert c O.Insert {O.iTable=S.orders,
+    O.iRows=[S.Order (text key) (text key) (text key) (text key) (text "{}") (text "{}") (text "{}")
+      (text "Provisioning") (num 200) (num 300) O.null O.null (num 0)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+  void $ O.runInsert c O.Insert {O.iTable=S.reservations,O.iRows=[(text key,text asset,num 1,text "quote")],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+  void $ O.runInsert c O.Insert {O.iTable=S.payoutAssignments,O.iRows=[(text group,O.toNullable $ text key,O.null)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+fixture c (UnassignedQuote live) = PG.withTransaction c $ do
+  let text=O.sqlStrictText; num=O.sqlInt8; key="unassigned-quote"
+  if live then do
+    void $ O.runInsert c O.Insert {O.iTable=S.orders,
+      O.iRows=[S.Order (text key) (text key) (text key) (text key) (text "{}") (text "{}") (text "{}")
+        (text "Provisioning") (num 200) (num 300) O.null O.null (num 0)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+    void $ O.runInsert c O.Insert {O.iTable=S.reservations,
+      O.iRows=[(text key,text "Wrapped",num 1,text "quote")],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+  else void $ O.runUpdate c O.Update {O.uTable=S.reservations,
+    O.uUpdateWith= \(k,a,n,_)->(k,a,n,text "released"),
+    O.uWhere= \(k,_,_,_)->k O..== text key,O.uReturning=O.rCount}
+fixture c (AppendPayoutMember key n) = void $ O.runInsert c O.Insert
+  {O.iTable=S.payoutMembers,O.iRows=[(O.sqlStrictText key,O.sqlInt8 n)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+fixture c (DeletePayoutMember key) = void $ O.runDelete c O.Delete
+  {O.dTable=S.payoutMembers,O.dWhere= \(k,_)->k O..== O.sqlStrictText key,O.dReturning=O.rCount}
+fixture c (UnadmittedPreparation key) = void $ O.runInsert c O.Insert
+  {O.iTable=S.preparations,O.iRows=[(O.sqlStrictText key,O.sqlInt8 0,O.sqlStrictText "{}",O.null,O.null,O.sqlInt8 0)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
 fixture c (ReportWaiters role) = O.runSelect c $ do
     (user,event,query)<-O.selectTable $ O.tableWithSchema "pg_catalog" "pg_stat_activity" $ p3
       (O.requiredTableField "usename",O.requiredTableField "wait_event_type",O.requiredTableField "query")
@@ -2061,7 +2559,11 @@ fixture c LiveScanHealth = O.runSelect c $ O.orderBy (O.asc $ \(chain,_,_)->chai
   (chain,at,problem,_)<-O.selectTable S.scanHealth
   pure (chain,at,problem)
 fixture c NativeRecoveryEvidence = O.runSelect c S.nativeRecoveryDetails
-fixture c SetupResidue = void $ O.runInsert c O.Insert {O.iTable=S.events,
+fixture c (SetupResidue True) = void $ O.runInsert c O.Insert {O.iTable=S.payoutCohorts,
+  O.iRows=[S.PayoutCohort (O.sqlStrictText "orphaned-cohort") (O.sqlStrictText "Native")
+    (O.sqlInt8 50) (O.sqlInt8 10) (O.sqlInt8 10) (O.sqlInt8 100) (O.sqlInt8 172800) (O.sqlInt8 1)],
+  O.iReturning=O.rCount,O.iOnConflict=Nothing}
+fixture c (SetupResidue False) = void $ O.runInsert c O.Insert {O.iTable=S.events,
   O.iRows=[(O.sqlStrictText "orphaned-ledger-event",O.sqlStrictText "initialization must refuse surviving history")],O.iReturning=O.rCount,O.iOnConflict=Nothing}
 fixture c FinancialRecords = do
   original<-sequence
@@ -2076,7 +2578,11 @@ fixture c FinancialRecords = do
   rows :: Show a => IO [a] -> IO String
   rows action=show . sort . map show <$> action
 fixture c PaymentHistoryRecords = sequence
-  [ rows (O.runSelect c (O.selectTable S.preparations) :: IO [(T.Text,Int64,T.Text,Maybe T.Text,Maybe T.Text,Int64)])
+  [ rows (O.runSelect c (O.selectTable S.payoutCohorts) :: IO [S.PayoutCohort])
+  , rows (O.runSelect c (O.selectTable S.payoutAssignments) :: IO [(T.Text,Maybe T.Text,Maybe T.Text)])
+  , rows (O.runSelect c (O.selectTable S.payoutRounds) :: IO [S.PayoutRound])
+  , rows (O.runSelect c (O.selectTable S.payoutMembers) :: IO [(T.Text,Int64)])
+  , rows (O.runSelect c (O.selectTable S.preparations) :: IO [(T.Text,Int64,T.Text,Maybe T.Text,Maybe T.Text,Int64)])
   , rows (O.runSelect c (O.selectTable S.reservations) :: IO [(T.Text,T.Text,Int64,T.Text)])
   , rows (O.runSelect c (O.selectTable S.operatingReservations) :: IO [(T.Text,T.Text,T.Text,Int64,T.Text)])
   , rows (O.runSelect c (O.selectTable S.orderCosts) :: IO [(T.Text,Int64,Int64,Int64)])
@@ -2148,10 +2654,11 @@ fixture c LockRestoreAudits = O.runSelect c $ do
 fixture c HistoryCheckpointRows = O.runSelect c (O.selectTable S.checkpoints)
 fixture c Initialize = fixture c (InitializeIdentity "contract")
 fixture c (InitializeIdentity identity) = PG.withTransaction c $ do
-  void $ O.runInsert c O.Insert {O.iTable=S.deployment,O.iRows=[S.Deployment (O.sqlInt8 1) (O.sqlInt8 22) (O.sqlStrictText identity) (O.sqlInt8 0) (O.sqlInt8 0) (O.sqlInt8 1) (O.sqlStrictText "test")],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+  void $ O.runInsert c O.Insert {O.iTable=S.operatingClock,O.iRows=[(O.sqlInt8 1,O.sqlInt8 0)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+  void $ O.runInsert c O.Insert {O.iTable=S.deployment,O.iRows=[S.Deployment (O.sqlInt8 1) (O.sqlInt8 23) (O.sqlStrictText identity) (O.sqlInt8 0) (O.sqlInt8 0) (O.sqlInt8 1) (O.sqlStrictText "test")],O.iReturning=O.rCount,O.iOnConflict=Nothing}
   void $ O.runInsert c O.Insert {O.iTable=S.custody,O.iRows=[(O.sqlInt8 1,O.sqlInt8 0,O.null,O.null,O.null)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
   void $ O.runInsert c O.Insert {O.iTable=S.events,O.iRows=[(O.sqlStrictText "fixture",O.sqlStrictText "contract balances")],O.iReturning=O.rCount,O.iOnConflict=Nothing}
-  void $ O.runInsert c O.Insert {O.iTable=S.postings,O.iRows=[(Nothing,O.sqlStrictText "fixture",O.sqlStrictText "Native",O.sqlStrictText account,O.sqlInt8 delta)| (account,delta)<-[("external",-1000),("earned",1000)]],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+  void $ O.runInsert c O.Insert {O.iTable=S.postings,O.iRows=[(Nothing,O.sqlStrictText "fixture",O.sqlStrictText "Native",O.sqlStrictText account,O.sqlInt8 delta)| (account,delta)<-[("external",-1100),("earned",1000),("operating",100)]],O.iReturning=O.rCount,O.iOnConflict=Nothing}
   fixture c RefreshCustody
 fixture c RefreshCustody = do
   n <- O.runUpdate c O.Update {O.uTable=S.custody,O.uUpdateWith= \(key,revision,_,_,_)->(key,revision,O.toNullable revision,O.toNullable $ O.sqlInt8 100,O.null),O.uWhere= \(key,_,_,_,_)->key O..== O.sqlInt8 1,O.uReturning=O.rCount}
@@ -2177,6 +2684,21 @@ fixture c CoverBackup = void $ O.runUpdate c O.Update {O.uTable=S.deployment,
   O.uUpdateWith= \r->r {S.backupSequence=S.criticalSequence r},O.uWhere= \r->S.singleton r O..== O.sqlInt8 1,O.uReturning=O.rCount}
 fixture c SeedReview = PG.withTransaction c $ do
   let text=O.sqlStrictText; num=O.sqlInt8
+  -- A reviewed conversion still belongs to its original admission cohort.
+  numbers<-O.runUpdate c O.Update {O.uTable=S.deployment,
+    O.uUpdateWith= \r->r {S.criticalSequence=S.criticalSequence r+num 1},
+    O.uWhere=const $ O.sqlBool True,O.uReturning=O.rReturning S.criticalSequence}
+  sequenceNo<-case numbers of [n]->pure n; _->fail "fixture deployment missing"
+  void $ O.runInsert c O.Insert {O.iTable=S.payoutCohorts,
+    O.iRows=[S.PayoutCohort (text "review-cohort") (text "Wrapped") (num 1) (num 10) (num 20) (num 100) (num 0) (num sequenceNo)],
+    O.iReturning=O.rCount,O.iOnConflict=Nothing}
+  void $ O.runInsert c O.Insert {O.iTable=S.reservations,
+    O.iRows=[(text "visible",text "Wrapped",num 93,text "quote")],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+  void $ O.runInsert c O.Insert {O.iTable=S.payoutAssignments,
+    O.iRows=[(text "review-cohort",O.toNullable $ text "visible",O.null)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+  void $ O.runUpdate c O.Update {O.uTable=S.reservations,
+    O.uUpdateWith= \(k,a,n,_)->(k,a,n,text "obligation"),
+    O.uWhere= \(k,_,_,_)->k O..== text "visible",O.uReturning=O.rCount}
   void $ O.runInsert c O.Insert {O.iTable=S.deposits,O.iRows=[S.Deposit (text "review-deposit") (O.toNullable $ text "visible") (text "Native") (num 100) (text "anchor") (num 100) (num 2) (num 1) (num 1) (text "observed")],O.iReturning=O.rCount,O.iOnConflict=Nothing}
   void $ O.runInsert c O.Insert {O.iTable=S.obligations,O.iRows=[S.Obligation (text "review-obligation") (text "visible") (text "review-deposit") (text "conversion") (text "Wrapped") (num 93) (text "recipient")],O.iReturning=O.rCount,O.iOnConflict=Nothing}
   void $ O.runInsert c O.Insert {O.iTable=S.paymentRoots,
@@ -2194,9 +2716,8 @@ fixture c SeedIntake = PG.withTransaction c $ do
   void $ O.runInsert c O.Insert {O.iTable=S.events,O.iRows=[(text "intake-capital",text "test inventory and operating funds")],O.iReturning=O.rCount,O.iOnConflict=Nothing}
   void $ O.runInsert c O.Insert {O.iTable=S.postings,
     O.iRows=[(Nothing,text "intake-capital",text asset,text account,num n)| (asset,account,n)<-
-      [("Native","external",-1100),("Native","float",1000),("Native","operating",100),
+      [("Native","external",-1000),("Native","float",1000),
        ("Wrapped","external",-1000),("Wrapped","float",1000),("Sol","external",-100),("Sol","operating",100)]],O.iReturning=O.rCount,O.iOnConflict=Nothing}
-  void $ O.runInsert c O.Insert {O.iTable=S.operatingClock,O.iRows=[(num 1,num 0)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
   void $ O.runInsert c O.Insert {O.iTable=S.scanHealth,O.iRows=[(text chain,O.toNullable $ num 100,O.null,num 100)|chain<-["Native","Solana","SolanaOperating"]],O.iReturning=O.rCount,O.iOnConflict=Nothing}
   void $ O.runInsert c O.Insert {O.iTable=S.checkpoints,O.iRows=[(text chain,text "fixture-anchor")|chain<-["Native","Solana","SolanaOperating"]],O.iReturning=O.rCount,O.iOnConflict=Nothing}
 fixture c ReadyIntake = PG.withTransaction c $ do
@@ -2260,10 +2781,10 @@ fixture c PromotionFunds = PG.withTransaction c $ do
   void $ O.runInsert c O.Insert {O.iTable=S.events,O.iRows=[(text "promotion-funds",text "test operating budget")],O.iReturning=O.rCount,O.iOnConflict=Nothing}
   void $ O.runInsert c O.Insert {O.iTable=S.postings,
     O.iRows=[(Nothing,text "promotion-funds",text asset,text account,O.sqlInt8 n)|asset<-["Native","Sol"],(account,n)<-[("external",-10000),("operating",10000)]],O.iReturning=O.rCount,O.iOnConflict=Nothing}
-fixture c SeedWrappedRevenue = PG.withTransaction c $ do
+fixture c (SeedWrappedRevenue quantity) = PG.withTransaction c $ do
   let text=O.sqlStrictText
   void $ O.runInsert c O.Insert {O.iTable=S.events,O.iRows=[(text "expiry-earned",text "offline earned-payment funding")],O.iReturning=O.rCount,O.iOnConflict=Nothing}
-  void $ O.runInsert c O.Insert {O.iTable=S.postings,O.iRows=[(Nothing,text "expiry-earned",text "Wrapped",text account,O.sqlInt8 n) | (account,n)<-[("external",-10),("earned",10)]],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+  void $ O.runInsert c O.Insert {O.iTable=S.postings,O.iRows=[(Nothing,text "expiry-earned",text "Wrapped",text account,O.sqlInt8 n) | (account,n)<-[("external",negate quantity),("earned",quantity)]],O.iReturning=O.rCount,O.iOnConflict=Nothing}
 fixture c (RejectPreparedFeeRelease key) = do
   result<-try $ PG.withTransaction c $ O.runInsert c O.Insert {O.iTable=S.cancellations,
     O.iRows=[(O.sqlStrictText key,O.sqlStrictText "bypass prepared work",O.sqlInt8 1000000)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
@@ -2332,6 +2853,18 @@ fixture c (HistoricalHolds oid) = PG.withTransaction c $ do
   void $ O.runInsert c O.Insert {O.iTable=S.orderCosts,O.iRows=[(text oid,num 10,num 10,num 10)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
   void $ O.runInsert c O.Insert {O.iTable=S.operatingReservations,
     O.iRows=[(text oid,text kind,text asset,num n,text "quote") | (kind,asset,n)<-[("conversion","Sol",20),("refund","Native",10)]],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+  -- Retain the historical quote's fee, but seed its current-schema batch policy
+  -- explicitly. Production does not silently adopt unassigned historical work.
+  numbers<-O.runUpdate c O.Update {O.uTable=S.deployment,
+    O.uUpdateWith= \row->row {S.criticalSequence=S.criticalSequence row+num 1},
+    O.uWhere=const $ O.sqlBool True,O.uReturning=O.rReturning S.criticalSequence}
+  sequenceNo<-case numbers of [n]->pure n; _->fail "missing fixture deployment"
+  let group="historical:"<>oid
+  void $ O.runInsert c O.Insert {O.iTable=S.payoutCohorts,
+    O.iRows=[S.PayoutCohort (text group) (text "Wrapped") (num 1) (num 10) (num 20) (num 100) (num 0) (num sequenceNo)],
+    O.iReturning=O.rCount,O.iOnConflict=Nothing}
+  void $ O.runInsert c O.Insert {O.iTable=S.payoutAssignments,
+    O.iRows=[(text group,O.toNullable $ text oid,O.null)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
 
 fixture c (ChangeTreasuryAnchor chain key) = void $ O.runUpdate c O.Update {O.uTable=S.chainEvents,
   O.uUpdateWith= \row->row {S.eventAnchor=O.sqlStrictText "changed-anchor",S.eventReview=O.sqlInt8 1},
@@ -2852,8 +3385,8 @@ orderWorkflowContract fixtures reader writer storePolicy = do
       chainSettings=ObserverSettings native solana 2 "sol-origin" "opening-signature"
       config=H.SolanaPolicy "contract" "contract" key key key (money 10) (money 10)
       public=W.PublicConfiguration W.L2LSignetDevnet "devnet" (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing Nothing)
-        "contract" key key 8 (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)]) False False (W.Availability False "starting") Nothing
-      customerSettings=CustomerSettings public storePolicy "/unused/sdk"
+        "contract" key key 8 (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)]) False False (W.Availability False "starting") Nothing immediatePayouts
+      customerSettings=CustomerSettings public storePolicy "/unused/sdk" Nothing
       endpoint=SigningEndpoint 9443 "/unused/auth"
   -- The worker uses wall time, unlike the provisioning fixture's clock above.
   -- Establish expiry before comparing separate HTTP/reader snapshots, and pause
@@ -2942,7 +3475,7 @@ fenceMain = do
       settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
       terms=PaymentTerms (PolicySnapshot 2 "finalized" identity) (CostLimits (money 10) (money 10) (money 10))
       limits=OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)
-      policy=StorePolicy terms limits "fence-test" True
+      policy=StorePolicy terms limits "fence-test" True immediatePayouts
       key=T.replicate 64 "b"
       temporary=do
         (path,handle)<-openTempFile "/tmp" "ecx-fence-store"
@@ -3683,7 +4216,7 @@ expiryContract fixtures reader writer=do
   check (activeAgain==fourth)
   evalRead reader ReadBalances >>= check . (==before)
   evalWrite writer (RecordSolanaExpiry lastAttempt proof)
-  fixture fixtures SeedWrappedRevenue
+  fixture fixtures (SeedWrappedRevenue 10)
   paused
   let key=T.replicate 64 "f"; earnedId="fee:"<>key
   void $ evalWrite writer (ReserveFees 110 key Wrapped (money 3) "owner-address" "earned expiry contract")
@@ -3823,7 +4356,6 @@ tlsMain=do
   workflow<-getDataFileName "test/fixtures/signed-payment-workflow.json" >>= BS.readFile >>= either fail pure . eitherDecodeStrict'
   owner<-fieldValue "owner" vector; recipient<-fieldValue "recipient" vector; vectorMint<-fieldValue "mint" vector; hash<-fieldValue "blockhash" vector
   vectorReply<-fieldValue "reply" workflow :: IO H.HelperReply
-  identifier<-fieldValue "paymentId" workflow
   let profile=if canonical then W.CanonicalBeta else W.L2LSignetDevnet
       cluster=if canonical then "mainnet-beta" else "devnet"
       mint=if canonical then "EVHqNdzjCupKi4rQkbuYw52sa1m8A7jeUAMP23S9AVVq" else vectorMint
@@ -3833,9 +4365,8 @@ tlsMain=do
       identity="offline-policy"; encoded value=TE.decodeUtf8 (BL.toStrict $ encode value)
       settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
       policy=PaymentTerms (PolicySnapshot 1 "finalized" identity) (CostLimits (money 1) (money 10000) (money 2100000))
-      store=StorePolicy policy (OrderLimits (money 1000) 100 100 100 (money 10000000) (money 10000000)) "codec-fixture" True
+      store=StorePolicy policy (OrderLimits (money 3) 100 100 100 (money 10000000) (money 10000000)) "codec-fixture" True immediatePayouts
       config=H.SolanaPolicy "codec-fixture" identity mint owner custody (money 10000) (money 2100000)
-      plan=SP.SolanaPlan identity recipient (money 3) (payoutReference identity identifier) (SP.RecentBlockhash hash 1000 100) (money 10000) (money 2100000)
       native=N.NativeSettings profile "http://127.0.0.1:1" "/unused" "ecx-bridge-test"
         (if canonical then 967680 else 16000)
         (if canonical then "00000000000000030101ba5cfea54b22becc79f95dc6040beb76e01dd9d04042" else "00000047dcc9d64b767687d6a5e610c411dd85db5460e824c0f7284f5514bc47")
@@ -3848,18 +4379,6 @@ tlsMain=do
       mintAccount=object ["owner" .= Solana.tokenProgram,"executable" .= False,"data" .= object ["space" .= (82::Int),"parsed" .= object ["type" .= ("mint"::T.Text),"info" .= object
         ["decimals" .= (8::Int),"isInitialized" .= True,"freezeAuthority" .= Null,"mintAuthority" .= Null,"supply" .= ("10000000"::T.Text)]]]]
       payer=object ["owner" .= ("11111111111111111111111111111111"::T.Text),"executable" .= False,"data" .= ["","base64"::T.Text],"lamports" .= (10000000::Int)]
-  reply<-if not canonical then pure vectorReply else do
-    -- The expected signature is computed independently from the unsigned SDK
-    -- message with the public fixture seed. Actual signing must still traverse
-    -- HTTPS and the gated critical evaluator below. No transaction is submitted.
-    preview<-H.invokeUnsignedHelper sdk config (SP.solanaPayoutRequest config plan)
-    message<-either fail pure (B64.decode $ TE.encodeUtf8 $ H.replyMessage preview)
-    secret<-case Ed.secretKey (BS.replicate 32 1) of CryptoPassed key->pure key; CryptoFailed _->fail "invalid public fixture seed"
-    let signature=BA.convert (Ed.sign secret (Ed.toPublic secret) message) :: BS.ByteString
-        expected=preview {H.replySignature=Just $ SolanaMessage.base58 signature,
-          H.replyTransaction=TE.decodeUtf8 $ B64.encode $ BS.singleton 1<>signature<>message}
-    _<-either reject pure (H.validateHelperReply config (SP.solanaPayoutRequest config plan) expected)
-    pure expected
   calls<-newIORef ([]::[T.Text])
   barrier<-newIORef Nothing
   let rpcApplication request respond=do
@@ -3891,9 +4410,27 @@ tlsMain=do
     fixture fixtures (InitializeIdentity identity); fixture fixtures SeedIntake; fixture fixtures TLSFunds
     withReader settings {PG.connectUser=role} identity True $ \reader->
       withWriter settings store (const $ pure ()) $ \writer->do
-        fixture fixtures RefreshCustody
-        void $ evalWrite writer (ReserveFees 100 (T.drop 4 identifier) Wrapped (money 3) recipient "TLS contract")
         fixture fixtures ReadyIntake
+        withdrawal<-evalWrite writer (ReserveAutomaticFees 100 Wrapped recipient)
+          >>= maybe (fail "automatic owner reservation missing") pure
+        let outgoing=withdrawalPayment withdrawal; identifier=paymentId outgoing
+            plan=SP.SolanaPlan identity recipient (money 3) (payoutReference identity identifier) (SP.RecentBlockhash hash 1000 100) (money 10000) (money 2100000)
+        check (paymentAmount outgoing==money 3 && paymentRecipient outgoing==recipient)
+        fixture fixtures ReadyIntake
+        evalWrite writer (AdmitPayoutRounds 100)
+        evalRead reader PaymentCandidates >>= check . elem identifier
+        reply<-do
+          -- The expected signature is computed independently from the unsigned SDK
+          -- message with the public fixture seed. Actual signing must still traverse
+          -- HTTPS and the gated critical evaluator below. No transaction is submitted.
+          preview<-H.invokeUnsignedHelper sdk config (SP.solanaPayoutRequest config plan)
+          message<-either fail pure (B64.decode $ TE.encodeUtf8 $ H.replyMessage preview)
+          secret<-case Ed.secretKey (BS.replicate 32 1) of CryptoPassed key->pure key; CryptoFailed _->fail "invalid public fixture seed"
+          let signature=BA.convert (Ed.sign secret (Ed.toPublic secret) message) :: BS.ByteString
+              expected=preview {H.replySignature=Just $ SolanaMessage.base58 signature,
+                H.replyTransaction=TE.decodeUtf8 $ B64.encode $ BS.singleton 1<>signature<>message}
+          _<-either reject pure (H.validateHelperReply config (SP.solanaPayoutRequest config plan) expected)
+          pure expected
         _<-evalWrite writer (PreparePayment 100 identifier (money 2110000) (encoded plan))
         evalWrite writer (SaveDraft identifier 0 (encoded $ SP.solanaPayoutRequest config plan))
         fixture fixtures CoverBackup
@@ -4079,7 +4616,7 @@ tlsMain=do
                   order=W.OrderRequest WrappedToNative (money 10) "native-recipient" "" Nothing "checkpoint-http"
                   publicConfig=W.PublicConfiguration profile cluster (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing Nothing)
                     "codec-fixture" mint owner 8 (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)])
-                    True False (W.Availability False "starting") Nothing
+                    True False (W.Availability False "starting") Nothing immediatePayouts
               writeFile cookie "fixture:fixture"; setFileMode cookie 0o600
               fixture fixtures ReadyIntake
               now<-floor <$> getPOSIXTime
@@ -4108,16 +4645,20 @@ tlsMain=do
               let checkpointEndpoint=endpoint {signerPort=checkpointPort}
               withProcessListening (runSigningServer checkpointEndpoint checkpointApp) checkpointPort $
                 withWorkerProcess manager reader writer (ObserverSettings configuredNative solana 1 "origin" "origin") config
-                  (Just $ CustomerSettings publicConfig store sdk) checkpointEndpoint $ \httpPort _->
+                  (Just $ CustomerSettings publicConfig store sdk Nothing) checkpointEndpoint $ \httpPort _->
                   bracket (newManager defaultManagerSettings) closeManager $ \client->do
                     let submit=do
+                          -- Exercise checkpoint refusal behind the real ingress
+                          -- limiter without letting a burst mask its response.
+                          threadDelay 2100000
                           request<-HTTP.parseRequest ("http://127.0.0.1:"<>show httpPort<>"/api/v1/orders")
                           HTTP.httpLbs request {HTTP.method="POST",HTTP.requestHeaders=[("Content-Type","application/json"),("Authorization",TE.encodeUtf8 header)]
                             ,HTTP.requestBody=HTTP.RequestBodyLBS (encode order)} client
                         refused code=do
                           response<-submit
-                          check (statusCode(HTTP.responseStatus response)==409 &&
-                            eitherDecodeStrict' (BL.toStrict $ HTTP.responseBody response)==Right (object ["error" .= (code::T.Text)]))
+                          unless (statusCode(HTTP.responseStatus response)==409 &&
+                            eitherDecodeStrict' (BL.toStrict $ HTTP.responseBody response)==Right (object ["error" .= (code::T.Text)])) $
+                              fail ("expected "<>T.unpack code<>"; received "<>show (HTTP.responseStatus response,HTTP.responseBody response))
                     refused "signer_outcome_unknown"
                     forM_ [receipt {W.receiptIdentity="other"},receipt {W.receiptSequence=sequenceNo-1},receipt {W.receiptSequence=sequenceNo+1}
                       ,receipt {W.receiptSnapshot="latest"},receipt {W.receiptArchiveHash=T.replicate 64 "A"}] $ \bad->do
@@ -4145,7 +4686,7 @@ tlsMain=do
                   frozenReceipt=receipt {W.receiptSequence=frozenSequence}
                   checkpoint=runProcess manager reader $ WorkerProcess
                     (ObserverSettings configuredNative solana 1 "origin" "origin") config
-                    (Just $ CustomerSettings publicConfig store sdk) checkpointEndpoint writer Checkpointing
+                    (Just $ CustomerSettings publicConfig store sdk Nothing) checkpointEndpoint writer Checkpointing
                   preserved=do
                     current<-evalRead reader ReadState
                     check (ledgerPaused current && ledgerSequence current==frozenSequence)
@@ -4806,7 +5347,7 @@ historyProgressMain=do
   user<-getEnv "USER"; role<-getEnv "ECX_REBUILD_CONTRACT_READER"
   let settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
       policy=StorePolicy (PaymentTerms (PolicySnapshot 2 "finalized" "contract") (CostLimits (money 10) (money 10) (money 10)))
-        (OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)) "contract" True
+        (OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)) "contract" True immediatePayouts
       sig n=SolanaMessage.base58 (BS.replicate 63 0<>BS.singleton n)
       progress=Solana.HistoryProgress (sig 0) Nothing 100 (Solana.SignatureInfo (sig 2) 2 False)
         [Solana.SignatureInfo (sig 2) 2 False,Solana.SignatureInfo (sig 1) 1 False] False
@@ -4866,3 +5407,6 @@ historyProgressMain=do
       evalWrite writer (CommitHistoryScan Nothing batch {W.scanPrevious=Just(sig 3),W.scanNext=sig 3,W.scanTime=104} True)
       evalRead reader ReadBalances >>= check . (==balances)
   putStrLn "PASS history progress: restart, stale CAS, rollback, contiguous checkpoint, no duplicate posting, no automatic resume"
+
+immediatePayouts :: W.PayoutPolicy
+immediatePayouts = W.PayoutPolicy (money 1) (money 1) 0

@@ -87,6 +87,8 @@ customerError code = fromMaybe code $ lookup code
   , ("insufficient_operating_sol", "The bridge needs more SOL for transaction fees. Try later.")
   , ("invalid_public_key", "Enter a valid Solana address.")
   , ("nonpositive_net", "Enter an amount that leaves a positive payout after the 1% fee.")
+  , ("payout_batch_needs_capacity", "The remaining queue slot is reserved for a transfer large enough to complete a payout round. Try a larger amount or wait for the queue to clear.")
+  , ("payout_batch_needs_inventory", "The bridge needs more liquidity to complete this payout round. Try later or contact support.")
   , ("deposit_window_closed", "This order has expired. Do not pay; create a new order.")
   , ("payouts_paused", "The bridge is paused. Refresh for its current status.")
   , ("scanners_not_fresh", "Waiting for fresh chain observations. Try again shortly.") ]
@@ -183,7 +185,11 @@ loadConfig state = do
   hidden "trading" (not $ isJust (jupiterUrl links) || isJust (orcaUrl links))
   text "availability" $ if available (pubAvailability cfg) then "Bridge is accepting orders."
     else "Deposits paused: " <> customerError (reason $ pubAvailability cfg)
-  text "limits" "No fixed swap minimum or maximum. Network fees and available reserves still apply."
+  let payouts=pubPayoutPolicy cfg
+  text "limits" $ "Payout rounds: at least " <> renderCoins (nativePayoutThreshold payouts)
+    <> " ECX or " <> renderCoins (wrappedPayoutThreshold payouts) <> " wrapped ECX of queued net payouts per asset, with "
+    <> T.pack(show (fromIntegral(payoutIntervalSeconds payouts)/3600 :: Double))
+    <> " hours between rounds. Small payments wait until the threshold is met; the interval is not a maximum wait. All eligible payments join a round; new arrivals wait for the next. Confirmations, fees and reserves still apply."
   hidden "report-data" (not $ isJust $ pubReport cfg)
   text "report-note" "Report unavailable."
   forM_ (pubReport cfg) $ \report -> do

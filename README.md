@@ -38,6 +38,13 @@ Keep the default `resticExecutable`; the installer provisions that reviewed back
 New wallets are generated only through interactive startup. Fresh installation
 requires unused custody; existing custody needs ledger restoration.
 
+For Cloudflare, create a remotely managed tunnel with `domain` routed to
+`http://127.0.0.1:8080`, then put its token in `cloudflareTunnelToken = Just "..."`.
+The installer supplies the pinned connector and checks the public deployment identity.
+`Nothing` keeps access local. `serverIp` is saved inventory information, not a bind
+address or a DNS change. Cloudflare account setup and policies remain external.
+Do not enable public ingress before the release/security checks pass.
+
 ## Custom website
 
 Set this field in `server.conf`:

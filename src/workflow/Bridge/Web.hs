@@ -123,13 +123,13 @@ runPublicServer port app = do
   certificate<-lookupEnv "ECX_PUBLIC_TLS_CERT"
   key<-lookupEnv "ECX_PUBLIC_TLS_KEY"
   let settings=setPort port $ setTimeout 65 defaultSettings
+  limited<-rateLimitedApplication (toInteger <$> getMonotonicTimeNSec) app
   case (certificate,key) of
-    (Nothing,Nothing)->runSettings (setHost "127.0.0.1" settings) app
+    (Nothing,Nothing)->runSettings (setHost "127.0.0.1" settings) limited
     (Just cert,Just secret)->do
       require (cert/=secret) "public_tls_files_must_differ"
       protectedSignerFile cert False False
       protectedSignerFile secret True False
-      limited<-rateLimitedApplication (toInteger <$> getMonotonicTimeNSec) app
       runTLS (tlsSettings cert secret) (setHost "*4" settings) limited
     _->reject "public_tls_requires_certificate_and_key"
 

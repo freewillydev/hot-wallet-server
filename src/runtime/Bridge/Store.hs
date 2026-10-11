@@ -56,7 +56,7 @@ data LedgerState = LedgerState
   deriving (Eq,Show)
 data StorePolicy = StorePolicy
   { executionTerms :: PaymentTerms, admissionLimits :: OrderLimits
-  , deploymentName :: Text, requireBackup :: Bool } deriving (Eq,Show)
+  , deploymentName :: Text, requireBackup :: Bool, payoutPolicy :: W.PayoutPolicy } deriving (Eq,Show)
 data NativeLockWork = NativeLockWork
   { lockPreparation :: PreparedPayment, lockCancelling :: Bool, lockAttempts :: [RecordedAttempt] } deriving (Eq,Show)
 
@@ -206,6 +206,7 @@ data StoreRead a where
   ReadState :: StoreRead LedgerState
   ReadServiceStatus :: StoreRead W.ServiceStatus
   ReadPublicReport :: Int64 -> StoreRead W.PublicReport
+  ReadAutomaticFeeAmount :: Asset -> Amount -> Amount -> StoreRead (Maybe Amount)
   ReadBalances :: StoreRead (M.Map (Asset,Account) Integer)
   ReadPaymentWork :: Text -> StoreRead (PaymentView,Maybe PreparedPayment,[Text])
   ReadPaymentAttempts :: Text -> StoreRead [Text]
@@ -214,6 +215,7 @@ data StoreRead a where
   ReadPreparation :: Text -> StoreRead PreparedPayment
   ReadPayment :: Text -> StoreRead PaymentView
   CheckPaymentSource :: Text -> StoreRead ()
+  CheckPayoutAdmission :: Text -> StoreRead ()
   ReadPaymentSource :: Text -> StoreRead (Maybe W.PaymentSource)
   ReadWithdrawal :: Text -> StoreRead (Maybe WithdrawalView)
   ReadPayableOrder :: Int64 -> Text -> Text -> StoreRead W.OrderView
@@ -257,6 +259,7 @@ data StoreWrite a where
   RefreshPaymentSource :: W.Deposit -> W.Deposit -> StoreWrite ()
   RecordAttempt :: PreparedPayment -> SignedAttempt -> StoreWrite RecordedAttempt
   PreparePayment :: Int64 -> Text -> Amount -> Text -> StoreWrite PreparedPayment
+  AdmitPayoutRounds :: Int64 -> StoreWrite ()
   SaveDraft :: Text -> Int -> Text -> StoreWrite ()
   CommitScan :: W.ScanBatch -> StoreWrite ()
   RecordHistoryProgress :: Text -> Maybe Solana.HistoryProgress -> Solana.HistoryProgress -> StoreWrite ()
@@ -273,6 +276,7 @@ data StoreWrite a where
   AcknowledgeBackup :: Text -> Int64 -> Text -> StoreWrite ()
   ExpireQuotes :: Int64 -> StoreWrite ()
   ReserveFees :: Int64 -> Text -> Asset -> Amount -> Text -> Text -> StoreWrite WithdrawalView
+  ReserveAutomaticFees :: Int64 -> Asset -> Text -> StoreWrite (Maybe WithdrawalView)
   CancelFees :: Text -> Text -> StoreWrite WithdrawalView
 
 -- Reader has no writer connection, checkpoint or writable credentials.
@@ -296,10 +300,11 @@ withReader settings identity remote action = do
 -- infrastructure, not an operation supplied by a handler. No optional bypass.
 withWriter :: PG.ConnectInfo -> StorePolicy -> (Int64 -> IO ()) -> (Writer -> IO a) -> IO a
 withWriter settings config checkpoint action = bracket (PG.connect settings) PG.close $ \c -> do
+  checked (checkPayoutPolicy $ payoutPolicy config)
   let policy=executionTerms config; limit=admissionLimits config
   require (not(T.null $ deploymentName config) && T.length(deploymentName config)<=64 && not(T.any (<= ' ') $ deploymentName config)) "invalid_deployment_name"
   require (units (maximumWithdrawal limit)>0
-    && quoteSeconds limit>0 && graceSeconds limit>=0 && maximumQueued limit>0
+    && quoteSeconds limit>0 && graceSeconds limit>=0 && maximumQueued limit>0 && maximumQueued limit<=1000
     && units (savedNativeFee $ paymentLimits policy)>0 && units (savedSolanaFee $ paymentLimits policy)>0
     && nativeDepth (paymentPolicy policy)>0 && solanaCommitment (paymentPolicy policy)=="finalized") "invalid_store_policy"
   _ <- checked $ amount (toInteger(units $ savedSolanaFee $ paymentLimits policy)+toInteger(units $ savedSolanaRent $ paymentLimits policy))
@@ -316,6 +321,7 @@ evalRead (Reader settings identity remote) operation = bracket connect PG.close 
     verifyReadRole c >>= flip require "unsafe_read_database_role"
     row <- metadata c identity
     case operation of
+      ReadAutomaticFeeAmount currency threshold cap -> automaticFeeAmount c currency threshold cap
       FindOrder header request -> findOrder c identity header request
       ReadProvisioning header identifier -> do
         row<-authorizedOrder c identity header identifier
@@ -409,6 +415,7 @@ evalRead (Reader settings identity remote) operation = bracket connect PG.close 
       ReadPreparation identifier -> readPreparation c identity identifier
       ReadPayment identifier -> readPayment c identity identifier
       CheckPaymentSource identifier -> readPayment c identity identifier >>= paymentSource c . savedPayment
+      CheckPayoutAdmission identifier -> readPayment c identity identifier >>= checkPayoutAdmission c . savedPayment
       ReadPaymentSource identifier -> readPaymentSource c identity identifier
       PendingVerification -> pendingVerification c
       LookupReferences keys -> lookupReferences c keys
@@ -480,6 +487,7 @@ evalWrite writer@(Writer _ config _) operation = transaction writer $ \c ->
     when (observed/=expected) (observeDeposit c observed)
   RecordAttempt prepared signed -> recordAttempt c (deploymentFingerprint $ paymentPolicy policy) prepared signed
   PreparePayment now identifier allowance plan -> preparePayment c config now identifier allowance plan
+  AdmitPayoutRounds now -> admitPayoutRounds c config now
   SaveDraft identifier generation draft -> saveDraft c (deploymentFingerprint $ paymentPolicy policy) identifier generation draft
   CommitScan batch -> commitScan c batch
   RecordHistoryProgress chain expected next -> do
@@ -511,7 +519,7 @@ evalWrite writer@(Writer _ config _) operation = transaction writer $ \c ->
         require (hash==saved) "source_recovery_scan_not_current"
     recordSourceCheck c current check
   PromoteDeposit now identifier -> promoteDeposit c policy now identifier
-  CreateOrder now header request -> createOrder c policy limit now header request
+  CreateOrder now header request -> createOrder c config now header request
   ClaimNative now header identifier -> do
     row<-authorizedOrder c (deploymentFingerprint $ paymentPolicy policy) header identifier
     facts<-instructionFacts row
@@ -578,16 +586,9 @@ evalWrite writer@(Writer _ config _) operation = transaction writer $ \c ->
         pure $ Just(operator,M.findWithDefault 0 (currency,Earned) booked)
     create<-checked (decideWithdrawal outgoing policy explanation old admission)
     if not create then maybe (reject "fee_withdrawal_not_found") pure old else do
-      sequenceNumber<-nextSequence c
-      count<-O.runInsert c O.Insert {O.iTable=S.withdrawals,
-        O.iRows=[S.Withdrawal (O.sqlStrictText key) (O.sqlStrictText $ T.pack $ show currency)
-          (O.sqlInt8 $ units n) (O.sqlStrictText destination) (O.sqlStrictText $ encodeSaved policy)
-          (O.sqlStrictText explanation) (O.sqlInt8 sequenceNumber)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
-      require (count==1) "withdrawal_insert_failed"
-      createPaymentRoot c outgoing
-      entries<-checked (reserveEarned $ paymentFunding outgoing)
-      post c ("fee-reserve:"<>key) "reserve earned fees for operator withdrawal" entries
-      pure (WithdrawalView outgoing policy explanation sequenceNumber Nothing)
+      capacity<-withdrawalCapacity c config now outgoing >>= checked
+      commitWithdrawal c config key outgoing explanation capacity
+  ReserveAutomaticFees now currency destination -> reserveAutomaticFees c config now currency destination
   CancelFees key explanation -> do
     validReason explanation
     saved<-readWithdrawal c key >>= maybe (reject "fee_withdrawal_not_found") pure
@@ -605,11 +606,10 @@ evalWrite writer@(Writer _ config _) operation = transaction writer $ \c ->
           pure (WithdrawalWork (retry/=Nothing) (S.paused state==1))
     cancel<-checked (decideWithdrawalCancellation explanation saved work)
     if not cancel then pure saved else do
-      case work of
-        UnpreparedWithdrawal->pure ()
-        WithdrawalWork{}->void $ O.runUpdate c O.Update {O.uTable=S.feeHolds,
-          O.uUpdateWith= \(identifier,a,n,_)->(identifier,a,n,O.sqlInt8 1),
-          O.uWhere= \(identifier,_,_,_)->identifier O..== O.sqlStrictText("fee:"<>key),O.uReturning=O.rCount}
+      checkWithdrawalRelease c config saved
+      void $ O.runUpdate c O.Update {O.uTable=S.feeHolds,
+        O.uUpdateWith= \(identifier,a,n,_)->(identifier,a,n,O.sqlInt8 1),
+        O.uWhere= \(identifier,_,_,_)->identifier O..== O.sqlStrictText("fee:"<>key),O.uReturning=O.rCount}
       n<-nextSequence c
       count<-O.runInsert c O.Insert {O.iTable=S.cancellations,
         O.iRows=[(O.sqlStrictText key,O.sqlStrictText explanation,O.sqlInt8 n)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
@@ -659,7 +659,7 @@ metadata :: PG.Connection -> Text -> IO S.Deployment
 metadata c identity = do
   rows <- O.runSelect c (O.selectTable S.deployment)
   case rows of
-    [r] | S.singleton r==1 && S.schemaVersion r==22 && S.fingerprint r==identity
+    [r] | S.singleton r==1 && S.schemaVersion r==23 && S.fingerprint r==identity
         && S.criticalSequence r>=0 && S.backupSequence r>=0 && S.backupSequence r<=S.criticalSequence r
         && S.paused r `elem` [0,1] -> pure r
     _ -> reject "ledger_profile_or_schema_mismatch"
@@ -947,10 +947,11 @@ findOrder c identity header request = do
     _->reject "duplicate_idempotency"
 
 -- Admission precedes this atomic reservation of inventory and operating costs.
-createOrder :: PG.Connection -> PaymentTerms -> OrderLimits -> Int64 -> Text -> W.OrderRequest -> IO Text
-createOrder c terms limits now header request = do
+createOrder :: PG.Connection -> StorePolicy -> Int64 -> Text -> W.OrderRequest -> IO Text
+createOrder c config now header request = do
   cap <- checked (bearerHash header)
-  let key=W.idempotencyKey request; identity=deploymentFingerprint (paymentPolicy terms)
+  let terms=executionTerms config; limits=admissionLimits config
+      key=W.idempotencyKey request; identity=deploymentFingerprint (paymentPolicy terms)
       encoded=encodeSaved request; requestDigest=digest (TE.encodeUtf8 $ identity<>encoded)
   previous<-findOrder c identity header request
   case previous of
@@ -959,19 +960,11 @@ createOrder c terms limits now header request = do
       readiness<-readIntake c identity now
       checked (checkIntake readiness)
       _<-checked (quoteOrder request)
-      counts<-O.runSelect c $ O.aggregate O.count $ fmap S.orderId $ O.limit (maximumQueued limits) P.openOrders :: IO [Int64]
-      queued<-case counts of
-        []->pure 0 -- Opaleye aggregation preserves an empty input relation.
-        [n] | n>=0 && toInteger n<=toInteger(maxBound::Int)->pure(fromIntegral n)
-        _->reject "invalid_order_queue"
-      booked<-balances c
       let destination=destinationAsset $ W.direction request
-      held<-principalHeld c destination
-      at<-operatingTime c
-      nativeBudget<-readFeeBudget c limits booked at Native
-      solanaBudget<-readFeeBudget c limits booked at Sol
-      admitted<-checked $ decideOrder limits (paymentLimits terms) request $ OrderAdmissionFacts readiness
-        queued (M.findWithDefault 0 (destination,Float) booked-held) nativeBudget solanaBudget
+      facts<-readAdmissionFunds c config readiness destination
+      batches<-readPayoutBatches c
+      capacities<-mapM batchCapacity batches
+      (owner,admitted)<-checked $ decideBatchOrder (payoutPolicy config) limits (paymentLimits terms) request facts capacities
       identifier<-digest <$> (getRandomBytes 32 :: IO BS.ByteString)
       let text=O.sqlStrictText; num=O.sqlInt8; termsQuote=admittedQuote admitted
           row=S.Order (text identifier) (text cap) (text key) (text requestDigest) (text encoded)
@@ -980,7 +973,203 @@ createOrder c terms limits now header request = do
       _<-O.runInsert c O.Insert {O.iTable=S.orders,O.iRows=[row],O.iReturning=O.rCount,O.iOnConflict=Nothing}
       _<-O.runInsert c O.Insert {O.iTable=S.reservations,O.iRows=[(text identifier,text $ T.pack(show destination),num $ units $ net termsQuote,text "quote")],O.iReturning=O.rCount,O.iOnConflict=Nothing}
       reserveOrderCosts c (paymentLimits terms) identifier (admittedCosts admitted)
+      sequenceNo<-nextSequence c
+      let assignment=maybe (Left sequenceNo) Right owner
+      assignPayoutBatch c config assignment destination (Just identifier) Nothing
       pure identifier
+
+readAdmissionFunds :: PG.Connection -> StorePolicy -> IntakeFacts -> Asset -> IO OrderAdmissionFacts
+readAdmissionFunds c config readiness destination = do
+  let limits=admissionLimits config
+  counts<-O.runSelect c $ O.aggregate O.count $
+    O.unionAll (fmap S.orderId P.openOrders) (do
+      root<-O.selectTable S.paymentRoots
+      O.where_ (O.not (O.isNull $ S.rootWithdrawal root)
+        O..&& O.not (O.in_ (map O.sqlStrictText ["settled","cancelled"]) $ S.rootPhase root))
+      pure $ S.rootId root)
+    :: IO [Int64]
+  queued<-case counts of
+    []->pure 0 -- Opaleye aggregation preserves an empty input relation.
+    [n] | n>=0 && toInteger n<=toInteger(maxBound::Int)->pure(fromIntegral n)
+    _->reject "invalid_order_queue"
+  booked<-balances c
+  held<-principalHeld c destination
+  at<-operatingTime c
+  nativeBudget<-readFeeBudget c limits booked at Native
+  solanaBudget<-readFeeBudget c limits booked at Sol
+  pure $ OrderAdmissionFacts readiness queued
+    (M.findWithDefault 0 (destination,Float) booked-held) nativeBudget solanaBudget
+
+-- Both manual and automatic earned withdrawals use the same capacity decision
+-- and commit. Only their authorization differs; neither spends customer principal.
+withdrawalCapacity :: PG.Connection -> StorePolicy -> Int64 -> Payment -> IO (Either Text (Maybe Text,Asset,Amount))
+withdrawalCapacity c config now outgoing = do
+  let policy=executionTerms config; costs=paymentLimits policy; currency=paymentAsset outgoing
+      feeAsset=if currency==Native then Native else Sol
+  readiness<-readIntake c (deploymentFingerprint $ paymentPolicy policy) now
+  facts<-readAdmissionFunds c config readiness currency
+  capacities<-readPayoutBatches c >>= mapM batchCapacity
+  pure $ do
+    allowance<-if currency==Native then pure (savedNativeFee costs)
+      else amount (toInteger(units $ savedSolanaFee costs)+toInteger(units $ savedSolanaRent costs))
+    zero<-amount 0
+    owner<-checkBatchMember (payoutPolicy config) (admissionLimits config) costs
+      (BatchMember currency (paymentAmount outgoing) zero [(feeAsset,allowance)]) facts capacities
+    pure (owner,feeAsset,allowance)
+
+commitWithdrawal :: PG.Connection -> StorePolicy -> Text -> Payment -> Text -> (Maybe Text,Asset,Amount) -> IO WithdrawalView
+commitWithdrawal c config key outgoing explanation (owner,feeAsset,allowance) = do
+  let policy=executionTerms config; currency=paymentAsset outgoing
+  sequenceNumber<-nextSequence c
+  count<-O.runInsert c O.Insert {O.iTable=S.withdrawals,
+    O.iRows=[S.Withdrawal (O.sqlStrictText key) (O.sqlStrictText $ T.pack $ show currency)
+      (O.sqlInt8 $ units $ paymentAmount outgoing) (O.sqlStrictText $ paymentRecipient outgoing) (O.sqlStrictText $ encodeSaved policy)
+      (O.sqlStrictText explanation) (O.sqlInt8 sequenceNumber)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+  require (count==1) "withdrawal_insert_failed"
+  createPaymentRoot c outgoing
+  void $ O.runInsert c O.Insert {O.iTable=S.feeHolds,
+    O.iRows=[(O.sqlStrictText $ paymentId outgoing,O.sqlStrictText $ T.pack(show feeAsset),O.sqlInt8 $ units allowance,O.sqlInt8 0)],
+    O.iReturning=O.rCount,O.iOnConflict=Nothing}
+  assignPayoutBatch c config (maybe (Left sequenceNumber) Right owner) currency Nothing (Just key)
+  entries<-checked (reserveEarned $ paymentFunding outgoing)
+  post c ("fee-reserve:"<>key) "reserve earned fees for operator withdrawal" entries
+  pure (WithdrawalView outgoing policy explanation sequenceNumber Nothing)
+
+-- Selection is advisory; the write repeats it under the deployment lock.
+automaticFeeAmount :: PG.Connection -> Asset -> Amount -> Amount -> IO (Maybe Amount)
+automaticFeeAmount c currency threshold cap = do
+  require (currency `elem` [Native,Wrapped] && units threshold>0 && cap>=threshold) "automatic_withdrawal_limit_below_threshold"
+  pending<-O.runSelect c $ O.limit 1 $ do
+    root<-O.selectTable S.paymentRoots
+    withdrawal<-O.selectTable S.withdrawals
+    O.where_ (O.matchNullable (O.sqlBool False) (O..== S.withdrawalId withdrawal) (S.rootWithdrawal root)
+      O..&& S.asset withdrawal O..== O.sqlStrictText (T.pack $ show currency)
+      O..&& O.not (O.in_ (map O.sqlStrictText ["settled","cancelled"]) (S.rootPhase root)))
+    pure (S.rootId root)
+    :: IO [Text]
+  booked<-balances c
+  let available=M.findWithDefault 0 (currency,Earned) booked
+  require (available>=0) "negative_earned_balance"
+  if not(null pending) || available<toInteger(units threshold) then pure Nothing
+    else Just <$> checked (amount $ min available $ toInteger $ units cap)
+
+-- Optional work: insufficient revenue/capacity is a no-op, malformed state is not.
+-- The deployment lock covers the pending check, Earned debit and saved identity.
+reserveAutomaticFees :: PG.Connection -> StorePolicy -> Int64 -> Asset -> Text -> IO (Maybe WithdrawalView)
+reserveAutomaticFees c config now currency destination = do
+  require (currency `elem` [Native,Wrapped]) "invalid_payout_asset"
+  let policy=executionTerms config; limits=admissionLimits config
+      threshold=if currency==Native then W.nativePayoutThreshold (payoutPolicy config)
+        else W.wrappedPayoutThreshold (payoutPolicy config)
+      cap=maximumWithdrawal limits
+  require (cap>=threshold) "automatic_withdrawal_limit_below_threshold"
+  readiness<-readIntake c (deploymentFingerprint $ paymentPolicy policy) now
+  checked (checkIntake readiness)
+  candidate<-automaticFeeAmount c currency threshold cap
+  case candidate of
+   Nothing->pure Nothing
+   Just quantity->do
+    state<-metadata c (deploymentFingerprint $ paymentPolicy policy)
+    let key=digest $ TE.encodeUtf8 $ encodeSaved ("automatic-owner-fees"::Text,
+          deploymentName config,S.criticalSequence state,currency,destination)
+        reason="automatic owner fee payout"
+    outgoing<-checked (withdrawalInput cap now key currency quantity destination reason)
+    decision<-withdrawalCapacity c config now outgoing
+    case decision of
+      Left code | code `elem` ["payout_batch_needs_capacity","payout_batch_needs_inventory",
+        "insufficient_fee_budget","operating_daily_limit"]->pure Nothing
+      Left code->reject code
+      Right capacity->Just <$> commitWithdrawal c config key outgoing reason capacity
+
+-- All callers hold the ordinary writer/deployment lock. Reads bind saved batch
+-- policy and live membership in the same transaction as admission or sealing.
+readPayoutBatches :: PG.Connection -> IO [(S.PayoutCohort,[(Text,Int64,Bool)])]
+readPayoutBatches c = do
+  liabilities<-O.runSelect c $ O.limit 1001 P.payoutCohort
+    :: IO [(Text,Text,Int64,Bool)]
+  rows<-O.runSelect c $ O.limit 1001 $ O.orderBy (O.asc $ \(row,_,_,_,_)->S.cohortSequence row) $ do
+    (group,key,asset,n,ready)<-P.assignedPayouts
+    row<-O.selectTable S.payoutCohorts
+    O.where_ (S.cohortId row O..== group)
+    pure (row,key,asset,n,ready)
+    :: IO [(S.PayoutCohort,Text,Text,Int64,Bool)]
+  require (length rows<=1000 && length(nub [key | (_,key,_,_,_)<-rows])==length rows
+    && all (\(row,_,asset,n,_)->asset==S.cohortAsset row && n>0) rows) "invalid_payout_membership"
+  -- Compare all live liabilities, including pending/reviewed work. An inner join
+  -- alone would silently discard missing assignments and understate reserves.
+  require (length liabilities<=1000 && sortOn id liabilities==sortOn id
+    [(key,asset,n,ready) | (_,key,asset,n,ready)<-rows]) "unassigned_payout_liability"
+  let policies=nub [row | (row,_,_,_,_)<-rows]
+  pure [(row,[(key,n,ready) | (other,key,_,n,ready)<-rows,S.cohortId other==S.cohortId row]) | row<-policies]
+
+batchCapacity :: (S.PayoutCohort,[(Text,Int64,Bool)]) -> IO BatchCapacity
+batchCapacity (row,members) = BatchCapacity (S.cohortId row)
+  <$> parseAsset (S.cohortAsset row) <*> checked(amount $ toInteger $ S.cohortThreshold row)
+  <*> pure (sum [toInteger n | (_,n,_)<-members])
+  <*> checked(amount $ toInteger $ S.cohortNativeFee row)
+  <*> checked(amount $ toInteger $ S.cohortSolanaFee row)
+  <*> pure (fromIntegral $ S.cohortMaximumQueued row)
+
+-- Only new uses of free capital include these virtual reservations. Existing
+-- customer/refund fee holds remain spendable even if closing capacity is depleted.
+closingHolds :: PG.Connection -> CostLimits -> Asset -> IO (Integer,Integer)
+closingHolds c costs currency = closingHoldsExcept c costs currency []
+
+-- Refund authorization removes its own conversion from the projected cohort.
+-- The other members keep their closing allocation; an empty cohort needs none.
+closingHoldsExcept :: PG.Connection -> CostLimits -> Asset -> [Text] -> IO (Integer,Integer)
+closingHoldsExcept c costs currency removed = do
+  groups<-readPayoutBatches c
+  batches<-mapM (\(row,members)->batchCapacity (row,filter (\(key,_,_)->key `notElem` removed) members)) groups
+  holds<-mapM (checked . batchClosingCapacity costs) batches
+  let inventory=sum [closingInventory h | (b,h)<-zip batches holds,batchAsset b==currency]
+      fees=sum $ map (case currency of Native->closingNativeFees; Sol->closingSolanaFees; _->const 0) holds
+  pure (inventory,fees)
+
+-- Discretionary owner cancellation must not strand customers in an unsealed
+-- cohort. Sealed work already has durable payout admission and needs no closer.
+checkWithdrawalRelease :: PG.Connection -> StorePolicy -> WithdrawalView -> IO ()
+checkWithdrawalRelease c config saved = do
+  let outgoing=withdrawalPayment saved; key=paymentId outgoing
+      feeAsset=if paymentAsset outgoing==Native then Native else Sol
+      terms=executionTerms config; limits=admissionLimits config
+  groups<-readPayoutBatches c
+  when (any (any (\(member,_,_)->member==key) . snd) groups) $ do
+    after<-mapM (\(row,members)->batchCapacity (row,filter (\(member,_,_)->member/=key) members)) groups
+    fees<-O.runSelect c $ do
+      (identifier,asset,n,released)<-O.selectTable S.feeHolds
+      O.where_ (identifier O..== O.sqlStrictText key O..&& asset O..== O.sqlStrictText(T.pack(show feeAsset)) O..&& released O..== O.sqlInt8 0)
+      pure n
+      :: IO [Int64]
+    let released=sum(map toInteger fees)
+        budget currency value=value {operatingHeld=operatingHeld value-if currency==feeAsset then released else 0}
+    now<-operatingTime c
+    readiness<-readIntake c (deploymentFingerprint $ paymentPolicy terms) now
+    forM_ [Native,Wrapped] $ \asset->do
+      facts<-readAdmissionFunds c config readiness asset
+      checked $ checkBatchResources limits (paymentLimits terms) asset facts
+        {queuedOrders=queuedOrders facts-1,nativeOrderBudget=budget Native (nativeOrderBudget facts)
+        ,solanaOrderBudget=budget Sol (solanaOrderBudget facts)} after
+
+assignPayoutBatch :: PG.Connection -> StorePolicy -> Either Int64 Text -> Asset -> Maybe Text -> Maybe Text -> IO ()
+assignPayoutBatch c config owner asset order withdrawal = do
+  let text=O.sqlStrictText; num=O.sqlInt8; policy=payoutPolicy config
+      costs=paymentLimits $ executionTerms config
+      threshold=if asset==Native then W.nativePayoutThreshold policy else W.wrappedPayoutThreshold policy
+      nullable=maybe O.null (O.toNullable . text)
+  group<-case owner of
+    Right key->pure key
+    Left sequenceNo->do
+      let key="batch:"<>T.pack(show sequenceNo)
+      solanaFee<-checked $ amount (toInteger(units $ savedSolanaFee costs)+toInteger(units $ savedSolanaRent costs))
+      void $ O.runInsert c O.Insert {O.iTable=S.payoutCohorts,
+        O.iRows=[S.PayoutCohort (text key) (text $ T.pack $ show asset) (num $ units threshold)
+          (num $ units $ savedNativeFee costs) (num $ units solanaFee)
+          (num $ fromIntegral $ maximumQueued $ admissionLimits config)
+          (num $ W.payoutIntervalSeconds policy) (num sequenceNo)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+      pure key
+  void $ O.runInsert c O.Insert {O.iTable=S.payoutAssignments,
+    O.iRows=[(text group,nullable order,nullable withdrawal)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
 
 intakeReady :: PG.Connection -> Text -> Int64 -> IO ()
 intakeReady c identity now = readIntake c identity now >>= checked . checkIntake
@@ -1760,6 +1949,8 @@ preparePayment c config now identifier allowance plan = do
     ReusePreparation saved->pure saved
     CreatePreparation prepared->do
       let generation=preparedGeneration prepared; initial=generation==0
+      when initial (admitPayoutRounds c config now)
+      checkPayoutAdmission c outgoing
       when initial $ forM_ (customerFunding funding) $ \(order,kind)->
         one "operating_reservation_missing" $ O.runUpdate c O.Update {O.uTable=S.operatingReservations,
           O.uUpdateWith= \(key,purpose,asset,n,_)->(key,purpose,asset,n,text "transferred"),
@@ -1767,7 +1958,7 @@ preparePayment c config now identifier allowance plan = do
             O..&& asset O..== text(T.pack $ show currency) O..&& n O..>= num(units allowance)
             O..&& O.in_ (map text ["quote","obligation"]) phase,O.uReturning=O.rCount}
       _<-nextSequence c
-      if initial then do
+      if initial && customerFunding funding/=Nothing then do
         one "payment_fee_hold_insert_failed" $ O.runInsert c O.Insert {O.iTable=S.feeHolds,O.iRows=[(text identifier,text $ T.pack(show currency),num $ units allowance,num 0)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
       else do
         one "payment_fee_hold_update_failed" $ O.runUpdate c O.Update {O.uTable=S.feeHolds,O.uUpdateWith= \(key,a,_,_)->(key,a,num $ units allowance,num 0),O.uWhere= \(key,_,_,_)->key O..== text identifier,O.uReturning=O.rCount}
@@ -1811,6 +2002,10 @@ readPreparationAdmission c config now view history = do
       O.where_ (key O..== text order O..&& purpose O..== text kind O..&& asset O..== text(T.pack $ show currency)
         O..&& O.in_ (map text ["quote","obligation"]) phase)
       pure n
+    (InitialPreparation,Nothing)->O.runSelect c $ O.limit 2 $ do
+      (key,asset,n,released)<-O.selectTable S.feeHolds
+      O.where_ (key O..== text identifier O..&& asset O..== text(T.pack $ show currency) O..&& released O..== O.sqlInt8 0)
+      pure n
     _->pure []
     :: IO [Int64]
   let quantity=either (const Nothing) Just . amount . toInteger
@@ -1822,8 +2017,9 @@ readPreparationAdmission c config now view history = do
   booked<-balances c
   at<-operatingTime c
   budget<-readFeeBudget c (admissionLimits config) booked at currency
+  (_,closing)<-closingHolds c (paymentLimits $ executionTerms config) currency
   pure $ PreparationAdmission readiness (not $ null busy) eligible previous held
-    (M.findWithDefault 0 (paymentAsset outgoing,FeePending) booked) budget
+    (M.findWithDefault 0 (paymentAsset outgoing,FeePending) booked) budget closing
 
 customerFunding :: Funding -> Maybe (Text,Text)
 customerFunding (Conversion order _ _ _) = Just(order,"conversion")
@@ -1894,7 +2090,9 @@ signingDecision c identity backed now identifier generation = do
   row <- metadata c identity
   when backed $ require (S.backupSequence row>=S.criticalSequence row) "signing_backup_required"
   intakeReady c identity now
-  unsignedPreparation c identity identifier generation
+  prepared<-unsignedPreparation c identity identifier generation
+  checkPayoutAdmission c (savedPayment $ preparedView prepared)
+  pure prepared
 
 recordAttempt :: PG.Connection -> Text -> PreparedPayment -> SignedAttempt -> IO RecordedAttempt
 recordAttempt c identity expected signed = do
@@ -2311,11 +2509,69 @@ pendingAttempts c = do
 paymentCandidates :: PG.Connection -> IO [Text]
 paymentCandidates c = do
   active<-O.runSelect c P.activePayments :: IO [(Text,Text)]
-  ready<-O.runSelect c P.readyPayments :: IO [(Text,Text)]
+  ready<-O.runSelect c $ fmap (\(key,chain,_)->(key,chain)) $ O.limit 1001 $
+    O.orderBy (O.asc (\(_,_,n)->n) <> O.asc (\(key,_,_)->key)) $ do
+      (key,chain)<-P.readyPayments
+      (member,n)<-O.unionAll (O.selectTable S.payoutMembers)
+        ((\identifier->(identifier,O.sqlInt8 0)) <$> P.immediateRefunds)
+      O.where_ (member O..== key)
+      pure (key,chain,n)
+    :: IO [(Text,Text)]
   require (length ready<=1000 && length active<=2
     && all ((`elem` ["Native","Solana"]).snd) (active<>ready)
     && length(nub $ map snd active)==length active) "payment_queue_requires_review"
   pure [key | chain<-["Native","Solana"],key<-take 1 [identifier | (identifier,currency)<-active<>ready,currency==chain]]
+
+-- Admission is a durable snapshot, not permission to sign. All current source,
+-- budget, backup and custody checks still run for each member before payment.
+admitPayoutRounds :: PG.Connection -> StorePolicy -> Int64 -> IO ()
+admitPayoutRounds c config now = do
+  readiness<-readIntake c (deploymentFingerprint $ paymentPolicy $ executionTerms config) now
+  when (checkIntake readiness==Right ()) $ admit
+ where
+  admit=do
+   let text=O.sqlStrictText; num=O.sqlInt8
+   batches<-readPayoutBatches c
+   forM_ [Native,Wrapped] $ \asset->do
+     let name=T.pack(show asset)
+         eligible=[(row,members) | (row,members)<-batches,S.cohortAsset row==name
+           ,all (\(_,_,ready)->ready) members
+           ,sum [toInteger n | (_,n,_)<-members]>=toInteger(S.cohortThreshold row)]
+         members=[(key,n) | (_,group)<-eligible,(key,n,_)<-group]
+         thresholdUnits=maximum (1:[S.cohortThreshold row | (row,_)<-eligible])
+         interval=maximum (0:[S.cohortInterval row | (row,_)<-eligible])
+     threshold<-checked (amount $ toInteger thresholdUnits)
+     let policy=W.PayoutPolicy threshold threshold interval
+     previous<-O.runSelect c $ O.limit 1 $ O.orderBy (O.desc S.roundSequence) $ do
+       row<-O.selectTable S.payoutRounds
+       O.where_ (S.roundAsset row O..== text name)
+       pure row
+       :: IO [S.PayoutRound]
+     quantities<-mapM (checked . amount . toInteger . snd) members
+     let prior=case previous of []->Nothing; row:_->Just row
+     due<-checked (payoutRoundDue policy asset now ((\r->(S.roundOpened r,S.roundInterval r)) <$> prior) quantities)
+     when due $ do
+       n<-nextSequence c
+       _<-O.runInsert c O.Insert {O.iTable=S.payoutRounds,
+         O.iRows=[S.PayoutRound (num n) (text name) (num now) (num $ W.payoutIntervalSeconds policy)
+           (num $ units threshold) (num $ fromIntegral $ length members)
+           (O.sqlNumeric $ fromInteger $ sum $ map (toInteger.snd) members)
+           (maybe O.null (O.toNullable . num . S.roundSequence) prior)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+       count<-O.runInsert c O.Insert {O.iTable=S.payoutMembers,
+         O.iRows=[(text key,num n) | (key,_)<-members],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+       require (count==fromIntegral(length members)) "payout_round_membership_conflict"
+
+checkPayoutAdmission :: PG.Connection -> Payment -> IO ()
+checkPayoutAdmission c outgoing | Refund{} <- paymentFunding outgoing = pure ()
+checkPayoutAdmission c outgoing = do
+  rows<-O.runSelect c $ O.limit 2 $ do
+    (key,n)<-O.selectTable S.payoutMembers
+    round<-O.selectTable S.payoutRounds
+    O.where_ (key O..== O.sqlStrictText(paymentId outgoing) O..&& S.roundSequence round O..== n
+      O..&& S.roundAsset round O..== O.sqlStrictText(T.pack $ show $ paymentAsset outgoing))
+    pure key
+    :: IO [Text]
+  require (rows==[paymentId outgoing]) "payout_round_not_due"
 
 -- Saved native work only: no source/payment authorization is granted by this read.
 nativeLockWork :: PG.Connection -> Text -> IO (Maybe NativeLockWork)
@@ -2484,7 +2740,7 @@ authorizeRefund c config now receipt = do
         pure (kind,asset,n,phase)
         :: IO [(Text,Text,Int64,Text)]
       let refundHolds=[(asset,n,phase) | ("refund",asset,n,phase)<-holds]
-      budget<-if any (\(_,_,phase)->phase `notElem` ["quote","obligation"]) refundHolds then do
+      (budget,releasedFees,closingFees)<-if any (\(_,_,phase)->phase `notElem` ["quote","obligation"]) refundHolds then do
         booked<-balances c
         at<-operatingTime c
         before<-readFeeBudget c (admissionLimits config) booked at feeAsset
@@ -2494,9 +2750,11 @@ authorizeRefund c config now receipt = do
           pure n
           :: IO [Int64]
         let transferred=[n | ("conversion",asset,n,phase)<-holds,asset==T.pack(show feeAsset),phase `elem` ["quote","obligation"]]
-        pure $ Just before {operatingHeld=operatingHeld before-sum(map toInteger $ released<>transferred)}
-       else pure Nothing
-      outgoing<-checked $ decideRefund request source costs (RefundFacts (not $ null unresolved) work destination refundHolds budget)
+        (_,closing)<-closingHoldsExcept c (paymentLimits $ executionTerms config) feeAsset [oid,"convert:"<>oid]
+        pure (Just before,sum(map toInteger $ released<>transferred),closing)
+       else pure (Nothing,0,0)
+      outgoing<-checked $ decideRefund request source costs
+        (RefundFacts (not $ null unresolved) work destination refundHolds budget releasedFees closingFees)
       -- Resolved failed/cancelled preparations may retain unused operating holds.
       -- No unresolved intent survives the check above, so release only this work.
       forM_ active $ \old->do
@@ -2934,8 +3192,10 @@ classifyTreasurySpend c policy chain key reason = do
       booked<-balances c
       inventory<-principalHeld c currency
       operating<-operatingHolds c currency
+      (closingInventory,closingFees)<-closingHolds c (paymentLimits policy) currency
       postings<-checked $ decideTreasurySpend economic
-        (M.findWithDefault 0 (currency,Float) booked-inventory) (M.findWithDefault 0 (currency,Operating) booked-operating)
+        (spendableAfterClosing (M.findWithDefault 0 (currency,Float) booked-inventory) closingInventory)
+        (spendableAfterClosing (M.findWithDefault 0 (currency,Operating) booked-operating) closingFees)
       n<-nextSequence c
       post c ("treasury-spend:"<>chain<>":"<>key) "verified operator spend and network costs"
         postings
@@ -3121,15 +3381,12 @@ coverSourceLoss c policy source recovery now capital earned reason proof (revisi
       verifyLossView c receipt proof report
       currentRevision<-readCustodyRevision c
       booked<-balances c
-      holds<-O.runSelect c $ do
-        (_,asset,n,phase)<-O.selectTable S.reservations
-        O.where_ (asset O..== text "Native" O..&& phase O../= text "released")
-        pure n
-        :: IO [Int64]
+      held<-principalHeld c Native
+      (closingInventory,_)<-closingHolds c (paymentLimits policy) Native
       let latest=case history of [(_,_,"missing",n,_,sequenceNo)]->Just(n,sequenceNo); _->Nothing
           checkedCustody=if matches then Just(currentRevision,revision,at) else Nothing
       postings<-checked (decideLossCover source recovery now capital earned $ LossCoverFacts current latest (not $ null covers) checkedCustody
-        (M.findWithDefault 0 (Native,Float) booked-sum(map toInteger holds)) (M.findWithDefault 0 (Native,Earned) booked))
+        (spendableAfterClosing (M.findWithDefault 0 (Native,Float) booked-held) closingInventory) (M.findWithDefault 0 (Native,Earned) booked))
       let custody=object ["revision" .= revision,"checkedAt" .= at,"report" .= report]
           evidence=encodeSaved $ object ["source" .= proof,"custody" .= custody]
       require (T.length evidence<=32768) "source_loss_evidence_too_large"

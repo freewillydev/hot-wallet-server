@@ -21,7 +21,7 @@ checks and database test fixtures/assertions. No raw SQL query/execute escape pa
 for those operations and no alternative database backend. Underlying libpq
 connections/transaction control and fixed schema DDL are separate infrastructure.
 
-Only schema 22 is supported. Fresh setup uses src/schema.sql; no migration folder,
+Only schema 23 is supported. Fresh setup uses src/schema.sql; no migration folder,
 old-schema conversion or automatic reset is permitted. example.conf is the only
 operator configuration example. Reject unsupported ledgers and backup manifests.
 
@@ -55,7 +55,7 @@ and GHC JavaScript/Solana FFI setup are in Docs/LOCAL-DEVELOPMENT.md. One job on
   isolated Ubuntu 24.04 host after outstanding installer/config gates are resolved.
   A local build does not prove clean-install or funded acceptance.
 - Durable payout-round checks require the real disposable PostgreSQL contract;
-  this feature is pending. Never substitute fixture success for financial acceptance.
+  use ECX_REBUILD_PAYOUT_ONLY=1. Never substitute fixture success for financial acceptance.
 - Layout/provenance: compare src/ to upstream server commit 6af7e73818c041669c5a5c1819f4c5c0be405d37,
   inspect staged files for private inputs, and confirm the original checkout is unchanged.
 - Publication: verify GitHub privacy and remote HEAD against the separately reviewed

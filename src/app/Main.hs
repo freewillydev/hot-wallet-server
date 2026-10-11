@@ -186,7 +186,7 @@ withProcessResources c database mode action=do
       assets<-fromMaybe browserAssetsDirectory <$> lookupEnv "ECX_ASSETS"
       links<-lookupEnv "ECX_INTERFACE_CONFIG" >>= C.loadInterface c
       let policy=C.storePolicy c
-          customer=CustomerSettings (C.publicConfiguration c links enabled) policy (C.solanaSdkLibrary c)
+          customer=CustomerSettings (C.publicConfiguration c links enabled) policy (C.solanaSdkLibrary c) (C.ownerFeeRecipients c)
       withFencedWriter database policy (C.fenceDirectory c) $ \writer->action reader $
         WorkerProcess (C.observerSettings c) (C.solanaPolicy c) (Just customer) endpoint writer
           (case mode of CheckpointMode->Checkpointing; _->Serving (C.serverPort c) assets (C.fenceDirectory c))

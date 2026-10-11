@@ -1,10 +1,76 @@
 -- Relational facts for specific closed Store/migration operations. No connection,
 -- evaluator or write capability is exported. Phase and restrictions stay distinct.
-module Bridge.Store.Projection (paymentStates, activePayments, readyPayments, orderObligations, openOrders, workIntents, sourceRestricted, successorReady) where
+module Bridge.Store.Projection (paymentStates, paymentAmounts, immediateRefunds, payoutCohort, assignedPayouts, unassignedPayments, activePayments, readyPayments, orderObligations, openOrders, workIntents, sourceRestricted, successorReady) where
 
 import qualified Bridge.Store.Schema as S
 import qualified Opaleye as O
 import qualified Opaleye.Exists as E
+
+-- Immutable net funding for conversions, refunds and already reserved owner fees.
+paymentAmounts :: O.Select (S.TextField,S.TextField,S.IntField)
+paymentAmounts = O.unionAll (do
+    row<-O.selectTable S.obligations
+    pure (S.obligationId row,S.obligationAsset row,S.obligationAmount row)) (do
+    row<-O.selectTable S.withdrawals
+    pure (O.sqlStrictText "fee:" O..++ S.withdrawalId row,S.asset row,S.quantity row))
+
+-- Refund authorization is already durable; batching grants no further authority.
+immediateRefunds :: O.Select S.TextField
+immediateRefunds = do
+  row<-O.selectTable S.obligations
+  O.where_ (S.obligationKind row O..== O.sqlStrictText "refund")
+  pure (S.obligationId row)
+
+-- Complete unassigned liabilities for capacity accounting, not a single sealing
+-- cohort. Stable per-batch assignments are still required. Reviewed conversions
+-- stay visible when readiness changes.
+-- Pending quotes have no payment root yet; owner withdrawals have no order hold.
+payoutCohort :: O.Select (S.TextField,S.TextField,S.IntField,O.Field O.SqlBool)
+payoutCohort = O.unionAll (do
+  (key,asset,n,phase)<-O.selectTable S.reservations
+  O.where_ (phase O..== O.sqlStrictText "quote")
+  pure (key,asset,n,O.sqlBool False)) (do
+  (root,state)<-paymentStates
+  let key=S.rootId root
+  O.where_ (O.not $ O.in_ (map O.sqlStrictText ["settled","cancelled"]) (S.rootPhase root))
+  assigned<-E.exists $ do
+    (member,_)<-O.selectTable S.payoutMembers
+    O.where_ (member O..== key)
+    pure ()
+  refund<-E.exists $ do
+    identifier<-immediateRefunds
+    O.where_ (identifier O..== key)
+    pure ()
+  O.where_ (O.not assigned O..&& O.not refund)
+  (funded,asset,n)<-paymentAmounts
+  O.where_ (funded O..== key)
+  pure (key,asset,n,state O..== O.sqlStrictText "ready"))
+
+unassignedPayments :: O.Select (S.TextField,S.TextField,S.IntField)
+unassignedPayments = do
+  (key,asset,n,ready)<-payoutCohort
+  O.where_ ready
+  pure (key,asset,n)
+
+-- Stable subject ownership survives promotion: pending order IDs become payment
+-- IDs without moving to another batch. Refunds never inherit that assignment.
+assignedPayouts :: O.Select (S.TextField,S.TextField,S.TextField,S.IntField,O.Field O.SqlBool)
+assignedPayouts = O.unionAll (do
+  (key,asset,n,phase)<-O.selectTable S.reservations
+  (group,order,_)<-O.selectTable S.payoutAssignments
+  O.where_ (phase O..== O.sqlStrictText "quote"
+    O..&& O.matchNullable (O.sqlBool False) (O..== key) order)
+  pure (group,key,asset,n,O.sqlBool False)) $ O.unionAll (do
+  (key,asset,n,ready)<-payoutCohort
+  ob<-O.selectTable S.obligations
+  (group,order,_)<-O.selectTable S.payoutAssignments
+  O.where_ (S.obligationId ob O..== key O..&& S.obligationKind ob O..== O.sqlStrictText "conversion"
+    O..&& O.matchNullable (O.sqlBool False) (O..== S.obligationOrder ob) order)
+  pure (group,key,asset,n,ready)) (do
+  (key,asset,n,ready)<-payoutCohort
+  (group,_,withdrawal)<-O.selectTable S.payoutAssignments
+  O.where_ (O.matchNullable (O.sqlBool False) (\w->key O..== O.sqlStrictText "fee:" O..++ w) withdrawal)
+  pure (group,key,asset,n,ready))
 
 orderObligations :: O.Select (S.TextField,S.TextField,S.TextField,S.TextField)
 orderObligations = do
@@ -53,7 +119,7 @@ activePayments=O.limit 3 $ do
   root<-O.selectTable S.paymentRoots
   O.where_ (S.rootPhase root O..== O.sqlStrictText "active")
   pure (S.rootId root,S.rootChain root)
-readyPayments=O.limit 1001 $ O.orderBy (O.asc fst) $ do
+readyPayments=O.orderBy (O.asc fst) $ do
   (root,state)<-paymentStates
   O.where_ (S.rootPhase root O..== O.sqlStrictText "ready" O..&& state O..== O.sqlStrictText "ready")
   pure (S.rootId root,S.rootChain root)

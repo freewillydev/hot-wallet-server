@@ -130,6 +130,15 @@ checks = do
           rejects "native_admission_funds_unavailable" (previewNativePayment call (planProfile plan) (planDepth plan) (planFeeLimit plan) (planRecipient plan) (planAmount plan))
         pure (empty && "walletcreatefundedpsbt" `elem` methods && "gettxout" `elem` methods
           && all (`notElem` methods) ["getnewaddress","getrawchangeaddress","lockunspent","walletprocesspsbt","sendrawtransaction"])
+    , check "native preview normalizes only funding shortages and preserves other RPC failures" $ once $ ioProperty $ do
+        results<-mapM (\(method,code,expected)->do
+          (rejected,_)<-contract (\called value->if called==method then reject code else pure value) $ \call->
+            rejects expected (previewNativePayment call (planProfile plan) (planDepth plan) (planFeeLimit plan) (planRecipient plan) (planAmount plan))
+          pure rejected)
+          [("walletcreatefundedpsbt","rpc_error_-6","native_admission_funds_unavailable")
+          ,("walletcreatefundedpsbt","rpc_error_-8","rpc_error_-8")
+          ,("listunspent","rpc_error_-6","rpc_error_-6")]
+        pure (and results)
     , check "native settlement requires exact wallet effect and canonical confirmation depth" $ once $ ioProperty $ do
         (observed,methods)<-contract (\_ v->pure v) observe
         (waiting,waitMethods)<-contract mempool observe

@@ -1,4 +1,4 @@
--- Current PostgreSQL schema (22). Install only into an empty database.
+-- Current PostgreSQL schema (23). Install only into an empty database.
 -- Runtime and restore accept this version only; no historical conversions.
 BEGIN;
 
@@ -96,6 +96,168 @@ CREATE TABLE native_replacement_cancellations(draft_sequence BIGINT PRIMARY KEY 
 CREATE TABLE native_replacement_members(draft_sequence BIGINT PRIMARY KEY REFERENCES native_replacement_drafts(critical_sequence), txid TEXT NOT NULL UNIQUE REFERENCES attempts(txid), critical_sequence BIGINT NOT NULL UNIQUE CHECK(critical_sequence>draft_sequence));
 
 CREATE TABLE preparation_cancellations(intent_id TEXT NOT NULL, generation BIGINT NOT NULL, reason TEXT NOT NULL, cleanup_json TEXT NOT NULL, critical_sequence BIGINT NOT NULL CHECK(critical_sequence>0), completed BIGINT NOT NULL DEFAULT 0 CHECK(completed IN(0,1)), PRIMARY KEY(intent_id,generation), FOREIGN KEY(intent_id,generation) REFERENCES preparations(intent_id,generation));
+
+-- A sealed admission snapshot; settlement never removes membership. The prior
+-- round owns the wait before its successor, even if runtime policy later changes.
+CREATE TABLE payout_rounds(
+ critical_sequence BIGINT PRIMARY KEY CHECK(critical_sequence>0),
+ asset TEXT NOT NULL CHECK(asset IN('Native','Wrapped')), opened_at BIGINT NOT NULL CHECK(opened_at>=0),
+ interval_seconds BIGINT NOT NULL CHECK(interval_seconds BETWEEN 0 AND 31536000),
+ threshold BIGINT NOT NULL CHECK(threshold>0), member_count BIGINT NOT NULL CHECK(member_count BETWEEN 1 AND 1000),
+ total_net NUMERIC(22,0) NOT NULL CHECK(total_net>=threshold),
+ previous_sequence BIGINT UNIQUE REFERENCES payout_rounds(critical_sequence),
+ CHECK(previous_sequence<critical_sequence));
+CREATE UNIQUE INDEX payout_first_round ON payout_rounds(asset) WHERE previous_sequence IS NULL;
+CREATE INDEX payout_latest_round ON payout_rounds(asset,critical_sequence DESC);
+-- Admission policy and membership survive configuration changes and restarts.
+-- A projected-full cohort never absorbs unrelated later quotes. These records
+-- are immutable; sealing is recorded separately by the existing payout members.
+CREATE TABLE payout_cohorts(
+ id TEXT PRIMARY KEY CHECK(length(id) BETWEEN 1 AND 160),
+ critical_sequence BIGINT NOT NULL UNIQUE CHECK(critical_sequence>0),
+ asset TEXT NOT NULL CHECK(asset IN('Native','Wrapped')),
+ threshold BIGINT NOT NULL CHECK(threshold>0),
+ native_fee BIGINT NOT NULL CHECK(native_fee>0),
+ solana_fee BIGINT NOT NULL CHECK(solana_fee>0),
+ maximum_queued BIGINT NOT NULL CHECK(maximum_queued BETWEEN 1 AND 1000),
+ interval_seconds BIGINT NOT NULL CHECK(interval_seconds BETWEEN 0 AND 31536000));
+CREATE TABLE payout_assignments(
+ cohort_id TEXT NOT NULL REFERENCES payout_cohorts(id),
+ order_id TEXT UNIQUE REFERENCES orders(id),
+ withdrawal_id TEXT UNIQUE REFERENCES fee_withdrawals(id),
+ CHECK(num_nonnulls(order_id,withdrawal_id)=1));
+CREATE INDEX payout_assignment_cohort ON payout_assignments(cohort_id);
+
+-- Bind the saved group to the promised payout asset, not the deposited asset.
+CREATE FUNCTION trg_payout_assignment_asset() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE saved payout_cohorts; committed NUMERIC;
+BEGIN
+ -- Let the table's exactly-one-subject constraint diagnose malformed records.
+ IF num_nonnulls(NEW.order_id,NEW.withdrawal_id)<>1 THEN RETURN NEW; END IF;
+ IF NOT EXISTS(
+   SELECT 1 FROM payout_cohorts c
+   WHERE c.id=NEW.cohort_id AND c.asset=COALESCE(
+     (SELECT asset FROM reservations WHERE order_id=NEW.order_id),
+     (SELECT asset FROM fee_withdrawals WHERE id=NEW.withdrawal_id)))
+ THEN RAISE EXCEPTION USING ERRCODE='23514', MESSAGE='payout cohort asset mismatch'; END IF;
+ -- Serialize competing assignment/seal checks on this immutable policy row.
+ SELECT * INTO STRICT saved FROM payout_cohorts WHERE id=NEW.cohort_id FOR UPDATE;
+ IF EXISTS(SELECT 1 FROM payout_assigned_payments p JOIN payout_members m ON m.intent_id=p.intent_id
+           WHERE p.cohort_id=saved.id)
+ THEN RAISE EXCEPTION USING ERRCODE='23514', MESSAGE='payout cohort already sealed'; END IF;
+ SELECT COALESCE(sum(amount),0) INTO committed FROM (
+   SELECT r.amount FROM payout_assignments a JOIN reservations r ON r.order_id=a.order_id
+     WHERE a.cohort_id=saved.id AND r.phase='quote'
+   UNION ALL SELECT amount FROM payout_assigned_payments
+     WHERE cohort_id=saved.id AND phase NOT IN('settled','cancelled')) members;
+ IF committed>=saved.threshold
+ THEN RAISE EXCEPTION USING ERRCODE='23514', MESSAGE='payout cohort already full'; END IF;
+ IF NEW.order_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM reservations WHERE order_id=NEW.order_id AND phase='quote')
+   OR NEW.withdrawal_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM intents i WHERE i.withdrawal_id=NEW.withdrawal_id AND i.phase='ready'
+     AND NOT EXISTS(SELECT 1 FROM preparations g WHERE g.intent_id=i.id))
+ THEN RAISE EXCEPTION USING ERRCODE='23514', MESSAGE='payout assignment too late'; END IF;
+ RETURN NEW;
+END $$;
+CREATE TRIGGER payout_assignment_asset BEFORE INSERT ON payout_assignments
+ FOR EACH ROW EXECUTE FUNCTION trg_payout_assignment_asset();
+CREATE FUNCTION trg_payout_reservation_asset() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF EXISTS(SELECT 1 FROM payout_assignments WHERE order_id=OLD.order_id)
+ AND (TG_OP='DELETE' OR NEW.order_id IS DISTINCT FROM OLD.order_id
+      OR NEW.asset IS DISTINCT FROM OLD.asset)
+ THEN RAISE EXCEPTION USING ERRCODE='23514', MESSAGE='immutable payout reservation asset'; END IF;
+ IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+ RETURN NEW;
+END $$;
+CREATE TRIGGER payout_reservation_asset BEFORE UPDATE OR DELETE ON reservations
+ FOR EACH ROW EXECUTE FUNCTION trg_payout_reservation_asset();
+
+CREATE TABLE payout_members(intent_id TEXT PRIMARY KEY REFERENCES intents(id), round_sequence BIGINT NOT NULL REFERENCES payout_rounds(critical_sequence));
+CREATE INDEX payout_round_members ON payout_members(round_sequence,intent_id);
+-- Eligibility is checked when admission is first created. Subsequent terminal
+-- states retain their immutable membership but cannot newly supply a threshold.
+CREATE FUNCTION trg_payout_member_ready() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE current_phase TEXT;
+BEGIN
+ SELECT phase INTO current_phase FROM intents WHERE id=NEW.intent_id FOR UPDATE;
+ IF current_phase IS DISTINCT FROM 'ready'
+ THEN RAISE EXCEPTION USING ERRCODE='23514', MESSAGE='payout member not ready'; END IF;
+ RETURN NEW;
+END $$;
+CREATE TRIGGER payout_member_ready BEFORE INSERT ON payout_members
+ FOR EACH ROW EXECUTE FUNCTION trg_payout_member_ready();
+-- Derived identity only: the immutable funding links bind a payment to its cohort.
+CREATE VIEW payout_assigned_payments AS
+ SELECT a.cohort_id,i.id AS intent_id,i.phase,COALESCE(o.asset,w.asset) AS asset,COALESCE(o.amount,w.amount) AS amount
+ FROM intents i LEFT JOIN obligations o ON o.id=i.obligation_id LEFT JOIN fee_withdrawals w ON w.id=i.withdrawal_id
+ JOIN payout_assignments a ON (a.order_id=o.order_id AND o.kind='conversion') OR a.withdrawal_id=w.id;
+-- Refunds are admitted by their immutable obligation, never a payout clock.
+-- Other work still requires sealed membership before any draft can be saved.
+CREATE FUNCTION trg_prepared_payout_admitted() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF NOT EXISTS(SELECT 1 FROM payout_members WHERE intent_id=NEW.intent_id)
+ AND NOT EXISTS(SELECT 1 FROM intents i JOIN obligations o ON o.id=i.obligation_id
+                WHERE i.id=NEW.intent_id AND o.kind='refund')
+ THEN RAISE EXCEPTION USING ERRCODE='23514', MESSAGE='payout admission required'; END IF;
+ RETURN NEW;
+END $$;
+CREATE TRIGGER prepared_payout_admitted BEFORE INSERT OR UPDATE ON preparations
+ FOR EACH ROW EXECUTE FUNCTION trg_prepared_payout_admitted();
+
+CREATE FUNCTION trg_payout_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION USING ERRCODE='23514', MESSAGE='immutable payout admission'; END $$;
+CREATE TRIGGER immutable_payout_cohort BEFORE UPDATE OR DELETE ON payout_cohorts
+ FOR EACH ROW EXECUTE FUNCTION trg_payout_immutable();
+CREATE TRIGGER immutable_payout_assignment BEFORE UPDATE OR DELETE ON payout_assignments
+ FOR EACH ROW EXECUTE FUNCTION trg_payout_immutable();
+
+CREATE FUNCTION trg_payout_sealed() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE r payout_rounds; prior payout_rounds; c payout_cohorts; members BIGINT; total NUMERIC; wrong_asset BOOLEAN;
+ saved_threshold BIGINT:=0; saved_interval BIGINT:=0;
+BEGIN
+ IF TG_TABLE_NAME='payout_rounds' THEN
+   SELECT * INTO STRICT r FROM payout_rounds WHERE critical_sequence=NEW.critical_sequence;
+ ELSE
+   SELECT * INTO STRICT r FROM payout_rounds WHERE critical_sequence=NEW.round_sequence;
+ END IF;
+ SELECT count(*),sum(COALESCE(o.amount,w.amount)),bool_or(COALESCE(o.asset,w.asset)<>r.asset OR COALESCE(o.kind='refund',FALSE))
+ INTO members,total,wrong_asset FROM payout_members m JOIN intents i ON i.id=m.intent_id
+ LEFT JOIN obligations o ON o.id=i.obligation_id LEFT JOIN fee_withdrawals w ON w.id=i.withdrawal_id
+ WHERE m.round_sequence=r.critical_sequence;
+ IF members<>r.member_count OR total IS DISTINCT FROM r.total_net OR wrong_asset IS DISTINCT FROM FALSE
+ THEN RAISE EXCEPTION USING ERRCODE='23514', MESSAGE='payout round membership mismatch'; END IF;
+ IF EXISTS(SELECT 1 FROM payout_members m WHERE m.round_sequence=r.critical_sequence
+   AND NOT EXISTS(SELECT 1 FROM payout_assigned_payments p WHERE p.intent_id=m.intent_id))
+ THEN RAISE EXCEPTION USING ERRCODE='23514', MESSAGE='payout member lacks cohort'; END IF;
+ FOR c IN SELECT * FROM payout_cohorts WHERE id IN(
+   SELECT p.cohort_id FROM payout_assigned_payments p JOIN payout_members m ON m.intent_id=p.intent_id
+   WHERE m.round_sequence=r.critical_sequence) ORDER BY id FOR UPDATE LOOP
+   IF c.asset<>r.asset OR c.critical_sequence>=r.critical_sequence
+     OR EXISTS(SELECT 1 FROM payout_assignments a JOIN reservations q ON q.order_id=a.order_id
+       WHERE a.cohort_id=c.id AND q.phase='quote')
+     OR EXISTS(SELECT 1 FROM payout_assigned_payments p LEFT JOIN payout_members m ON m.intent_id=p.intent_id
+       WHERE p.cohort_id=c.id AND (m.round_sequence IS NOT NULL AND m.round_sequence<>r.critical_sequence
+         OR p.phase NOT IN('settled','cancelled') AND m.round_sequence IS DISTINCT FROM r.critical_sequence))
+   THEN RAISE EXCEPTION USING ERRCODE='23514', MESSAGE='incomplete payout cohort'; END IF;
+   SELECT sum(p.amount) INTO total FROM payout_assigned_payments p JOIN payout_members m ON m.intent_id=p.intent_id
+     WHERE p.cohort_id=c.id AND m.round_sequence=r.critical_sequence;
+   IF total<c.threshold THEN RAISE EXCEPTION USING ERRCODE='23514', MESSAGE='payout cohort below threshold'; END IF;
+   saved_threshold:=GREATEST(saved_threshold,c.threshold);
+   saved_interval:=GREATEST(saved_interval,c.interval_seconds);
+ END LOOP;
+ IF r.threshold<>saved_threshold OR r.interval_seconds<>saved_interval
+ THEN RAISE EXCEPTION USING ERRCODE='23514', MESSAGE='payout cohort policy mismatch'; END IF;
+ IF r.previous_sequence IS NOT NULL THEN
+   SELECT * INTO STRICT prior FROM payout_rounds WHERE critical_sequence=r.previous_sequence;
+   IF prior.asset<>r.asset OR (prior.interval_seconds>0 AND r.opened_at::NUMERIC<prior.opened_at::NUMERIC+prior.interval_seconds)
+   THEN RAISE EXCEPTION USING ERRCODE='23514', MESSAGE='payout round interval mismatch'; END IF;
+ END IF;
+ RETURN NULL;
+END $$;
+CREATE TRIGGER immutable_payout_round BEFORE UPDATE OR DELETE ON payout_rounds FOR EACH ROW EXECUTE FUNCTION trg_payout_immutable();
+CREATE TRIGGER immutable_payout_member BEFORE UPDATE OR DELETE ON payout_members FOR EACH ROW EXECUTE FUNCTION trg_payout_immutable();
+CREATE CONSTRAINT TRIGGER sealed_payout_round AFTER INSERT ON payout_rounds DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION trg_payout_sealed();
+CREATE CONSTRAINT TRIGGER sealed_payout_member AFTER INSERT ON payout_members DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION trg_payout_sealed();
 
 CREATE INDEX posting_balance ON postings(asset,account);
 
@@ -594,12 +756,27 @@ BEGIN
  RETURN NEW;
 END $$;
 
+CREATE FUNCTION trg_fee_reservation_identity() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF TG_OP='DELETE' OR NEW.intent_id IS DISTINCT FROM OLD.intent_id OR NEW.asset IS DISTINCT FROM OLD.asset
+ THEN RAISE EXCEPTION 'immutable_fee_reservation_identity' USING ERRCODE='23514'; END IF;
+ RETURN NEW;
+END $$;
+CREATE TRIGGER immutable_fee_reservation_identity BEFORE UPDATE OF intent_id,asset OR DELETE ON fee_reservations
+ FOR EACH ROW EXECUTE FUNCTION trg_fee_reservation_identity();
+
 CREATE FUNCTION bridge_validate_payment(subject TEXT) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE p intents%ROWTYPE; original_events BIGINT;
 BEGIN
  SELECT * INTO p FROM intents WHERE id=subject;
  IF NOT FOUND THEN RAISE EXCEPTION 'payment_root_missing' USING ERRCODE='23514'; END IF;
  SELECT COUNT(*) INTO original_events FROM attempts a JOIN events e ON e.id='settlement:'||a.txid WHERE a.intent_id=p.id;
+ -- New owner withdrawals reserve execution fees before joining the queue.
+ IF p.phase='ready' AND p.withdrawal_id IS NOT NULL
+   AND NOT EXISTS(SELECT 1 FROM preparations g WHERE g.intent_id=p.id)
+   AND NOT EXISTS(SELECT 1 FROM fee_reservations f WHERE f.intent_id=p.id AND f.released=0
+     AND f.amount>0 AND f.asset=(CASE WHEN p.chain='Native' THEN 'Native' ELSE 'Sol' END))
+ THEN RAISE EXCEPTION 'withdrawal_fee_reservation_missing' USING ERRCODE='23514'; END IF;
  IF p.phase='active' THEN
    IF NOT EXISTS(SELECT 1 FROM preparations g JOIN fee_reservations f ON f.intent_id=g.intent_id
      WHERE g.intent_id=p.id AND g.generation=p.active_generation AND g.retired_txid IS NULL AND g.cancelled=0
@@ -616,10 +793,12 @@ BEGIN
    -- Completed unsigned cleanup may retain the fee hold for a later retry.
    -- Cancelling the funding itself must release it; phase does not own capital.
    IF EXISTS(SELECT 1 FROM fee_reservations f WHERE f.intent_id=p.id AND f.released<>1)
-     AND (p.phase<>'ready' OR NOT EXISTS(SELECT 1 FROM preparations g JOIN preparation_cancellations c
+     AND (p.phase<>'ready' OR NOT (
+       p.withdrawal_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM preparations g WHERE g.intent_id=p.id)
+       OR EXISTS(SELECT 1 FROM preparations g JOIN preparation_cancellations c
        ON c.intent_id=g.intent_id AND c.generation=g.generation
        WHERE g.intent_id=p.id AND g.cancelled=1 AND c.completed=1
-         AND NOT EXISTS(SELECT 1 FROM preparations later WHERE later.intent_id=p.id AND later.generation>g.generation)))
+         AND NOT EXISTS(SELECT 1 FROM preparations later WHERE later.intent_id=p.id AND later.generation>g.generation))))
      OR EXISTS(SELECT 1 FROM preparations g WHERE g.intent_id=p.id AND g.retired_txid IS NULL AND g.cancelled=0
      AND NOT EXISTS(SELECT 1 FROM attempts a WHERE a.intent_id=p.id AND a.preparation_generation=g.generation AND a.state='failed' AND p.chain='Solana'))
      OR EXISTS(SELECT 1 FROM attempts a WHERE a.intent_id=p.id AND a.state IN('signed','broadcast_intent','settled'))

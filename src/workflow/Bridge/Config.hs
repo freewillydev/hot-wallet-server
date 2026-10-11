@@ -1,12 +1,14 @@
 {-# LANGUAGE DeriveAnyClass #-}
 -- One deployment configuration; financial identity retains the baseline hash.
 module Bridge.Config
-  ( Config(..),loadConfig,validateConfig,validateSetupConfig,fingerprint,nativeSettings,solanaSettings
+  ( Config(..),OwnerFeeRecipients(..),loadConfig,validateConfig,validateSetupConfig,fingerprint,nativeSettings,solanaSettings
   , observerSettings,storePolicy,solanaPolicy,publicConfiguration
   , defaultInterface,loadInterface,validateInterface,validateLinks ) where
 import Bridge.Domain (Amount,amount,units)
-import Bridge.Wire (Profile(..),InterfaceConfig(..),PublicConfiguration(..),Availability(..),PaymentTerms(..),PolicySnapshot(..),CostLimits(..))
+import Bridge.Wire (Profile(..),InterfaceConfig(..),PublicConfiguration(..),Availability(..),PaymentTerms(..),PolicySnapshot(..),CostLimits(..),PayoutPolicy(..),defaultPayoutPolicy)
+import Bridge.Lifecycle (checkPayoutPolicy)
 import Bridge.Identity (digest,publicKey)
+import Bridge.NativeKey (validNetworkXpub)
 import Bridge.SolanaMessage (signatureBytes)
 import Bridge.Error
 import qualified Bridge.Native as N
@@ -15,6 +17,7 @@ import qualified Bridge.SolanaHelper as H
 import qualified Bridge.Observer as O
 import qualified Bridge.Store as Store
 import Data.Aeson
+import Control.Monad (forM_)
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
@@ -27,6 +30,13 @@ import GHC.Generics (Generic)
 import Network.HTTP.Client (parseRequest,Request,host,secure,path,requestHeaders)
 import System.FilePath (isAbsolute,normalise)
 import System.IO (withBinaryFile,IOMode(ReadMode))
+
+-- Public destinations only. Custody keys never enter the owner payout policy.
+data OwnerFeeRecipients = OwnerFeeRecipients
+  { nativeOwnerXpub :: !Text, solanaOwner :: !Text }
+  deriving (Eq,Show,Generic,ToJSON)
+instance FromJSON OwnerFeeRecipients where
+  parseJSON=genericParseJSON defaultOptions {rejectUnknownFields=True}
 
 data Config = Config
   { profile :: !Profile, deploymentId :: !Text, nativeRpc :: !String
@@ -41,6 +51,8 @@ data Config = Config
   , nativeConfirmations :: !Int, maxNativeFee :: !Amount, maxSolFee :: !Amount
   , backupRequired :: !Bool, solanaHistoryStart :: !Text, maxSolAccountRent :: !Amount
   , solanaOperatingHistoryStart :: !Text, maxNativeDailyCost :: !Amount, maxSolDailyCost :: !Amount
+  , payoutPolicy :: !PayoutPolicy
+  , ownerFeeRecipients :: !(Maybe OwnerFeeRecipients)
   } deriving (Eq,Show,Generic,ToJSON)
 -- Legacy order bounds never constrain swaps. Retain the old maximum only as
 -- its previously shared fee-withdrawal cap, without changing custody identity.
@@ -53,8 +65,11 @@ instance FromJSON Config where
       (Just a,_)->pure a
       (_,Just b)->pure b
       _->either (fail . T.unpack) pure (amount 100000)
+    payouts<-o .:? "payoutPolicy" .!= defaultPayoutPolicy
+    recipients<-o .:? "ownerFeeRecipients"
     genericParseJSON defaultOptions {rejectUnknownFields=True} $
-      Object $ KM.insert "maxWithdrawal" (toJSON cap) $ KM.delete "minInput" $ KM.delete "maxInput" o
+      Object $ KM.insert "ownerFeeRecipients" (toJSON (recipients :: Maybe OwnerFeeRecipients)) $
+        KM.insert "payoutPolicy" (toJSON payouts) $ KM.insert "maxWithdrawal" (toJSON cap) $ KM.delete "minInput" $ KM.delete "maxInput" o
 
 nativeSettings :: Config -> N.NativeSettings
 nativeSettings c=N.NativeSettings (profile c) (nativeRpc c) (nativeCookie c) (nativeWallet c)
@@ -69,11 +84,11 @@ storePolicy :: Config -> Store.StorePolicy
 storePolicy c=Store.StorePolicy
   (PaymentTerms (PolicySnapshot (nativeConfirmations c) "finalized" (fingerprint c)) (CostLimits (maxNativeFee c) (maxSolFee c) (maxSolAccountRent c)))
   (Store.OrderLimits (maxWithdrawal c) (quoteSeconds c) (confirmationGraceSeconds c) (maxQueued c) (maxNativeDailyCost c) (maxSolDailyCost c))
-  (deploymentId c) (backupRequired c)
+  (deploymentId c) (backupRequired c) (payoutPolicy c)
 publicConfiguration :: Config -> InterfaceConfig -> Bool -> PublicConfiguration
 publicConfiguration c links paying=PublicConfiguration (profile c) (if profile c==CanonicalBeta then "mainnet-beta" else "devnet")
   links (deploymentId c) (mint c) (custodyOwner c) 8
-  (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)]) paying False (Availability False "starting") Nothing
+  (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)]) paying False (Availability False "starting") Nothing (payoutPolicy c)
 
 fingerprint :: Config -> Text
 fingerprint c=digest . LBS.toStrict . encode $ object
@@ -97,6 +112,13 @@ validateConfig c = do
 -- Fresh setup has no invented history anchors; runtime loading still requires them.
 validateSetupConfig :: Config -> IO ()
 validateSetupConfig c = do
+  either reject pure (checkPayoutPolicy $ payoutPolicy c)
+  forM_ (ownerFeeRecipients c) $ \recipients->do
+    validNetworkXpub (profile c==L2LSignetDevnet) (nativeOwnerXpub recipients) >>= (`require` "invalid_owner_ecx_xpub")
+    either reject (const $ pure ()) (publicKey $ solanaOwner recipients)
+    require (solanaOwner recipients `notElem` [custodyOwner c,custodyAta c,mint c]) "bridge_owned_destination"
+    require (maxWithdrawal c>=nativePayoutThreshold (payoutPolicy c)
+      && maxWithdrawal c>=wrappedPayoutThreshold (payoutPolicy c)) "automatic_withdrawal_limit_below_threshold"
   let identifier t=not(T.null t) && T.length t<=64 && T.all (`elem` ("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_"::String)) t
   require (identifier $ deploymentId c) "invalid_deployment_identifier"
   N.validateNativeSettings (nativeSettings c)

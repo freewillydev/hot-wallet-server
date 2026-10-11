@@ -186,7 +186,7 @@ instance Execution 'Operator 'Safe OperatorCommand where
 
 data CustomerSettings = CustomerSettings
   { publicConfiguration :: W.PublicConfiguration, customerPolicy :: StorePolicy
-  , unsignedSdk :: FilePath }
+  , unsignedSdk :: FilePath, ownerFeeRecipients :: Maybe C.OwnerFeeRecipients }
 
 data SignerSettings = SignerSettings
   { signingNative :: N.NativeSettings, signingSolana :: S.SolanaSettings
@@ -227,6 +227,7 @@ runProcess rpc reader process=do
         require (W.pubProfile public==N.profile native && W.pubMint public==H.mint config
           && W.pubCustodyOwner public==H.custodyOwner config && W.pubDeployment public==H.deploymentId config
           && W.pubDecimals public==8
+          && W.pubPayoutPolicy public==payoutPolicy store
           && W.pubFeesBps public==M.fromList [("NativeToWrapped",100),("WrappedToNative",100)]
           && W.pubSolanaCluster public==(if N.profile native==W.CanonicalBeta then "mainnet-beta" else "devnet")
           && W.deploymentFingerprint policy==H.fingerprint config && W.nativeDepth policy==defaultNativeDepth settings
@@ -785,19 +786,22 @@ instance WorkerOperations (WorkerCommand 'Critical result) where
     restored<-restoreNativeWork (N.nativeCall rpc native) native config saved
     when (restored>0) $ forM_ saved $ \work->evalWrite writer (RecordNativeLockRestore work restored)
   observeChains _ = workerEffect True $ \(CriticalEnvironment rpc settings _ _ _ reader writer) -> observeOnce rpc settings reader writer
-  prepareOutgoing _ identifier = workerEffect False $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) -> guarded environment $ do
-    let native=nativeSettings settings; solana=solanaSettings settings
+  prepareOutgoing _ identifier = workerEffect False $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) -> do
     now<-floor <$> getPOSIXTime
-    evalRead reader (CheckIntake now)
-    _<-evalRead reader (ReadPayment identifier)
-    _<-N.nativeIdentity rpc native
-    _<-S.solanaIdentity rpc solana
-    refreshSource environment identifier
-    freshIntake environment
-    -- Plan RPC and source updates may age or invalidate custody before commit.
-    _<-prepareUnsigned (freshIntake environment >> floor <$> getPOSIXTime) (N.nativeCall rpc native) (S.solanaCall rpc solana)
-      (N.profile native) config reader writer identifier
-    pure ()
+    evalWrite writer (AdmitPayoutRounds now)
+    -- Waiting for a round is normal, before RPC and before exception-driven pause.
+    evalRead reader (CheckPayoutAdmission identifier)
+    guarded environment $ do
+      let native=nativeSettings settings; solana=solanaSettings settings
+      evalRead reader (CheckIntake now)
+      _<-N.nativeIdentity rpc native
+      _<-S.solanaIdentity rpc solana
+      refreshSource environment identifier
+      freshIntake environment
+      -- Plan RPC and source updates may age or invalidate custody before commit.
+      _<-prepareUnsigned (freshIntake environment >> floor <$> getPOSIXTime) (N.nativeCall rpc native) (S.solanaCall rpc solana)
+        (N.profile native) config reader writer identifier
+      pure ()
   reconcileCustody _ = workerEffect True $ \(CriticalEnvironment rpc settings config _ _ reader writer) -> Reconciliation.reconcileCustody rpc settings config reader writer
   queuePayment _ txid = workerEffect False $ \environment@(CriticalEnvironment _ _ _ _ _ _ writer) -> guarded environment $ do
     (recorded,_)<-loadActive environment txid
@@ -873,25 +877,77 @@ instance WorkerOperations (WorkerCommand 'Critical result) where
         recoverPending environment
         state<-evalRead reader ReadState
         when (paying environment && not(ledgerPaused state)) $ do
+          now<-floor <$> getPOSIXTime
+          evalWrite writer (AdmitPayoutRounds now)
           candidates<-evalRead reader PaymentCandidates
-          forM_ candidates $ \identifier->do
-            freshIntake environment
-            (_,_,attempts)<-evalRead reader (ReadPaymentWork identifier)
-            txid<-case attempts of
-              []->do
-                evalWorker environment (\cap -> prepareOutgoing cap identifier)
-                backupDecisions environment
-                evalWorker environment (\cap -> signPreparedPayment cap identifier)
-              [saved]->pure saved
-              _->do
-                family<-evalRead reader (ReadNativeFamily identifier)
-                pure (signedId $ recordedSigned $ fst $ last family)
-            _<-evalWorker environment (\cap -> queuePayment cap txid)
-            backupDecisions environment
-            evalWorker environment (\cap -> broadcastPayment cap txid)
+          -- Customer/active payments own their inputs first. Optional preview
+          -- must never contest an existing payment's native locks.
+          if null candidates then do
+            _<-scheduleOwnerFees environment
+            pure ()
+          else do
+            forM_ candidates $ \identifier->do
+              freshIntake environment
+              (_,_,attempts)<-evalRead reader (ReadPaymentWork identifier)
+              txid<-case attempts of
+                []->do
+                  evalWorker environment (\cap -> prepareOutgoing cap identifier)
+                  backupDecisions environment
+                  evalWorker environment (\cap -> signPreparedPayment cap identifier)
+                [saved]->pure saved
+                _->do
+                  family<-evalRead reader (ReadNativeFamily identifier)
+                  pure (signedId $ recordedSigned $ fst $ last family)
+              _<-evalWorker environment (\cap -> queuePayment cap txid)
+              backupDecisions environment
+              evalWorker environment (\cap -> broadcastPayment cap txid)
 
   -- Shared workflows take only the private resource context.
   -- Refresh stale evidence after slow checkpoints; never extend quote/backup terms.
+
+-- This optional reservation never signs. All resulting work uses the ordinary
+-- payout pipeline, and a commit ends this cycle so custody can be reconciled.
+scheduleOwnerFees :: CriticalEnvironment -> IO Bool
+scheduleOwnerFees environment@(CriticalEnvironment rpc settings config configured _ reader writer) =
+  case configured of
+    Just c | Just recipients<-ownerFeeRecipients c->go c recipients [Native,Wrapped]
+    _->pure False
+ where
+  go _ _ []=pure False
+  go c recipients (asset:rest)=do
+    let policy=customerPolicy c
+        threshold=if asset==Native then W.nativePayoutThreshold (payoutPolicy policy)
+          else W.wrappedPayoutThreshold (payoutPolicy policy)
+    candidate<-evalRead reader (ReadAutomaticFeeAmount asset threshold $ maximumWithdrawal $ admissionLimits policy)
+    case candidate of
+      Nothing->go c recipients rest
+      Just quantity->do
+        freshIntake environment
+        outcome<-tryBridge $ do
+          recipient<-case asset of
+            Native->do
+              let native=nativeSettings settings; call=N.nativeCall rpc native
+              _<-N.nativeIdentity rpc native
+              address<-N.ownerAddressWith call (N.profile native) (C.nativeOwnerXpub recipients)
+              previewNativePayment call (N.profile native) (defaultNativeDepth settings)
+                (W.savedNativeFee $ W.paymentLimits $ executionTerms policy) address quantity
+              pure address
+            Wrapped->do
+              _<-S.solanaIdentity rpc (solanaSettings settings)
+              let address=C.solanaOwner recipients
+              checkSolanaPayoutWith (S.solanaCall rpc $ solanaSettings settings)
+                (H.invokeUnsignedHelper (unsignedSdk c) config) config address quantity
+              pure address
+            Sol->reject "invalid_payout_asset"
+          checkedAt<-floor <$> getPOSIXTime
+          saved<-evalWrite writer (ReserveAutomaticFees checkedAt asset recipient)
+          pure saved
+        case outcome of
+          Right (Just _)->pure True
+          Right Nothing->go c recipients rest
+          Left (BridgeError code) | code `elem` ["native_admission_funds_unavailable",
+            "insufficient_operating_sol","insufficient_custody_tokens"]->go c recipients rest
+          Left failure->throwIO failure
 
 checkpoint :: CriticalEnvironment -> Int64 -> LedgerState -> IO W.BackupReceipt
 checkpoint environment@(CriticalEnvironment _ _ config _ _ reader writer) minimumSequence before=do

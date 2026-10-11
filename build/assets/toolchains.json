@@ -59,5 +59,15 @@
   "secp256k1": [
     "https://codeload.github.com/bitcoin-core/secp256k1/tar.gz/6e2c8bc4ecdc6e71dbe7a368f360d8d453ce435d",
     "3fe9fd705f4fdf2fe90d6e04b6c1fedd7e8f244a119315886f6468f52c2dfc33"
-  ]
+  ],
+  "cloudflared": {
+    "x86_64": [
+      "https://github.com/cloudflare/cloudflared/releases/download/2026.10.0/cloudflared-linux-amd64",
+      "d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db"
+    ],
+    "aarch64": [
+      "https://github.com/cloudflare/cloudflared/releases/download/2026.10.0/cloudflared-linux-arm64",
+      "e6422b9d4f72d3194bc5a38676f13667c06666523217b842a877d72a80b5ac08"
+    ]
+  }
 }

@@ -14,7 +14,7 @@ import Bridge.Native
 import Bridge.RPC
 import Bridge.Domain (Amount, amount, units)
 import Bridge.Error
-import Control.Exception (try)
+import Control.Exception (try, catch, throwIO)
 import qualified Data.Aeson.KeyMap as KM
 import Control.Monad (forM, forM_, unless, when)
 import Data.Aeson
@@ -111,9 +111,16 @@ previewNativePayment call selectedProfile depth feeLimit recipient quantity = do
   change<-case [a|Just a<-addresses] of a:_->pure a; []->reject "native_admission_funds_unavailable"
   changeScript<-ownedScript call change
   require (script/=changeScript) "bridge_owned_destination"
-  _<-fundNativeDraft call (NativePlan selectedProfile recipient script change changeScript quantity depth feeLimit)
+  _<-fundNativeDraft previewCall (NativePlan selectedProfile recipient script change changeScript quantity depth feeLimit)
   locks<-call True "listlockunspent" [] >>= parseValue parseJSON :: IO [Outpoint]
   require (null locks) "native_preparation_locks_require_review"
+ where
+  -- A wallet can contain usable outputs without enough value to fund this preview.
+  -- Normalize only the funding RPC's insufficient-funds response, not other failures.
+  previewCall wallet method args = call wallet method args `catch` \err@(BridgeError code)->
+    if wallet && method=="walletcreatefundedpsbt" && code=="rpc_error_-6"
+    then reject "native_admission_funds_unavailable"
+    else throwIO err
 
 newNativePlan :: NativeRPC -> Profile -> Int -> Amount -> Text -> Amount -> IO NativePlan
 newNativePlan call selectedProfile depth feeLimit recipient quantity = do

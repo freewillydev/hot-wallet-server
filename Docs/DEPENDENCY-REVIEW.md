@@ -29,8 +29,8 @@ strings, optional strings and integral fields, with an 8,192-byte input bound;
 it adds no floating-point `Read` field. The broader `readFloat` reachability
 finding remains open.
 
-Codex Security was confirmed available but **not installed** in this session.
-Installation was requested through the app; no scan was started or claimed.
+Codex Security was installed through the app on 2026-10-11 and its tools became
+available. The current full repository scan is pending; no passing result is claimed.
 The upstream scan receipts do not cover this standalone server. A current
 whole-application review, including the eventual payout fix and installation
 artifact, remains a release gate.
@@ -240,3 +240,12 @@ new backup; both full data checks and wrong-password rejection passed. Fixtures
 were deleted. This is backup-tool acceptance, not the complete x86-64 bridge build,
 installer or funded-chain acceptance. Retired bridge services and their backup
 timer were stopped/disabled on that test VM, with their data retained.
+
+
+Codex Security Deep Scan invocation failed before a scan started: "Deep Scan
+cannot safely start a read-only worker: the parent must provide a managed
+filesystem permission profile." This thread currently has unrestricted filesystem
+permissions. Do not retry unchanged or claim a scan is running/passed. A managed
+permission-profile session is required for that plugin gate. Daybreak access check
+also returned not_granted (advisory only, not the launch blocker). The installed
+plugin remains available; temporary UI driver was stopped.

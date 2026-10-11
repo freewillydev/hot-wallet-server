@@ -117,3 +117,5 @@ binary=$(runuser -u "$account" -- sh -c 'cd "$1"; export PATH="$HOME/.ghcup/bin:
 [ -x "$binary" ] || { echo 'Cabal did not produce the server executable.' >&2; exit 1; }
 "$binary" configure-file "$state/server.conf" "$state/.ecx-bridge" </dev/null
 "$binary" start "$state/.ecx-bridge" </dev/null
+# Public ingress is installed only after the bridge passes its readiness checks.
+sh "$source/build/install/tunnel" "$state/.ecx-bridge"

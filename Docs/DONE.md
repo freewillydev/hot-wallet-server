@@ -171,6 +171,37 @@ combined working tree, which also contains unstaged payout work. Only this
 readability refactor is published here; this is not a production acceptance claim.
 Evidence: `.audit/severity.tsv`. Temporary test services stopped; no funds moved.
 
+## Durable payout rounds (2026-10-10)
+
+Local verification PASS, but separate source review FAIL: the capacity rule does
+not preserve headroom across round timing and opposite-direction traffic. Payout
+work remains unpublished. Three unignored QuickCheck regressions now reproduce
+all three counterexamples. The representable-maximum case is now corrected and
+passes; timing/shared-fee cases remain RED. A fourth regression preserves usable
+closing capacity: net 9 plus net 91 must fit inventory 100 and exactly two fee
+allowances. The full lifecycle module currently has 45 passing checks and two
+failing release blockers (not expected failures). Strict
+batching needs durable shared closing-capacity reservations. No minimum-order,
+or maximum-wait policy change has been authorized. Refund exemption was subsequently
+approved and is being verified; see the immediate-refund checkpoint below.
+Record thresholds and configurable hours reach runtime policy and the customer
+interface. Schema 23 seals all eligible per-asset members and totals, retains the
+previous interval across restarts/configuration changes, and requires membership
+at preparation and signer evaluation. Already admitted settlement/recovery continues.
+
+A below-threshold quote must leave the slot, inventory and fee budget for a future
+threshold-completing order. The real database regression rejects a too-small final
+quote without writes, then accepts the closing order. Existing idempotent requests
+retain their saved terms. Pure tests cover both assets, exact capacity boundaries,
+fee balances and daily ceilings. The interval is not a maximum waiting-time promise.
+
+Build-all, 224 local property checks and payout/default/server/TLS/setup PostgreSQL
+contracts PASS. These use disposable fixture keys and a local private database;
+all test services are stopped. No live ledger/funds changed, no historical ledger
+was converted, and no Ubuntu/funded/independent-host release gate is closed here.
+Evidence: `.audit/payout.tsv`. Production and remaining installer/owner/Cloudflare/
+manual-wallet/alerts/release-signing/security-review gates stay open.
+
 ## Installation URL validation (2026-10-10)
 
 Scoped PASS: record setup validates printable-ASCII HTTPS URLs and backup URI
@@ -332,3 +363,309 @@ trailing root dot. IP literals use pinned iproute1.7.15 plus an ASCII grammar gu
 The isolated configure contract rejects 19 malformed/unsupported host/IP records
 before setup publication and accepts IPv4 and three IPv6 forms. This is syntax
 validation, not proof of DNS ownership, reachability or public-address routing.
+
+### Immediate-refund implementation checkpoint
+
+Implemented the approved refund exemption in Store/Projection/schema: immutable
+refund obligations enter the queue without round membership; they are excluded
+from round totals/clocks and forbidden as round members. Preparation's database
+trigger and signer read accept only that refund-specific exception. Conversion
+and earned payments still need round membership. Refund priority does not bypass
+active chain serialization or source/custody/backup/fee checks.
+
+Cabal exe:ecx-store-check build PASS (GHC9.14.1, one job). Actual disposable
+PostgreSQL payout contract PASS: Native9 refund below threshold50 during48h wait,
+unchanged rounds, queue eligibility, preparation and signer decision. Default
+PostgreSQL contract PASS after updating the obsolete SeedScanAttempts fixture to
+stop creating a refund round. Covers refund/accounting, rollback, replay, roles,
+backup/restore and existing in-process boundaries. Read-only verifier PASS for
+source scope. Add opposite-chain delayed-refund and direct invalid refund-round
+insertion cases before calling the exemption fully accepted.
+
+Full ecx-bridge executable build is NOT verified: assets hook selected native
+ghc-pkg9.14.1 for JS GHC9.12.2 despite source specifying matching --with-hc-pkg.
+Repeating with cached asset paths did not fix it. Direct browser build with explicit
+matching --with-hc-pkg passed compiler selection but lacked emcc on its PATH.
+Investigate cached hooks/environment; no source workaround or compiler downgrade.
+All invoked build/test sessions are terminal; disposable PostgreSQL stopped.
+No live services, funds, deployment, commit or publication changed. Production
+capacity regressions and independent release gates remain open.
+
+### Full application build and process verification recovered
+
+The JS/native ghc-pkg mismatch was a stale generated setup-hook executable, not
+an incompatibility in current source. Deleted only the generated assets setup
+executable and SetupHooks.o/.hi, then reran the same one-job Cabal build using
+existing Cargo/browser caches. Source, compiler pins and dependency locks unchanged.
+Cabal exe:ecx-bridge including GHC-JavaScript browser PASS; actual rebuilt executable
+HTTP/assets process contract PASS; HTTPS signer process contract PASS (auth,
+certificate refusal/rotation, serialization, repeat authorization, replay/recovery).
+These use disposable PostgreSQL and offline fixtures, not live chain acceptance.
+All processes completed and disposable database stopped. Payout capacity failures,
+refund additional cases, independent security and remaining deployment gates stay
+open. No live funds/services or GitHub publication changed.
+
+### Refund acceptance and transferable reservation model
+
+Both-direction refund acceptance PASS in real disposable PostgreSQL with nonzero
+thresholds and active48h clocks: Native9 and Wrapped7 reach signer decisions;
+round totals/clocks stay unchanged. An otherwise valid matching single-member
+refund round is rejected with exact23514/membership-mismatch and rolls back.
+Existing conversion delay/direct-preparation refusal controls remain. Separate
+read-only review PASS for these additions. Test processes and database stopped.
+
+Candidate model now transfers virtual closing capacity to pending quotes instead
+of counting both. Unconditional solvency retains all actual principal and fee
+holds; conditional closing-capacity preservation covers every non-refund-loss
+transition. Independent progress property requires an intact, funded below-
+threshold group to admit a legal closer. Original20/40 exact closer now passes.
+One failed deposit's source-chain contingency is tested in both directions with
+30/40 or20/60, followed by refund payout and usable replacement. Without that
+contingency, real refund fee expenditure may require replenishment; competing
+admission must refuse, and actual liabilities remain protected. No claim of
+unlimited refund-failure tolerance. This test-only model is NOT ledger integration.
+Final lifecycle source-run: 50passing/2failing (the two unchanged
+production regressions);1000 modeled histories pass. Late receipts, fee-policy
+changes, source reorgs, durable ownership and backup/restart still need refinement.
+No production code/funds/services/publication changed in this checkpoint.
+
+### Liability-based cohort membership (partial integration)
+
+Projection.payoutCohort now unions pending quote reservations with ALL unassigned
+nonterminal non-refund payment roots, including reviewed/source-restricted
+conversions and owner withdrawals. Sealed membership excludes work permanently.
+Readiness is a flag, not a membership filter. AdmitPayoutRounds requires every
+member ready under the deployment lock before sealing. Original ready projection
+is derived from this query. Separate source review PASS for ordinary lifecycle
+membership; no unsafe disappearance found in inspected paths.
+
+Build exe:ecx-store-check PASS; focused actual PostgreSQL payout contract PASS,
+including threshold-met round blocked by pending quote, then that promise removed
+by authorized refund and net99 sealed unchanged. Database stopped.
+Full default PostgreSQL contract FAILS payout_round_not_due. The new barrier
+changes the prior suite's ready-only admission behavior; identify exact failing
+scenario and reconcile admission plus cohort semantics before updating fixtures.
+Do not mark default suite PASS or simply weaken the check. Existing two pure
+capacity regressions remain. This is unpublished partial integration, not a fix
+for all capacity/spending paths; no live funds/services changed.
+
+Minimal complete design still needs durable per-asset active-cohort policy
+(threshold, closer fee assumptions, queue/epoch rules) so config changes cannot
+invalidate ownership. Existing reservations/immutable payoutMembers may suffice
+for membership. Admission must compare cohort requirements BEFORE/AFTER so a
+closer consumes its own virtual allocation; ordinary spending must see all holds.
+Forbid further cohort additions once projected threshold reached, include owner
+withdrawals, and add reviewed-conversion retention/expiry contract tests. A
+mutable current config is not a substitute for saved cohort policy.
+
+### Whole-asset sealing barrier corrected
+
+Exact default-contract failure located at historical conversion preparation:
+ready Wrapped93 was blocked by five independent pending Wrapped9 quotes and a
+separate reviewed Wrapped93 obligation, despite immediate threshold1 policy.
+This is a real scheduling regression, not a reason to release/expire fixtures.
+Separate verifier agreed: remove whole-asset allReady barrier; retain complete
+liability projection for capacity; implement explicit durable batch assignments.
+
+Removed premature barrier. Added Opaleye-only fixture assertions that pending
+quote appears, terminal refund removes its conversion promise, reviewed obligation
+remains false-ready, and independent funded conversion remains true-ready.
+No liability was dropped/expired to make acceptance pass. Both payout and default
+actual PostgreSQL contracts now PASS; build PASS; temporary PostgreSQL stopped.
+This restores prior scheduling, NOT a resolution of the two production capacity
+regressions. The model's single-open-group scope must expand before integration.
+
+Implementation correction: multiple stable cohorts per asset are necessary for
+independent ready work. Persist immutable member assignments plus bound policy
+(threshold/closer fees/queue assumptions). Stop additions to a projected-full
+cohort; later quotes enter another cohort. Reviewed members retain assignments.
+Seal only each cohort's own resolved members, and combine eligible cohorts under
+the shared asset interval. Global resource calculation must include every cohort;
+only admission to the owning cohort may consume its virtual closing allocation.
+Owner withdrawal treatment and fee-spending consumers need explicit coverage.
+No live funds/services, deployment or GitHub publication changed.
+
+### Multiple cohorts and immutable policy foundation
+
+Candidate model now leaves projected-full cohorts alone and opens a new cohort
+for later offers. Independently funded cohort can pay while earlier full cohort
+awaits receipt. Admission has append-only existing-member assertion; conditional
+progress targets oldest deficient cohort per asset. Global solvency/conservation
+still checked.1000 random histories pass; full lifecycle 51pass/2fail
+(the two unchanged production regressions). Add explicit full-cohort-unchanged
+assertion and tight-slot refund recovery before considering model complete.
+
+Added UNUSED schema foundation: payout_cohorts saves threshold, Native/SOL fee
+allowances, queue limit and interval immutably. payout_assignments requires exactly
+one order/withdrawal FK and unique subject ownership. Typed Opaleye mappings and
+closed schema contract test mutation/deletion, duplicate ownership and no-subject
+refusal. Cabal store-check build PASS; actual PostgreSQL payout/default PASS.
+No runtime admission/sealing consumes these tables yet. This is not capacity
+integration, current-funded acceptance or populated-cohort restore verification.
+
+Separate verifier PASS only for foundation. Required BEFORE wiring:
+1. Add durable creation ordering (critical sequence), not lexical/random IDs.
+2. Bind saved cohort policy and complete membership to sealing; prohibit partial
+   sealing while allowing the defined aggregation of eligible cohorts per interval.
+3. Enforce member asset and timing (not already sealed; no additions once full).
+4. Define coexistence of saved fee assumptions/queue limits after config changes.
+5. Verify populated-cohort backup/restore and schema compatibility. User requires
+   one schema only: reject unsupported ledgers, do not implement migration.
+6. Extend member cases to owner withdrawal, both-subject rejection, wrong asset
+   and seal boundaries, then integrate before/after reservation accounting across
+   ALL spending operations. Keep production capacity failures visible until fixed.
+All task processes terminal, disposable PostgreSQL stopped; no live changes or
+publication. Do not deploy unused foundations as a finished capacity solution.
+
+Cohort ordering/asset-binding follow-up: store-check build and actual PostgreSQL
+payout/default contracts PASS. Runtime capacity integration and populated-cohort
+restore remain FAIL/unverified; no production gate is closed by this schema slice.
+
+Closing-capacity arithmetic / assigned-work projection: scoped verifier, model
+1000 histories and actual PostgreSQL payout/default PASS. Two production capacity
+regressions remain FAIL; runtime integration is not complete. See RESUME.
+
+### Runtime payout admission checkpoint (supersedes prior capacity failures)
+
+Customer cohort admission/scheduling, original regressions, fee-policy increase,
+1,000 model histories and real PostgreSQL payout/default contracts PASS, including
+populated-cohort backup/restore. Refunds bypass batching without advancing its clock.
+See RESUME for exact scope. All-consumer spending protection, owner admission and
+DB seal/timing linkage remain FAIL/pending; production readiness remains FAIL.
+
+Closing reserves now protect treasury classification and source-loss capital.
+Scoped review, lifecycle/model and actual PostgreSQL payout/default checks PASS.
+Owner admission, additional unreserved payment fees and DB seal enforcement remain
+pending; see RESUME. Production readiness remains FAIL.
+
+Additional preparation/retry/refund fees now protect closing reserves while reusing
+valid existing holds. Application/store builds, lifecycle/model, real PostgreSQL
+payout/default/process/restore checks and scoped source review PASS. Owner admission
+and DB seal/timing remain pending. See RESUME and .audit/payout.tsv; not prod ready.
+
+Owner fee reservation and post-cancellation capacity now PASS scoped source review,
+application/store builds, lifecycle/model and actual PostgreSQL payout/default/
+process/restore checks. Existing fee table reused; no new endpoint or service.
+DB cohort seal/timing enforcement and broader production gates remain pending.
+See latest RESUME and payout audit receipt; this is not production completion.
+
+## Cohort sealing checks (2026-10-11)
+
+Scoped PASS: complete mapped cohorts, saved threshold/interval, no assignment to
+full/sealed cohorts, no new terminal member; actual PostgreSQL payout and full
+process/backup-restore contract passed, session61585 exit0. Separate read-only
+verifier PASS. Refunds remain outside batching with other safety checks retained.
+Production remains FAIL: unassigned-live-work detection and other recorded gates
+are unfinished. No publication or live deployment occurred.
+
+## Complete liability accounting (2026-10-11)
+
+Scoped PASS supersedes the unassigned-live-work gap above: complete projected
+liabilities must match cohort membership before capacity/admission calculations.
+Build and PostgreSQL payout/default/process/backup-restore PASS (77578 exit0),
+separate runtime source review PASS. Missing-assignment rejection leaves compared
+financial records unchanged. Production release remains FAIL on other open gates.
+
+## Owner configuration (2026-10-11)
+
+Scoped PASS: owner destinations persist in typed runtime configuration, with strict
+parsing/validation and legacy-disabled default. Focused configure contract passed
+(session31425 exit0); independent source review PASS. Automatic owner fee scheduling
+is still unimplemented and remains FAIL. This is configuration retention evidence,
+not proof of payouts or production readiness.
+
+## Automatic reservation ledger (2026-10-11)
+
+Scoped PASS: Earned-only automatic reservation, pending-work duplicate protection,
+shared fee/cohort admission and unchanged manual behavior. Build + real PG payout/
+full process/restore PASS59071; separate source review PASS. Automatic worker
+scheduling and configured recipient resolution remain FAIL/unwired.
+
+## Automatic owner worker integration (2026-10-11)
+
+Worker wiring and public descriptor resolution are now implemented. Existing
+payment candidates take priority; optional funding shortages skip owner sweeps.
+Full Cabal regression PASS63972, prior real PG payout/default/process/restore
+PASS49387; separate source review PASS for priority and narrowly normalized native
+preview shortage. These checks do not establish funded owner end-to-end acceptance,
+which remains FAIL alongside the other production gates. No live/public activation.
+
+Restart follow-up PASS33933: both assets preserve exact automatic withdrawals
+across writer restart and changed destination/limits, with enough earned funds
+remaining to exercise duplicate prevention. Rescheduling leaves financial/archive
+records unchanged; cancellation restores nonzero balances. Separate reviewer PASS;
+real PG payout and full process/restore passed. Worker/funded acceptance stays open.
+
+## Optional hosting (2026-10-11)
+
+Configuration persistence and application regressions pass (full Cabal and app/
+store build, PG payout/default/process/restore93480 exit0). The new pinned tunnel
+installer now has scoped Ubuntu24.04 ARM64/systemd acceptance: fresh/repeat start,
+private credential access, wrong-identity refusal, SIGKILL expiry without restart,
+recovery, real reboot and restore-blocked reboot PASS. Permission, changed-token
+and binary-integrity refusals also PASS. Separate verifier PASS for this scope.
+The lifecycle harness used an inert connector and mocked HTTP identity; the actual
+pinned cloudflared binary separately passed version/token-file compatibility.
+Live Cloudflare routing and whole-host installation remain FAIL/unverified.
+The disposable 1GiB VM was deleted; no public service was activated.
+
+
+### Real native owner derivation compatibility (2026-10-11)
+
+The actual ECX betanet v31.1.0 node accepted the configured public xpub's
+wpkh(xpub/0/0), retained the descriptor/checksum form, derived exactly one address,
+and classified it as an unowned witness_v0_keyhash through getaddressinfo and
+decodescript. The temporary main-chain node had networking disabled and a blank
+private-key-disabled wallet; no descriptors were imported, no funds moved, and
+its process/data were removed. Exit0 receipt89792 and hashes in .audit/payout.tsv.
+This validates actual node RPC compatibility, not the Haskell worker-to-signer
+flow, restricted production credentials, synchronization or a funded owner payout.
+Those acceptance gates remain open. Separate read-only verifier PASS for the
+recorded RPC-compatibility scope.
+
+
+### Automatic owner reservation through HTTPS signing (2026-10-11)
+
+The existing TLS/PostgreSQL contract now begins with ReserveAutomaticFees,
+checks the saved three-unit destination/amount, admits its batch and verifies its
+payment candidate before preparing and signing through the actual HTTPS signer.
+Independent Ed25519 signing over the SDK message checks the returned bytes.
+Concurrent requests, authentication/certificate rotation/refusal, stale-custody
+refusal, duplicate recording and checkpoint checks remain intact. No extra test
+program or production capability was introduced.
+
+Both Canonical Mainnet and Devnet profile contracts PASS (build/run77616 exit0).
+The new loopback limiter exposed a test burst: checkpoint assertions received429.
+Requests now wait2.1seconds, preserving exact409/error assertions; no limiter was
+relaxed. Compiler source fingerprint ff1990fdf7e27e970ec144bacaecb36c matches the
+final source, including pacing. Separate source/execution verifier PASS. Temporary
+PostgreSQL stopped and socket directory removed. RPC/funds are fixtures; automatic
+worker scheduling, native signing and funded owner payouts still require acceptance.
+
+
+### Release-wide guard review (2026-10-11)
+
+Separate source review found and verified fixes for two P2 setup defects:
+initialization omitted payout cohorts/assignments from its empty-ledger check;
+owner configuration allowed custody ATA/mint destinations that later paused the
+worker. Initialization now rejects cohort residue. Runtime and record import
+reject custody owner/ATA/mint before installation material publication.
+Build93898 and configure plus real PG fresh/event-residue/cohort-residue contracts
+61965 PASS; disposable PostgreSQL cleaned. Source reviewer PASS for both fixes.
+
+Codex Security installation was completed through the app and its tools appeared;
+prior not-installed notes are historical. The full plugin scan is still pending.
+Fresh cargo-audit checked148 dependencies against RustSec7eebec69: no vulnerability
+matches, bincode maintenance warning retained. Cabal/readFloat advisory pages remain
+unchanged. Gitleaks flagged only ChainCheck's public xpub fixture in the production/
+test diff; new tunnel script had no flags. This is not a whole-repository secret
+scan or a waiver of dependency/security gates. Public service remains off.
+
+
+Codex Security Deep Scan invocation failed before a scan started: "Deep Scan
+cannot safely start a read-only worker: the parent must provide a managed
+filesystem permission profile." This thread currently has unrestricted filesystem
+permissions. Do not retry unchanged or claim a scan is running/passed. A managed
+permission-profile session is required for that plugin gate. Daybreak access check
+also returned not_granted (advisory only, not the launch blocker). The installed
+plugin remains available; temporary UI driver was stopped.

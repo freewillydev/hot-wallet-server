@@ -78,6 +78,7 @@ validateInstallConfig c=do
   require (length(backupPassword c)>=16 && not(any (`elem` ['\n','\r','\0']) (backupPassword c))) "backup_password_minimum_16_characters"
   require (isAbsolute $ resticExecutable c) "absolute_reviewed_restic_path_required"
   _<-either reject pure (publicKey $ T.pack $ ownerSolPubkey c)
+  require (TE.encodeUtf8 (T.pack $ ownerSolPubkey c)/=B58.encodeBase58 B58.bitcoinAlphabet (B.drop 32 key)) "bridge_owned_destination"
   validMainnetXpub (T.pack $ ownerEcxXpub c) >>= (`require` "owner_ecx_xpub_required")
   let labels=T.splitOn "." (T.pack $ domain c)
       alphanumeric character=character `elem` (['a'..'z']<>['0'..'9'])
@@ -87,7 +88,8 @@ validateInstallConfig c=do
   require (length(domain c)<=253 && all label labels) "invalid_domain"
   require (length(serverIp c)<=45 && all (`elem` ("0123456789abcdefABCDEF:."::String)) (serverIp c)
     && isJust (readMaybe (serverIp c) :: Maybe IP)) "invalid_server_ip"
-  forM_ (cloudflareTunnelToken c) $ \token->require (length token>=32 && length token<=4096 && not(any (`elem` ['\n','\r',' ','\0']) token)) "invalid_cloudflare_tunnel_token"
+  forM_ (cloudflareTunnelToken c) $ \token->require (length token>=32 && length token<=4096
+    && all (`elem` (['a'..'z']<>['A'..'Z']<>['0'..'9']<>"+/=_-")) token) "invalid_cloudflare_tunnel_token"
   forM_ (websiteDirectory c) $ \path->require (isAbsolute path && normalise path==path && length path<=4096
     && all (\character->character>=' ' && character/='\DEL') path) "absolute_website_directory_required"
   pure key

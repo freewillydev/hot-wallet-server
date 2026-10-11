@@ -1,0 +1,133 @@
+#!/bin/sh
+# Optional remotely-managed Cloudflare ingress. Custody remains in other services.
+set -eu
+umask 077
+fail() { echo "$1" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || fail 'Root required.'
+[ "$#" = 1 ] || fail 'Usage: tunnel PRIVATE_SETUP_DIRECTORY'
+case "$1" in /*) material=$1;; *) fail 'Absolute setup directory required.';; esac
+[ -d "$material" ] && [ ! -L "$material" ] && [ "$(stat -c '%u:%a' "$material")" = 0:700 ] || fail 'Unsafe setup directory.'
+private_file() {
+  [ -f "$1" ] && [ ! -L "$1" ] && [ "$(stat -c '%u:%a:%h' "$1")" = 0:600:1 ] || fail 'Unsafe hosting input.'
+}
+private_file "$material/hosting.json"
+mode=$(jq -er '.tunnel | if type == "boolean" then tostring else error("invalid mode") end' "$material/hosting.json")
+[ "$mode" = true ] || exit 0
+private_file "$material/tunnel.token"
+[ "$(stat -c %s "$material/tunnel.token")" -le 4096 ] || fail 'Oversized tunnel credential.'
+unit=/etc/systemd/system/ecx-bridge-tunnel.service
+destination=/etc/ecx-bridge/tunnel
+binary=/usr/local/lib/hot-wallet-server/cloudflared
+support=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+pins=$support/../assets/toolchains.json
+url=$(jq -er --arg arch "$(uname -m)" '.cloudflared[$arch][0]' "$pins")
+expected=$(jq -er --arg arch "$(uname -m)" '.cloudflared[$arch][1]' "$pins")
+for directory in /etc/ecx-bridge "$destination" /usr/local/lib/hot-wallet-server; do
+  [ ! -L "$directory" ] || fail 'Installation directory must not be a symlink.'
+  if [ -e "$directory" ]; then
+    [ -d "$directory" ] && [ "$(stat -c %u "$directory")" = 0 ] &&
+      [ "$((0$(stat -c %a "$directory") & 022))" = 0 ] || fail 'Unsafe installation directory.'
+  fi
+done
+install -d -o root -g root -m 0700 "$destination"
+install -d -o root -g root -m 0755 /usr/local/lib/hot-wallet-server
+exec 8>"$destination/install.lock"
+flock -n 8 || fail 'Another tunnel installation is running.'
+temporary=$(mktemp -d "$destination/.prepare.XXXXXXXX")
+pending=
+public_pending=false
+cleanup() {
+  result=$?
+  if [ "$public_pending" = true ]; then systemctl disable --now ecx-bridge-tunnel.service || true; fi
+  rm -rf -- "$temporary"
+  [ -z "$pending" ] || rm -f -- "$pending"
+  exit "$result"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+publish() {
+  source=$1 target=$2 permissions=$3
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    [ -f "$target" ] && [ ! -L "$target" ] && [ "$(stat -c '%u:%a:%h' "$target")" = "0:$permissions:1" ] && cmp -s "$source" "$target" || fail 'Existing tunnel material differs; reviewed update required.'
+  else
+    pending=$(mktemp "$(dirname -- "$target")/.ecx-tunnel.XXXXXXXX")
+    install -o root -g root -m "$permissions" "$source" "$pending"
+    sync -f "$pending"
+    mv -T -- "$pending" "$target"
+    pending=
+    sync -f "$(dirname -- "$target")"
+  fi
+}
+check_hash() { printf '%s  %s\n' "$expected" "$1" | sha256sum --check --status; }
+if [ -e "$binary" ] || [ -L "$binary" ]; then
+  [ -f "$binary" ] && [ ! -L "$binary" ] && [ "$(stat -c '%u:%a:%h' "$binary")" = 0:755:1 ] && check_hash "$binary" || fail 'Existing tunnel binary differs; reviewed update required.'
+else
+  curl --fail --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 180 "$url" -o "$temporary/cloudflared"
+  check_hash "$temporary/cloudflared" || fail 'Tunnel binary checksum mismatch.'
+  publish "$temporary/cloudflared" "$binary" 755
+fi
+publish "$material/tunnel.token" "$destination/token" 600
+publish "$material/hosting.json" "$destination/hosting.json" 600
+cat > "$temporary/service" <<'UNIT'
+[Unit]
+Description=ECX customer Cloudflare tunnel
+ConditionPathExists=!/var/lib/ecx-bridge-restore/services.blocked
+Wants=network-online.target
+After=network-online.target ecx-bridge-worker.service
+Requires=ecx-bridge-worker.service
+[Service]
+DynamicUser=true
+LoadCredential=token:/etc/ecx-bridge/tunnel/token
+ExecStart=/usr/local/lib/hot-wallet-server/cloudflared tunnel --no-autoupdate --loglevel warn --metrics 127.0.0.1:20242 run --token-file %d/token
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=256M
+TasksMax=64
+[Install]
+WantedBy=multi-user.target
+UNIT
+publish "$temporary/service" "$unit" 644
+systemctl daemon-reload
+public_pending=true
+# Verification cannot survive a killed installer indefinitely or restart on boot.
+systemctl disable --now ecx-bridge-tunnel.service
+verification=/run/systemd/system/ecx-bridge-tunnel.service.d
+[ ! -L "$verification" ] || fail 'Unsafe verification directory.'
+install -d -o root -g root -m 0755 "$verification"
+printf '%s\n' '[Service]' 'RuntimeMaxSec=120' 'Restart=no' > "$temporary/verification"
+publish "$temporary/verification" "$verification/90-verify.conf" 644
+systemctl daemon-reload
+systemctl start ecx-bridge-tunnel.service
+systemctl is-active --quiet ecx-bridge-tunnel.service
+# A token is provisioned separately with the public hostname targeting only the
+# loopback customer listener. It does not grant API permission to change routing.
+domain=$(jq -er '.domain' "$material/hosting.json")
+configuration=/etc/ecx-bridge/worker/config.json
+expected_identity=$(jq -c '[.deploymentId,.mint,.custodyOwner]' "$configuration")
+verified=false
+for attempt in 1 2 3 4 5 6; do
+  if curl --silent --show-error --fail --proto '=https' --connect-timeout 5 --max-time 10 \
+    --max-filesize 262144 "https://$domain/api/v1/config" -o "$temporary/public.json" &&
+    [ "$(jq -c '[.deployment,.mint,.custodyOwner]' "$temporary/public.json" 2>/dev/null)" = "$expected_identity" ]; then
+    verified=true
+    break
+  fi
+  sleep 2
+done
+if [ "$verified" != true ]; then
+  fail 'Public hostname does not serve this deployment; correct the remote tunnel route and rerun install.sh.'
+fi
+systemctl stop ecx-bridge-tunnel.service
+rm -- "$verification/90-verify.conf"
+systemctl daemon-reload
+systemctl enable --now ecx-bridge-tunnel.service
+systemctl is-active --quiet ecx-bridge-tunnel.service
+public_pending=false
+echo 'Verified public hostname serves the configured deployment.'

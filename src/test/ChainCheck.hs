@@ -60,6 +60,20 @@ import Test.QuickCheck hiding (label)
 checks :: IO [Result]
 checks = (\deployment native solana identity observation administration common->deployment<>native<>solana<>identity<>observation<>administration<>common) <$> deploymentChecks <*> NativePaymentCheck.checks <*> SolanaPaymentCheck.checks <*> ((<>) <$> solanaIdentityChecks <*> solanaPairChecks) <*> ObservationCheck.checks <*> administrationChecks <*> sequence
   [ check "durable bounded Solana observation catch-up preserves anchored order and strict absence proofs" $ once $ ioProperty historyCatchupContract
+  , check "owner descriptor resolution is public-only, fixed-path and refuses custody destinations" $ \(private::Bool) (ranged::Bool) (solvable::Bool) (owned::Bool)->
+      forAll (elements [0,1,2::Int]) $ \count->ioProperty $ do
+        let key="xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz"
+            requested="wpkh("<>key<>"/0/0)"; descriptor=requested<>"#12345678"
+            call False "getdescriptorinfo" [String value] | value==requested=pure $ object
+              ["descriptor" .= descriptor,"hasprivatekeys" .= private,"isrange" .= ranged,"issolvable" .= solvable]
+            call False "deriveaddresses" [String value] | value==descriptor=pure $ toJSON (replicate count ("fixture-owner"::T.Text))
+            call True "getaddressinfo" [String "fixture-owner"]=pure $ object ["ismine" .= owned,"iswatchonly" .= False,"scriptPubKey" .= ("0014"<>T.replicate 40 "1")]
+            call False "decodescript" [_]=pure $ object ["type" .= ("witness_v0_keyhash"::T.Text)]
+            call _ _ _=fail "unexpected owner RPC (wallet mutation forbidden)"
+        result<-try (ownerAddressWith call W.CanonicalBeta key) :: IO (Either BridgeError T.Text)
+        pure $ case result of
+          Right address->not private && not ranged && solvable && not owned && count==1 && address=="fixture-owner"
+          Left _->private || ranged || not solvable || owned || count/=1
   , check "native observation requires the correct ready descriptor wallet, without signing authority" $ \(sameName::Bool) (descriptors::Bool) (scanning::Bool)->ioProperty $ do
       let wallet=object ["walletname" .= (if sameName then nativeWallet settings else "other"),"descriptors" .= descriptors,"scanning" .= scanning]
           call scoped method args=if (scoped,method,args)==(True,"getwalletinfo",[]) then pure wallet else fail "unexpected wallet RPC"

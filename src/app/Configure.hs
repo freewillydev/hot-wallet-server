@@ -3,6 +3,7 @@
 module Configure (configure,configureAdvanced,configureFile,start,startAdvanced,startSetup,initializeNative) where
 import qualified Bridge.Config as C
 import qualified Bridge.Wire as W
+import Bridge.Domain (parseCoins)
 import qualified Bootstrap
 import qualified NodeSetup
 import qualified Upgrade
@@ -75,12 +76,21 @@ configureFile input output=do
   file<-makeAbsolute input
   (bytes,settings)<-I.readInstallConfig file
   keyBytes<-I.validateInstallConfig settings
+  nativeThreshold<-either reject pure (parseCoins $ T.pack $ I.payoutThresholdEcx settings)
+  wrappedThreshold<-either reject pure (parseCoins $ T.pack $ I.payoutThresholdWrappedEcx settings)
   defaultsLinks<-either (const $ reject "invalid_interface_defaults") pure $
     parseEither parseJSON (Bootstrap.interface Nothing)
-  let links=defaultsLinks {W.orcaUrl=Just $ T.pack $ I.externalLinkOrca settings
+  let origin=case I.cloudflareTunnelToken settings of
+        Nothing->Nothing
+        Just _->Just $ "https://"<>T.pack (I.domain settings)
+      links=defaultsLinks {W.publicOrigin=origin,W.orcaUrl=Just $ T.pack $ I.externalLinkOrca settings
         ,W.tokenExplorerUrl=Just $ T.pack $ I.externalLinkSolscan settings}
   C.validateLinks W.CanonicalBeta Bootstrap.canonicalMint links
   website<-traverse websiteManifest (I.websiteDirectory settings)
+  let owner=base58 (B.drop 32 keyBytes)
+  sdk<-SetupPaths.sdkPath
+  ata<-TokenOp.runSafe(TokenOp.Request $ Token.AssociatedAddress sdk owner Bootstrap.canonicalMint)
+  require (T.pack (I.ownerSolPubkey settings) `notElem` [owner,ata,Bootstrap.canonicalMint]) "bridge_owned_destination"
   directory<-makeAbsolute output
   withFamily (directory<>"-configure") $ do
     let keys=directory<>"-keys"
@@ -93,8 +103,7 @@ configureFile input output=do
     require (not interactive) "interactive_setup_exists_use_original_start"
     publishSetup (directory</>"install.conf") bytes
     privateDirectory keys
-    let owner=base58 (B.drop 32 keyBytes)
-        key=keys</>"solana.keypair.json"
+    let key=keys</>"solana.keypair.json"
         phrase=keys</>"ecx-recovery.txt"
         unlock=keys</>"native-unlock"
     publishSetup key (L.toStrict $ encode $ B.unpack keyBytes)
@@ -109,15 +118,18 @@ configureFile input output=do
         url=I.backupRepositoryUrl settings
     publishSetup repository (B8.pack $ if "https://" `isPrefixOf` url then "rest:"<>url else url)
     publishSetup password (B8.pack $ I.backupPassword settings)
+    forM_ (I.cloudflareTunnelToken settings) $ \token->
+      publishSetup (directory</>"tunnel.token") (B8.pack token)
     root<-canonicalizePath(sdkSourceDirectory</>"../..")
-    sdk<-SetupPaths.sdkPath
-    ata<-TokenOp.runSafe(TokenOp.Request $ Token.AssociatedAddress sdk owner Bootstrap.canonicalMint)
     let defaults=M.union (M.fromList
           ["profile" .= String "CanonicalBeta","deploymentId" .= String ("ecx-"<>T.take 16 owner)
           ,"nativeWallet" .= String ("ecx-bridge-"<>T.take 16 owner),"backupRequired" .= Bool True
           ,"mint" .= String Bootstrap.canonicalMint,"custodyOwner" .= String owner,"custodyAta" .= String ata
           ,"solanaRpc" .= I.solanaRpcUrl settings,"solanaVerifierRpc" .= I.solanaVerifierRpcUrl settings
           ,"nativeCookie" .= worker,"nativeUnlockFile" .= unlock
+          ,"payoutPolicy" .= W.PayoutPolicy nativeThreshold wrappedThreshold (fromInteger $ 3600*I.minimumPayoutIntervalHours settings)
+          ,"maxWithdrawal" .= max nativeThreshold wrappedThreshold
+          ,"ownerFeeRecipients" .= C.OwnerFeeRecipients (T.pack $ I.ownerEcxXpub settings) (T.pack $ I.ownerSolPubkey settings)
           ,"solanaHistoryStart" .= String "","solanaOperatingHistoryStart" .= String ""]) template
         setup=object ["existing" .= False,"method" .= String "source","sourceRoot" .= root,"restic" .= I.resticExecutable settings
           ,"nodeConfig" .= String "/var/lib/ecx-betanet/bitcoin.conf","nodeService" .= String "ecx-betanet.service","managedNode" .= True
@@ -130,7 +142,9 @@ configureFile input output=do
     C.validateSetupConfig config
     mapM_ (\(name,value)->publishSetup (directory</>name) (L.toStrict $ encode value))
       [("sources.json",sources),("bootstrap.json",Object defaults)
-      ,("interface.json",toJSON links),("setup.json",setup)]
+      ,("interface.json",toJSON links),("setup.json",setup)
+      ,("hosting.json",object ["domain" .= I.domain settings,"serverIp" .= I.serverIp settings
+        ,"tunnel" .= maybe False (const True) (I.cloudflareTunnelToken settings)])]
     putStrLn "Saved immutable private installation record; no prompts, signing or broadcast."
 
 websiteManifest :: FilePath -> IO Value
@@ -539,9 +553,10 @@ collect locked initial=do
           _->reject "enter_nonnegative_bounded_integer"
         _->case eitherDecodeStrict' (B8.pack input) of
           Right v | sameKind old v->pure v
-          _->reject "enter_boolean_or_integer_as_shown"
+          _->reject "enter_JSON_value_as_shown"
     pure(M.insert key value fields)
   sameKind (Bool _) (Bool _)=True
+  sameKind (Object _) (Object _)=True
   sameKind _ _=False
 
 collectLinks :: C.Config -> IO Value
@@ -577,7 +592,7 @@ prompt label fallback validate=do
     `catch` (\(_::IOException)->putStrLn "Cannot read that private file/path; check ownership and permissions." >> prompt label fallback validate)
 
 template :: Object
-template=case eitherDecodeStrict' "{\"profile\":\"ECXBetanetDevnet\",\"deploymentId\":\"ecx-betanet-devnet-operator\",\"nativeRpc\":\"http://127.0.0.1:28532\",\"nativeCookie\":\"/run/ecx-betanet/rpc.cookie\",\"nativeWallet\":\"ecx-bridge-betanet-test\",\"nativeCheckpointHeight\":967680,\"nativeCheckpointHash\":\"00000000000000030101ba5cfea54b22becc79f95dc6040beb76e01dd9d04042\",\"solanaRpc\":\"https://api.devnet.solana.com\",\"solanaVerifierRpc\":null,\"mint\":\"REQUIRED_REAL_DEVNET_MINT\",\"custodyOwner\":\"REQUIRED_DEVNET_CUSTODY_OWNER\",\"custodyAta\":\"REQUIRED_DEVNET_CUSTODY_ATA\",\"signerPort\":8081,\"signerAuthFile\":\"/etc/ecx-bridge/signing.auth\",\"solanaSdkLibrary\":\"/opt/ecx-bridge/current/lib/libecx_solana_sdk.so\",\"maxWithdrawal\":\"100000\",\"maxQueued\":4,\"quoteSeconds\":300,\"confirmationGraceSeconds\":1200,\"nativeConfirmations\":6,\"maxNativeFee\":\"1000\",\"maxSolFee\":\"10000\",\"maxSolAccountRent\":\"2100000\",\"maxNativeDailyCost\":\"10000\",\"maxSolDailyCost\":\"10000000\",\"backupRequired\":false,\"solanaHistoryStart\":\"REQUIRED_EARLIEST_CUSTODY_TOKEN_HISTORY_SIGNATURE\",\"solanaOperatingHistoryStart\":\"REQUIRED_EARLIEST_FEE_PAYER_SOL_HISTORY_SIGNATURE\",\"serverPort\":8080,\"fenceDirectory\":\"/var/lib/ecx-bridge/fence\",\"nativeUnlockFile\":null}" of
+template=M.insert "payoutPolicy" (toJSON W.defaultPayoutPolicy) $ case eitherDecodeStrict' "{\"profile\":\"ECXBetanetDevnet\",\"deploymentId\":\"ecx-betanet-devnet-operator\",\"nativeRpc\":\"http://127.0.0.1:28532\",\"nativeCookie\":\"/run/ecx-betanet/rpc.cookie\",\"nativeWallet\":\"ecx-bridge-betanet-test\",\"nativeCheckpointHeight\":967680,\"nativeCheckpointHash\":\"00000000000000030101ba5cfea54b22becc79f95dc6040beb76e01dd9d04042\",\"solanaRpc\":\"https://api.devnet.solana.com\",\"solanaVerifierRpc\":null,\"mint\":\"REQUIRED_REAL_DEVNET_MINT\",\"custodyOwner\":\"REQUIRED_DEVNET_CUSTODY_OWNER\",\"custodyAta\":\"REQUIRED_DEVNET_CUSTODY_ATA\",\"signerPort\":8081,\"signerAuthFile\":\"/etc/ecx-bridge/signing.auth\",\"solanaSdkLibrary\":\"/opt/ecx-bridge/current/lib/libecx_solana_sdk.so\",\"maxWithdrawal\":\"100000\",\"maxQueued\":4,\"quoteSeconds\":300,\"confirmationGraceSeconds\":1200,\"nativeConfirmations\":6,\"maxNativeFee\":\"1000\",\"maxSolFee\":\"10000\",\"maxSolAccountRent\":\"2100000\",\"maxNativeDailyCost\":\"10000\",\"maxSolDailyCost\":\"10000000\",\"backupRequired\":false,\"solanaHistoryStart\":\"REQUIRED_EARLIEST_CUSTODY_TOKEN_HISTORY_SIGNATURE\",\"solanaOperatingHistoryStart\":\"REQUIRED_EARLIEST_FEE_PAYER_SOL_HISTORY_SIGNATURE\",\"serverPort\":8080,\"fenceDirectory\":\"/var/lib/ecx-bridge/fence\",\"nativeUnlockFile\":null}" of
   Right (Object fields)->fields
   _->error "invalid embedded configuration template"
 

@@ -29,5 +29,10 @@
   "solanaHistoryStart": "4kjhetrGow3ty6446oBCzSstVUtp6GGPyWeJcB63sZyKNK8eoosHvEwww6h6cQ9dpLZXK2tf5aBJHC8FrPVZE8aD",
   "solanaOperatingHistoryStart": "4kjhetrGow3ty6446oBCzSstVUtp6GGPyWeJcB63sZyKNK8eoosHvEwww6h6cQ9dpLZXK2tf5aBJHC8FrPVZE8aD",
   "serverPort": 8080,
-  "fenceDirectory": "/var/lib/ecx-bridge/fence"
+  "fenceDirectory": "/var/lib/ecx-bridge/fence",
+  "payoutPolicy": {
+    "nativePayoutThreshold": "1",
+    "wrappedPayoutThreshold": "1",
+    "payoutIntervalSeconds": 0
+  }
 }

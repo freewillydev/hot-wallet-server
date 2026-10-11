@@ -52,7 +52,7 @@ data LedgerArchive = LedgerArchive
 -- no paying-writer transaction or row lock is held during this operation.
 archiveLedger :: PG.ConnectInfo -> FilePath -> Text -> Int64 -> Int64 -> Text -> IO LedgerArchive
 archiveLedger settings directory identity version sequenceNo snapshot = do
-  require (version==22) "unsupported_backup_schema"
+  require (version==23) "unsupported_backup_schema"
   privateDirectory directory
   require (not(T.null snapshot) && T.length snapshot<=128 && T.all (`elem` ("0123456789abcdefABCDEF-"::String)) snapshot) "invalid_backup_snapshot"
   let run=databaseTool settings
@@ -243,7 +243,7 @@ manifestArchive identity minimumSequence manifest bytes = do
     either (const $ reject "invalid_backup_manifest") pure $ parseEither
       (withObject "ledger manifest" $ \o->(,,,,,,) <$> o .: "format" <*> o .: "archive" <*> o .: "sha256"
         <*> o .: "fingerprint" <*> o .: "schemaVersion" <*> o .: "criticalSequence" <*> o .: "remoteDurabilityAcknowledged") value
-  require (version==(2::Int) && schema==(22::Int64) && not remote && sequenceNo>=0
+  require (version==(2::Int) && schema==(23::Int64) && not remote && sequenceNo>=0
     && name==takeFileName name && name `notElem` ["",".",".."])
     "invalid_backup_manifest"
   require (saved==identity) "backup_identity_mismatch"

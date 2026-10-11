@@ -25,6 +25,15 @@ data OrderView = OrderView
   } deriving stock (Eq, Show, Generic) deriving anyclass (ToJSON, FromJSON)
 data Availability = Availability { available :: !Bool, reason :: !Text }
   deriving stock (Eq, Show, Generic) deriving anyclass (ToJSON, FromJSON)
+-- Per output asset; thresholds are immutable net obligations, never gross deposits.
+data PayoutPolicy = PayoutPolicy
+  { nativePayoutThreshold :: !Amount, wrappedPayoutThreshold :: !Amount
+  , payoutIntervalSeconds :: !Int64 }
+  deriving stock (Eq,Show,Generic) deriving anyclass (ToJSON)
+instance FromJSON PayoutPolicy where
+  parseJSON = genericParseJSON defaultOptions { rejectUnknownFields = True }
+defaultPayoutPolicy :: PayoutPolicy
+defaultPayoutPolicy = either (error . T.unpack) (\n -> PayoutPolicy n n 172800) (amount 100000)
 data Profile = L2LSignetDevnet | ECXBetanetDevnet | CanonicalBeta deriving (Eq, Show, Generic, ToJSON, FromJSON)
 
 data InterfaceConfig = InterfaceConfig
@@ -44,6 +53,7 @@ data PublicConfiguration = PublicConfiguration
   , pubFeesBps :: !(Map Text Int), pubIntakeEnabled :: !Bool
   , pubImplementationReady :: !Bool, pubAvailability :: !Availability
   , pubReport :: !(Maybe PublicReport)
+  , pubPayoutPolicy :: !PayoutPolicy
   } deriving (Eq, Show, Generic)
 
 -- Public aggregates only: no order identifiers, capabilities or customer addresses.

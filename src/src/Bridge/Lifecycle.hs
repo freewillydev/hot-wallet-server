@@ -7,7 +7,7 @@ module Bridge.Lifecycle
   , IntakeFacts(..), FeeBudget(..), PreparationHistory(..), PriorFeeHold(..)
   , PreparationAdmission(..), PreparationFacts(..), PreparationDecision(..), decidePreparation, checkPreparationInput
   , SendFacts(..), QueueDecision(..), decideQueue, decideSend, checkSendPayment
-  , checkIntake, checkScans, checkCustody, checkFeeBudget
+  , checkIntake, checkScans, checkCustody, checkFeeBudget, checkFeeReallocation
   , OrderLimits(..), OrderAdmissionFacts(..), OrderAdmission(..), quoteOrder, decideOrder
   , orderCostReservations, shouldExpireQuote
   , AllocationClaim(..), InstructionFacts(..), InstructionChange(..)
@@ -27,6 +27,8 @@ module Bridge.Lifecycle
   , SourceApprovalFacts(..), checkSourceApprovalSource, decideSourceApproval, RebroadcastFacts(..), checkRebroadcast
   , GenerationEnd(..), successorGeneration
   , PaymentPhase(..), PhaseFields, encodePaymentPhase, decodePaymentPhase
+  , checkPayoutPolicy, payoutRoundDue, ClosingCapacity(..), closingCapacity
+  , BatchCapacity(..), BatchMember(..), checkBatchMember, checkBatchResources, batchClosingCapacity, spendableAfterClosing, decideBatchOrder
   ) where
 
 import Bridge.Domain hiding (fee)
@@ -157,6 +159,25 @@ checkSettlementEvidence expected outcome = case outcome of
 ensure :: Bool -> Text -> Either Text ()
 ensure condition code=unless condition (Left code)
 
+checkPayoutPolicy :: W.PayoutPolicy -> Either Text ()
+checkPayoutPolicy policy = ensure (all ((>0).units)
+  [W.nativePayoutThreshold policy,W.wrappedPayoutThreshold policy]
+  && W.payoutIntervalSeconds policy>=0 && W.payoutIntervalSeconds policy<=31536000)
+  "invalid_payout_policy"
+
+-- A committed round owns its next interval. A positive wait survives clock
+-- rollback; zero explicitly disables spacing. Neither revokes prior membership.
+payoutRoundDue :: W.PayoutPolicy -> Asset -> Int64 -> Maybe (Int64,Int64)
+  -> [Amount] -> Either Text Bool
+payoutRoundDue policy asset now previous amounts = do
+  checkPayoutPolicy policy
+  ensure (asset `elem` [Native,Wrapped] && now>=0 && length amounts<=1000
+    && all ((>0).units) amounts && maybe True (\(at,wait)->at>=0 && wait>=0 && wait<=31536000) previous)
+    "invalid_payout_round"
+  let threshold=if asset==Native then W.nativePayoutThreshold policy else W.wrappedPayoutThreshold policy
+      due=maybe True (\(at,wait)->wait==0 || toInteger now>=toInteger at+toInteger wait) previous
+  pure (due && not(null amounts) && sum(map (toInteger.units) amounts)>=toInteger(units threshold))
+
 -- Readers bind these observations to the deployment in the same transaction.
 -- Missing, duplicate or errored scan rows become Nothing; each pair is time/anchor.
 -- Custody is current revision / checked revision / checked time, only if error-free.
@@ -196,6 +217,14 @@ checkFeeBudget quantity budget = do
   ensure (operatingBalance budget-held>=needed) "insufficient_fee_budget"
   ensure (operatingSpent budget+held+needed<=toInteger(units $ operatingDaily budget)) "operating_daily_limit"
 
+-- Existing reserved fees belong to this payment. Only a net increase must also
+-- preserve virtual closing fees; never let those hide a missing actual hold.
+checkFeeReallocation :: Amount -> Integer -> Integer -> FeeBudget -> Either Text ()
+checkFeeReallocation quantity released closing budget = do
+  ensure (released>=0 && closing>=0 && operatingHeld budget>=released) "operating_reservation_missing"
+  let extra=if toInteger(units quantity)>released then closing else 0
+  checkFeeBudget quantity budget {operatingHeld=operatingHeld budget-released+extra}
+
 data PreparationHistory = InitialPreparation | LivePreparation Text PreparedPayment
   | RetiredPreparation Text (Maybe Int) deriving (Eq,Show)
 data PriorFeeHold = PriorFeeHold
@@ -203,8 +232,8 @@ data PriorFeeHold = PriorFeeHold
   , priorFeeReleased :: Bool, priorPreparationExpired :: Bool } deriving (Eq,Show)
 data PreparationAdmission = PreparationAdmission
   { preparationIntake :: IntakeFacts, destinationBusy :: Bool, preparationSourceEligible :: Bool
-  , priorPreparationFee :: Maybe PriorFeeHold, customerOperatingHold :: Maybe Amount
-  , pendingEarnedBalance :: Integer, preparationBudget :: FeeBudget } deriving (Eq,Show)
+  , priorPreparationFee :: Maybe PriorFeeHold, initialOperatingHold :: Maybe Amount
+  , pendingEarnedBalance :: Integer, preparationBudget :: FeeBudget, preparationClosingFees :: Integer } deriving (Eq,Show)
 data PreparationFacts = PreparationFacts
   { preparationPayment :: PaymentView, preparationHistory :: PreparationHistory
   , preparationAdmission :: Maybe PreparationAdmission } deriving (Eq,Show)
@@ -243,18 +272,15 @@ decidePreparation allowance plan facts = do
       ensure (priorFeeAsset previous==currency && units(priorFeeAmount previous)>0
         && priorFeeReleased previous==priorPreparationExpired previous) "preparation_fee_hold_missing"
       pure $ if priorFeeReleased previous then 0 else value(priorFeeAmount previous)
-    transferred<-case funding of
-      EarnedFees _ _ quantity -> do
-        ensure (pendingEarnedBalance admitted>=value quantity) "earned_reservation_missing"
-        pure 0
-      _ | not retry -> do
-        checkSource funding admitted
-        quantity<-maybe (Left "operating_reservation_missing") Right (customerOperatingHold admitted)
-        ensure (quantity>=allowance) "operating_reservation_missing"
-        pure $ value quantity
-      _->pure 0
-    let budget=preparationBudget admitted; held=operatingHeld budget-released-transferred
-    checkFeeBudget allowance budget {operatingHeld=held}
+    case funding of
+      EarnedFees _ _ quantity->ensure (pendingEarnedBalance admitted>=value quantity) "earned_reservation_missing"
+      _->pure ()
+    transferred<-if retry then pure 0 else do
+      checkSource funding admitted
+      quantity<-maybe (Left "operating_reservation_missing") Right (initialOperatingHold admitted)
+      ensure (quantity>=allowance) "operating_reservation_missing"
+      pure $ value quantity
+    checkFeeReallocation allowance (released+transferred) (preparationClosingFees admitted) (preparationBudget admitted)
     pure $ CreatePreparation $ PreparedPayment view {savedStatus=PaymentPaying} generation plan Nothing allowance
 
 -- Also used before Store reads the remaining snapshot, preserving input-refusal
@@ -364,6 +390,103 @@ decideOrder limits costs request facts = do
   forM_ allocations $ \(_,asset,n)->checkFeeBudget n (if asset==Native then nativeOrderBudget facts else solanaOrderBudget facts)
   pure $ OrderAdmission quoted (fromInteger deadline) (fromInteger grace) allocations
 
+-- Additional resources required by an unfinished batch, beyond its actual
+-- orders. Admission must replace its own holds and preserve every other batch's.
+-- Integer products are deliberate: several maximum-sized fees can exceed Int64.
+data ClosingCapacity = ClosingCapacity
+  { closingInventory :: Integer, closingSlots :: Integer
+  , closingNativeFees :: Integer, closingSolanaFees :: Integer } deriving (Eq,Show)
+
+closingCapacity :: Amount -> Integer -> Amount -> Amount -> Either Text ClosingCapacity
+closingCapacity threshold committed nativeFee solanaFee = do
+  ensure (units threshold>0 && committed>=0 && units nativeFee>0 && units solanaFee>0)
+    "invalid_payout_capacity"
+  largestQuote<-amount (toInteger(maxBound::Int64)) >>= quote
+  let shortfall=if committed==0 then 0 else max 0 (toInteger(units threshold)-committed)
+      largestNet=toInteger(units $ net largestQuote)
+      slots=(shortfall+largestNet-1) `div` largestNet
+  pure $ ClosingCapacity shortfall slots (slots*toInteger(units nativeFee))
+    (slots*toInteger(units solanaFee))
+
+-- Ordered durable batches, with only live unsealed members in committed units.
+-- Facts passed here contain actual holds only; virtual holds are derived once.
+data BatchCapacity = BatchCapacity
+  { batchKey :: Text, batchAsset :: Asset, batchThreshold :: Amount
+  , batchCommitted :: Integer, batchNativeFee :: Amount, batchSolanaFee :: Amount
+  , batchQueueLimit :: Int } deriving (Eq,Show)
+
+-- A saved fee allowance is a floor, not permission to ignore current costs.
+-- Shared by intake and other consumers of otherwise unreserved capital.
+batchClosingCapacity :: CostLimits -> BatchCapacity -> Either Text ClosingCapacity
+batchClosingCapacity costs batch = do
+  solanaFee<-amount (toInteger(units $ W.savedSolanaFee costs)+toInteger(units $ W.savedSolanaRent costs))
+  closingCapacity (batchThreshold batch) (batchCommitted batch)
+    (max (batchNativeFee batch) $ W.savedNativeFee costs) (max (batchSolanaFee batch) solanaFee)
+
+-- Depleted virtual headroom permits no new debit, but must not block a zero
+-- debit during recovery. Preserve any pre-existing deficit in actual reserves.
+spendableAfterClosing :: Integer -> Integer -> Integer
+spendableAfterClosing available reserved = min available (max 0 (available-reserved))
+
+decideBatchOrder :: W.PayoutPolicy -> OrderLimits -> CostLimits -> W.OrderRequest
+  -> OrderAdmissionFacts -> [BatchCapacity] -> Either Text (Maybe Text,OrderAdmission)
+decideBatchOrder policy limits costs request facts batches = do
+  admitted<-decideOrder limits costs request facts
+  let quantity=net $ admittedQuote admitted
+  owner<-checkBatchMember policy limits costs
+    (BatchMember (destinationAsset $ W.direction request) quantity quantity [(asset,n) | (_,asset,n)<-admittedCosts admitted]) facts batches
+  pure (owner,admitted)
+
+-- Customer principal comes from Float; owner principal was already earned.
+-- Both consume a queue slot, their own fees and any remaining closing capacity.
+data BatchMember = BatchMember Asset Amount Amount [(Asset,Amount)]
+
+checkBatchMember :: W.PayoutPolicy -> OrderLimits -> CostLimits -> BatchMember
+  -> OrderAdmissionFacts -> [BatchCapacity] -> Either Text (Maybe Text)
+checkBatchMember policy limits costs (BatchMember asset payout principal fees) facts batches = do
+  checkPayoutPolicy policy
+  ensure (asset `elem` [Native,Wrapped] && units payout>0 && units principal>=0
+    && all (\(currency,n)->currency `elem` [Native,Sol] && units n>0) fees
+    && length(nub $ map fst fees)==length fees) "invalid_payout_capacity"
+  ensure (length batches<=1000 && length(nub $ map batchKey batches)==length batches
+    && all (\b->not(T.null $ batchKey b) && batchAsset b `elem` [Native,Wrapped]
+      && batchCommitted b>0 && batchQueueLimit b>0 && batchQueueLimit b<=1000) batches)
+    "invalid_payout_capacity"
+  let quantity=toInteger(units payout)
+      candidates=[b | b<-batches,batchAsset b==asset,batchCommitted b<toInteger(units $ batchThreshold b)]
+  solanaFee<-amount (toInteger(units $ W.savedSolanaFee costs)+toInteger(units $ W.savedSolanaRent costs))
+  let fresh=BatchCapacity "" asset
+        (if asset==Native then W.nativePayoutThreshold policy else W.wrappedPayoutThreshold policy)
+        quantity (W.savedNativeFee costs) solanaFee (maximumQueued limits)
+      (owner,after)=case candidates of
+        []->(Nothing,batches<>[fresh])
+        target:_->(Just $ batchKey target,
+          [if batchKey b==batchKey target then b {batchCommitted=batchCommitted b+quantity} else b | b<-batches])
+  let added currency=sum [toInteger(units fee) | (a,fee)<-fees,a==currency]
+      reserve currency budget=budget {operatingHeld=operatingHeld budget+added currency}
+  ensure (operatingHeld(nativeOrderBudget facts)>=0 && operatingHeld(solanaOrderBudget facts)>=0) "operating_reservation_missing"
+  checkBatchResources limits costs asset facts
+    {queuedOrders=queuedOrders facts+1,availableFloat=availableFloat facts-toInteger(units principal)
+    ,nativeOrderBudget=reserve Native (nativeOrderBudget facts),solanaOrderBudget=reserve Sol (solanaOrderBudget facts)} after
+  pure owner
+
+-- Check the projected state after admitting or removing a member. Saved fee
+-- allowances are a floor, including when current execution costs have increased.
+checkBatchResources :: OrderLimits -> CostLimits -> Asset -> OrderAdmissionFacts -> [BatchCapacity] -> Either Text ()
+checkBatchResources limits costs asset facts batches = do
+  holds<-mapM (batchClosingCapacity costs) batches
+  let queueLimit=minimum (maximumQueued limits:[batchQueueLimit b | (b,h)<-zip batches holds,closingSlots h>0])
+  ensure (queuedOrders facts>=0 && toInteger(queuedOrders facts)+sum(map closingSlots holds)<=toInteger queueLimit)
+    "payout_batch_needs_capacity"
+  ensure (availableFloat facts>=sum [closingInventory h | (b,h)<-zip batches holds,batchAsset b==asset])
+    "payout_batch_needs_inventory"
+  zero<-amount 0
+  forM_ [Native,Sol] $ \currency->do
+    let budget=if currency==Native then nativeOrderBudget facts else solanaOrderBudget facts
+        extra=sum $ map (if currency==Native then closingNativeFees else closingSolanaFees) holds
+    ensure (operatingHeld budget>=0) "operating_reservation_missing"
+    checkFeeBudget zero budget {operatingHeld=operatingHeld budget+extra}
+
 data AllocationClaim = AllocationClaim { allocationLabel :: Text, mayAllocate :: Bool }
   deriving (Eq,Show)
 data InstructionFacts = InstructionFacts
@@ -455,7 +578,7 @@ checkPromotionHolds order costs principal operating = do
 data RefundFacts = RefundFacts
   { refundUnresolved :: Bool, refundObligations :: [(Text,Text,Text)]
   , refundDestination :: Text, refundHold :: [(Text,Int64,Text)]
-  , refundBudget :: Maybe FeeBudget } deriving (Eq,Show)
+  , refundBudget :: Maybe FeeBudget, refundReleasedFees :: Integer, refundClosingFees :: Integer } deriving (Eq,Show)
 
 checkRefundSource :: Text -> W.OrderRequest -> W.PolicySnapshot -> W.Deposit -> Either Text ()
 checkRefundSource identity request policy receipt = do
@@ -483,7 +606,7 @@ decideRefund request receipt costs facts = do
   unless (phase `elem` ["quote","obligation"]) $ do
     ensure (phase `elem` ["released","transferred"]) "invalid_reservation_phase"
     budget<-maybe (Left "operating_reservation_missing") Right (refundBudget facts)
-    checkFeeBudget allowance budget
+    checkFeeReallocation allowance (refundReleasedFees facts) (refundClosingFees facts) budget
   let destination=refundDestination facts
   ensure (not(T.null destination) && T.length destination<=128) "invalid_destination"
   order<-maybe (Left "refundable_deposit_not_found") Right (W.depositOrder receipt)

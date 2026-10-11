@@ -21,12 +21,13 @@ import Crypto.MAC.HMAC (hmac,HMAC)
 import Crypto.Hash (SHA256,Digest,hash)
 import qualified Data.ByteString.Base58 as B58
 import Crypto.Random (getRandomBytes)
-import Bridge.AdminKey (savePrivate)
+import Bridge.AdminKey (savePrivate,readPrivate)
 import Bridge.Wallet (mnemonic,mixWalletEntropy,walletKey,nativeDescriptors)
 import Bridge.NativeKey (deriveChild)
 import qualified Bridge.Native as N
 import Bridge.Wire (Profile(..))
 import qualified Bridge.Wire as W
+import Bridge.Domain (units,amount)
 import Bridge.Error (BridgeError(..),require)
 import Bridge.RPC (fieldValue)
 import qualified Data.Aeson.KeyMap as KM
@@ -74,7 +75,7 @@ contract=bracket temporary removeDirectoryRecursive $ \directory->do
   let fields=["false","1200",owner,owner,"test-deployment","10000","1000"
         ,"invalid-number","4","2100000","10000000","10000","100000",owner
         ,"00000047dcc9d64b767687d6a5e610c411dd85db5460e824c0f7284f5514bc47"
-        ,"16000","1","http://127.0.0.1:29432","test-wallet","300","8080","8081"
+        ,"16000","1","http://127.0.0.1:29432","test-wallet","[]","","300","8080","8081"
         ,history,history,"https://api.devnet.solana.com","-"]
       answers=["","L2LSignetDevnet","import"]<>fields<>["no","yes","release","installer","release.pem","candidate",key,"existing",worker,signer,"-","-","-","-","-","-","no"]
   (code,_,_)<-run (unlines answers)
@@ -159,6 +160,8 @@ contract=bracket temporary removeDirectoryRecursive $ \directory->do
           ,("history-preflight",historyPreflight),("backup-handoff",handoffChecked)
           ,("backup-timeout",backupChecked),("native-seed",nativeChecked)
           ,("worker-signer-identity",C.fingerprint config==C.fingerprint other && C.nativeCookie config/=C.nativeCookie other)
+          ,("payout-policy-default",C.payoutPolicy config==W.defaultPayoutPolicy && C.payoutPolicy other==W.defaultPayoutPolicy)
+          ,("owner-policy-legacy-disabled",C.ownerFeeRecipients config==Nothing && C.ownerFeeRecipients other==Nothing)
           ,("private-files",sort entries==["interface.json","setup.json","signer.json","sources.json","worker.json"] && all(==0o600)modes)
           ,("import-sources",sources==M.fromList [("solana.keypair.json",key),("native-worker.auth",worker),("native-signer.auth",signer)]
             && originalKey==L.toStrict(encode $ B.unpack(seed<>public)) && originalWorker=="worker:password" && originalSigner=="signer:password")
@@ -190,10 +193,10 @@ importContract parent executable key=do
         ,("websiteDirectory","Nothing"),("cloudflareTunnelToken","Nothing"),("ecxSeedBip39",show phrase),("solKeyB58",show $ T.unpack $ base58 key)
         ,("assetMintAddress",show $ T.unpack Bootstrap.canonicalMint)
         ,("feeRateWrapBps","100"),("feeRateUnwrapBps","100")
-        ,("payoutThresholdEcx",show ("0.001"::String)),("payoutThresholdWrappedEcx",show ("0.001"::String))
-        ,("minimumPayoutIntervalHours","48")
+        ,("payoutThresholdEcx",show ("0.002"::String)),("payoutThresholdWrappedEcx",show ("0.003"::String))
+        ,("minimumPayoutIntervalHours","7")
         ,("ownerEcxXpub",show ("xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz"::String))
-        ,("ownerSolPubkey",show $ T.unpack $ base58 $ B.drop 32 key)
+        ,("ownerSolPubkey",show ("5oNDL3swdJJF1g9DzJiZ4ynHXgszjAEpUkxVYejchzrY"::String))
         ,("externalLinkSolscan",show ("https://solscan.io/token/"<>T.unpack Bootstrap.canonicalMint))
         ,("externalLinkOrca",show ("https://www.orca.so/pools/nNKg814Wq3uTkoG4fM8LzvBQv4Fu2iCgKFmK2YmPQzM"::String))
         ,("solanaRpcUrl",show ("https://primary.example.invalid"::String))
@@ -227,20 +230,51 @@ importContract parent executable key=do
   savePrivate conf (B8.pack $ record fields)
   (first,out,err)<-invoke conf output
   require (first==ExitSuccess) "import_contract_first_install_failed"
-  let privateFiles=[output</>name | name<-["install.conf","sources.json","bootstrap.json","setup.json","interface.json","backup.repository","backup.password"]]
+  let privateFiles=[output</>name | name<-["install.conf","sources.json","bootstrap.json","setup.json","interface.json","hosting.json","backup.repository","backup.password"]]
         <>[output<>"-keys/"<>name | name<-["solana.keypair.json","ecx-recovery.txt","native-unlock"]]
   before<-mapM B.readFile privateFiles
   modes<-mapM (fmap ((.&. 0o777).fileMode) . getFileStatus) privateFiles
   (second,reout,reerr)<-invoke conf output
   after<-mapM B.readFile privateFiles
   config<-Bootstrap.setupConfig output
+  let recipients=C.OwnerFeeRecipients (T.pack xpub) "5oNDL3swdJJF1g9DzJiZ4ynHXgszjAEpUkxVYejchzrY"
+  require (C.ownerFeeRecipients config==Just recipients
+    && (eitherDecodeStrict' (L.toStrict $ encode config) :: Either String C.Config)==Right config) "owner_policy_not_retained"
+  forM_ (map (\bad->recipients {C.nativeOwnerXpub=T.pack bad}) badXpubs
+    <>[recipients {C.solanaOwner="invalid"}]) $ \bad->do
+      result<-try(C.validateSetupConfig config {C.ownerFeeRecipients=Just bad}) :: IO (Either BridgeError ())
+      require (either (const True) (const False) result) "invalid_runtime_owner_accepted"
+  forM_ ([config {C.ownerFeeRecipients=Just recipients {C.solanaOwner=destination}}
+      | destination<-[C.custodyOwner config,C.custodyAta config,C.mint config]]
+    <>[config {C.maxWithdrawal=either (error . T.unpack) id (amount 1)}]) $ \bad->do
+      result<-try(C.validateSetupConfig bad) :: IO (Either BridgeError ())
+      require (either (const True) (const False) result) "unsafe_automatic_payout_policy_accepted"
   links<-C.loadInterface config (Just $ output</>"interface.json")
+  require (W.publicOrigin links==Nothing) "local_setup_has_public_origin"
+  noToken<-not <$> doesFileExist(output</>"tunnel.token")
+  require noToken "local_setup_has_tunnel_credential"
+  let tunnelOutput=parent</>"tunnel-setup"; tunnelConf=parent</>"tunnel.conf"
+      tunnelToken=replicate 64 't'
+  savePrivate tunnelConf (B8.pack $ record $ replace "cloudflareTunnelToken" ("Just "<>show tunnelToken))
+  (tunnelCode,tunnelOut,tunnelErr)<-invoke tunnelConf tunnelOutput
+  require (tunnelCode==ExitSuccess && not(tunnelToken `isInfixOf` (tunnelOut<>tunnelErr))) "tunnel_configuration_failed_or_leaked"
+  tunnelLinks<-C.loadInterface config (Just $ tunnelOutput</>"interface.json")
+  require (W.publicOrigin tunnelLinks==Just "https://bridge.example.invalid") "tunnel_origin_not_retained"
+  token<-readPrivate(tunnelOutput</>"tunnel.token")
+  hosting<-readPrivate(tunnelOutput</>"hosting.json") >>= either fail pure . eitherDecodeStrict'
+  require (token==B8.pack tunnelToken && hosting==object
+    ["domain" .= ("bridge.example.invalid"::String),"serverIp" .= ("127.0.0.1"::String),"tunnel" .= True]) "tunnel_material_changed"
+  (tunnelReplay,_,_)<-invoke tunnelConf tunnelOutput
+  require (tunnelReplay==ExitSuccess) "tunnel_replay_failed"
   importedKey<-B.readFile(output<>"-keys/solana.keypair.json")
   importedPhrase<-B.readFile(output<>"-keys/ecx-recovery.txt")
   generated<-mapM doesDirectoryExist [output<>"-solana-wallet",output<>"-ecx-wallet"]
   invalid<-forM (zip [0::Int ..]
     (map (replace "serverIp" . show) ([".","1.2.3","256.1.2.3","1.2.3.4.5","2001::db8::1","[::1]","::1%lo0"," 127.0.0.1","\f127.0.0.1","(127.0.0.1)","2130706433","0x7f000001"]::[String])
     <>map (replace "domain" . show) ([".",".example.org","example..org","example.org.","-bridge.example.org","bridge-.example.org",replicate 64 'a'<>".org"]::[String])
+    <>map (replace "cloudflareTunnelToken" . ("Just "<>) . show)
+      [replicate 31 't',replicate 4097 't',replicate 32 't'<>"\n",replicate 32 't'<>"\f",replicate 32 't'<>"\x100"]
+    <>map (replace "ownerSolPubkey" . show . T.unpack) [C.custodyOwner config,C.custodyAta config,C.mint config]
     <>map (replace "ownerEcxXpub" . show) badXpubs <>
     [replace "ecxSeedBip39" (show (""::String)),replace "solKeyB58" (show (""::String))
     ,replace "ecxSeedBip39" (show $ unwords $ replicate 12 "abandon")
@@ -294,6 +328,9 @@ importContract parent executable key=do
     && siteChanged/=ExitSuccess && retainedSite==siteSetup
     && second==ExitSuccess && before==after && before==unchanged && all(==0o600)modes
     && secretFree(out<>err<>reout<>reerr) && C.custodyOwner config==base58(B.drop 32 key)
+    && units(W.nativePayoutThreshold $ C.payoutPolicy config)==200000
+    && units(W.wrappedPayoutThreshold $ C.payoutPolicy config)==300000
+    && W.payoutIntervalSeconds(C.payoutPolicy config)==25200
     && W.orcaUrl links==Just "https://www.orca.so/pools/nNKg814Wq3uTkoG4fM8LzvBQv4Fu2iCgKFmK2YmPQzM"
     && W.tokenExplorerUrl links==Just ("https://solscan.io/token/"<>Bootstrap.canonicalMint)
     && importedKey==L.toStrict(encode $ B.unpack key) && importedPhrase==B8.pack(phrase<>"\n")

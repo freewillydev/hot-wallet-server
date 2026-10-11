@@ -3,12 +3,48 @@
 module Bridge.Store.Schema where
 import Data.Int (Int64)
 import Data.Text (Text)
+import Data.Scientific (Scientific)
 import Data.Profunctor.Product (p7,p2,p3,p4,p5,p6,p8)
 import Data.Profunctor.Product.TH (makeAdaptorAndInstance)
 import qualified Opaleye as O
 
 type TextField = O.Field O.SqlText
 type IntField = O.Field O.SqlInt8
+
+data PayoutCohortF t n = PayoutCohort
+  { cohortId :: t, cohortAsset :: t, cohortThreshold :: n, cohortNativeFee :: n
+  , cohortSolanaFee :: n, cohortMaximumQueued :: n, cohortInterval :: n
+  , cohortSequence :: n } deriving (Eq,Show)
+$(makeAdaptorAndInstance "pPayoutCohort" ''PayoutCohortF)
+type PayoutCohort = PayoutCohortF Text Int64
+type PayoutCohortFields = PayoutCohortF TextField IntField
+payoutCohorts :: O.Table PayoutCohortFields PayoutCohortFields
+payoutCohorts = O.table "payout_cohorts" $ pPayoutCohort PayoutCohort
+  { cohortId=O.requiredTableField "id", cohortAsset=O.requiredTableField "asset"
+  , cohortThreshold=O.requiredTableField "threshold", cohortNativeFee=O.requiredTableField "native_fee"
+  , cohortSolanaFee=O.requiredTableField "solana_fee", cohortMaximumQueued=O.requiredTableField "maximum_queued"
+  , cohortInterval=O.requiredTableField "interval_seconds"
+  , cohortSequence=O.requiredTableField "critical_sequence" }
+payoutAssignments :: O.Table (TextField,O.FieldNullable O.SqlText,O.FieldNullable O.SqlText)
+  (TextField,O.FieldNullable O.SqlText,O.FieldNullable O.SqlText)
+payoutAssignments = O.table "payout_assignments" $ p3
+  (O.requiredTableField "cohort_id",O.requiredTableField "order_id",O.requiredTableField "withdrawal_id")
+
+data PayoutRoundF t n q nn = PayoutRound
+  { roundSequence :: n, roundAsset :: t, roundOpened :: n, roundInterval :: n
+  , roundThreshold :: n, roundCount :: n, roundTotal :: q, roundPrevious :: nn } deriving (Eq,Show)
+$(makeAdaptorAndInstance "pPayoutRound" ''PayoutRoundF)
+type PayoutRound = PayoutRoundF Text Int64 Scientific (Maybe Int64)
+type PayoutRoundFields = PayoutRoundF TextField IntField (O.Field O.SqlNumeric) (O.FieldNullable O.SqlInt8)
+payoutRounds :: O.Table PayoutRoundFields PayoutRoundFields
+payoutRounds = O.table "payout_rounds" $ pPayoutRound PayoutRound
+  { roundSequence=O.requiredTableField "critical_sequence", roundAsset=O.requiredTableField "asset"
+  , roundOpened=O.requiredTableField "opened_at", roundInterval=O.requiredTableField "interval_seconds"
+  , roundThreshold=O.requiredTableField "threshold", roundCount=O.requiredTableField "member_count"
+  , roundTotal=O.requiredTableField "total_net", roundPrevious=O.requiredTableField "previous_sequence" }
+payoutMembers :: O.Table (TextField,IntField) (TextField,IntField)
+payoutMembers = O.table "payout_members" $ p2
+  (O.requiredTableField "intent_id",O.requiredTableField "round_sequence")
 
 data DeploymentF n t = Deployment
   { singleton :: n, schemaVersion :: n, fingerprint :: t, criticalSequence :: n

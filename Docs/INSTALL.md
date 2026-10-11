@@ -354,7 +354,7 @@ sudo build/scripts/release-auth install /trusted/release-public.pem /reviewed/ca
 Use `aarch64` only with a separately built and reviewed ARM64 artifact. Installation provisions PostgreSQL 16, separate
 non-login worker/signer users with explicit SSH denial, restricted database roles,
 signer TLS/authentication,
-the current schema.sql, closed schema-22 initialization, a fresh paused ledger/fence and systemd units. It leaves
+the current schema.sql, closed schema-23 initialization, a fresh paused ledger/fence and systemd units. It leaves
 services stopped, enabled for boot; every worker startup requires checked resume.
 It does not create chain assets, provision the native daemon, initialize remote
 storage or provision public certificates. These are real deployment prerequisites, not
@@ -511,7 +511,7 @@ helper-subprocess or Python-uploader settings into current configuration.
 ## Database setup
 
 Fresh setup installs `src/schema.sql` once into an empty private database, then
-initializes schema 22. The database owner performs setup; worker privileges are
+initializes schema 23. The database owner performs setup; worker privileges are
 limited to data operations. For advanced manual setup after installing the schema:
 
 ```sh
@@ -525,7 +525,7 @@ fingerprint with `initialize-ledger --fingerprint ID`; the database owner does n
 need custody secrets. Repeated setup validates the bound installation receipt and
 retains existing data. It does not generate keys, fund custody or authorize payment.
 
-Only the current schema is supported. Restore accepts schema-22 archives into a
+Only the current schema is supported. Restore accepts schema-23 archives into a
 new private database, preserves financial history and requires reconciliation and
 explicit fence adoption. Older/unknown versions and schema-changing upgrades are
 refused. Preserve their ledgers and backups; never erase or initialize over them.

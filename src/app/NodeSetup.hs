@@ -166,7 +166,7 @@ refreshSignerPolicy directory=do
 
 readMethods,workerMethods,signerMethods,adminMethods :: String
 readMethods="getblockchaininfo,getblockhash,getblockheader,getnetworkinfo,getconnectioncount,getwalletinfo,getbalances,getaddressinfo,gettransaction,gettxout,gettxspendingprevout,getmempoolentry,listsinceblock,listunspent,listlockunspent,decodepsbt,decoderawtransaction,decodescript,estimatesmartfee,getmempoolinfo"
-workerMethods=readMethods<>",getnewaddress,getaddressesbylabel,getrawchangeaddress,walletcreatefundedpsbt,lockunspent,createpsbt,testmempoolaccept,sendrawtransaction"
+workerMethods=readMethods<>",getdescriptorinfo,deriveaddresses"<>",getnewaddress,getaddressesbylabel,getrawchangeaddress,walletcreatefundedpsbt,lockunspent,createpsbt,testmempoolaccept,sendrawtransaction"
 signerMethods=readMethods<>",lockunspent,testmempoolaccept,walletcreatefundedpsbt,createpsbt,walletprocesspsbt,finalizepsbt,walletpassphrase,walletlock,backupwallet,listdescriptors"
 adminMethods=readMethods<>",getdescriptorinfo,deriveaddresses,listwalletdir,createwallet,importdescriptors,listdescriptors,getnewaddress,walletpassphrase,walletlock"
 

@@ -32,6 +32,7 @@ import Test.QuickCheck hiding (total,Result)
 main :: IO ()
 main = getArgs >>= \args -> case args of
   ["--start-setup",directory]->Configure.startSetup directory
+  ["--payout-safety-only"]->checked "Payout safety regressions passed" (all isSuccess <$> LifecycleCheck.payoutSafetyChecks)
   ["--configure-only"]->checked "Configure contract passed" ConfigureCheck.contract
   ["--funding-only"]->checked "Funding contract passed" SigningTransportCheck.fundingCheck
   ["--restore-root-only"]->checked "Privileged restore staging contract passed" RestoreGuideCheck.rootContract

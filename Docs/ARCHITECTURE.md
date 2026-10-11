@@ -265,10 +265,10 @@ row before reading decision facts; safe/signing reads use READ ONLY / REPEATABLE
 READ snapshots. The fence advances before commit;
 stale/wrong-identity/retired state is refused. Unexpected database failures fence the
 connection; policy failures permit reuse only after successful rollback. Startup
-pauses intake. Runtime reads/writes and backup/restore accept only schema 22.
+pauses intake. Runtime reads/writes and backup/restore accept only schema 23.
 Fresh setup installs `src/schema.sql` in one transaction with its installation
 receipt. The closed initializer refuses residual financial rows and records the
-identity with intake paused. Existing matching schema-22 ledgers are preserved;
+identity with intake paused. Existing matching schema-23 ledgers are preserved;
 older or unknown versions are rejected. Worker privileges remain DML only.
 
 Amounts are canonical base-unit decimal strings. Both conversion assets have eight
@@ -548,7 +548,7 @@ missing ledger with a new empty ledger for existing custody. See
 
 ## Entry points and compatibility contracts
 
-These are the current external contracts retained across the schema-22 refactor.
+These are the current external contracts retained across the schema-23 refactor.
 Names below are source constructors/commands. No older-schema conversion is supported.
 
 ### Customer, worker and signer
@@ -700,7 +700,7 @@ Solana reference and original conversion payout-link precedence.
 Retain strict configuration fields/fingerprint (`Config.hs`), private setup
 source-file references (`Configure.hs`). Preserve saved `PaymentTerms`, `SignedAttempt`,
 native/Solana draft/message bytes, ATA attempt/parent formats, custody archive
-formats 1/2 and schema-22 backup manifests. Exact keys, decoder bounds and rejected
+formats 1/2 and schema-23 backup manifests. Exact keys, decoder bounds and rejected
 unknown fields remain owned by their existing codecs; no new compatibility codec.
 
 Policy/conflict (`*_conflict`, `*_invalid`, `*_required`) means no successful
@@ -838,8 +838,8 @@ schedule or chain history. The old comparison writer is absent from production.
 
 ### Current schema and restore contract
 
-`src/schema.sql` is the sole schema definition. It creates 40 tables, 5 views,
-13 indexes, 91 functions and 95 triggers directly. There is no migration directory,
+`src/schema.sql` is the sole schema definition, including financial tables, views
+and integrity guards. There is no migration directory,
 staging version, historical table projection or conversion operation.
 
 Payment roots retain immutable funding and chain identity, four constrained phases,
@@ -854,7 +854,7 @@ schema creation and receipt publication commit together. A foreign or nonempty
 unrecognized database is refused. Repeated initialization of a matching current
 ledger preserves it; otherwise it refuses without resetting financial data.
 
-Backup manifests must name schema 22 before archive reads or restore database
+Backup manifests must name schema 23 before archive reads or restore database
 creation. Restore creates a new private database, checks the restored identity and
 sequence, pauses intake and invalidates custody readiness. It neither converts an
 old schema nor adopts a fence or starts signing. Current-schema signed bytes,
@@ -968,6 +968,72 @@ coverage while ignoring auxiliary rows. On re-upgrade, scratch bound to a differ
 real checkpoint is obsolete and ignored; only a subsequent closed write replaces
 it, with no rewind or replay of accounting. Backups include the ordinary checkpoints
 table, including these records; final acceptance must verify their restoration.
+
+### Durable payout rounds
+
+Approved policy update: refunds for wrong-amount or late deposits bypass both
+threshold and interval. They still require verified refund ownership, source
+eligibility, fees, backup and signing checks. Refunds must neither contribute to
+conversion thresholds nor advance their clocks. The unpublished Store/schema implementation now admits refunds directly from
+their saved obligation. Production release verification remains incomplete.
+
+
+Runtime payoutPolicy contains nativePayoutThreshold and wrappedPayoutThreshold
+(integer base units), and payoutIntervalSeconds. Record configuration converts the
+exact decimal thresholds and minimumPayoutIntervalHours into these values. Defaults
+are 0.001 of each asset and 48 hours. The public configuration and browser show
+the policy. Thresholds count net payment obligations, never estimates of balances.
+
+The current unpublished AdmitPayoutRounds operation takes the ordinary deployment
+lock and combines complete, ready cohorts by output asset. Orders and earned-fee
+withdrawals have immutable cohort assignments and saved threshold/fee/queue policy;
+projected-full cohorts do not accept new members. Intake preserves each deficient
+cohort's closing inventory, fee allowances and queue slots. A first round needs its threshold; later rounds also
+need the interval saved by the preceding round. A saved zero disables spacing.
+Changing configuration cannot shorten a previously committed positive interval.
+All eligible members join the same round; later arrivals wait for a later round.
+Observation, settlement and recovery of already admitted work continue normally.
+
+Schema 23 stores immutable payout_rounds and payout_members. Deferred guards check
+member count, net total, asset, complete cohort membership, saved threshold/policy
+and preceding interval at commit; refunds cannot be members. Assignment rejects
+full or sealed cohorts, and new round members must be ready when inserted.
+Every preparation requires either round membership or a saved refund
+obligation, and the signer independently checks the same distinction. Settled or
+cancelled work retains its membership; retries cannot create a new timing window.
+Only this schema is accepted; no running ledger is migrated or reset automatically.
+
+Owner withdrawals reserve their own execution fee in fee_reservations at creation.
+Configured automatic withdrawals use only earned fees and run after existing
+payment candidates. The native owner address is the supplied network's public
+extended key at `wpkh(xpub/0/0)` (tpub on Signet); the node derives and validates it
+without importing a key. Solana uses the configured owner public key. A read first
+checks eligibility; the closed reservation repeats checks atomically under the
+writer lock. A successful reservation ends the cycle for custody reconciliation.
+Expected owner-only funding shortages skip the optional withdrawal; integrity
+failures still stop processing. These withdrawals use the ordinary batched payout
+and signer pipeline. Funded end-to-end owner acceptance remains pending.
+Initial preparation updates that same hold; it never charges the reservation twice.
+Cancellation releases it only after projecting the remaining unsealed cohort's
+inventory, fee and queue needs. Sealed cohorts keep their saved payout admission.
+Fee-hold identity and asset cannot change, and rows cannot be deleted. Additional
+retry/refund fees preserve closing capacity; already-reserved fees remain usable.
+The database sealing checks passed the actual PostgreSQL contract and separate
+source review. Source eligibility and coordinated reservation/payment changes
+still rely on runtime checks under the deployment lock. The runtime compares all
+unsealed live liabilities (including pending/reviewed work) with assigned cohort
+members before calculating capacity. Missing assignments stop admission rather
+than silently dropping liabilities. This is not a production certification.
+
+Before saving a quote, admission preserves output inventory, operating/daily fee
+headroom and queue slots for the orders needed to complete each deficient cohort.
+Pending quotes remain part of their cohort, preventing its early sealing. Both
+assets share the projected execution-fee and queue budgets. Threshold-completing
+orders can consume the capacity reserved for completion. These checks share the
+order reservation transaction and never reprice idempotent old-order replay.
+Liquidity changes, source reviews and operator changes still require normal
+reconciliation. Strict thresholds mean waiting for more funds can be indefinite;
+the configured interval is not a promised maximum customer waiting time.
 
 ### Lost-signature cancellation boundary
 

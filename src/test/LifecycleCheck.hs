@@ -1,7 +1,7 @@
 -- Independent accounting oracle for lifecycle extraction. Expected values never
 -- call Domain.settlement. PostgreSQL contracts cover durable commits; this model
 -- compares the extracted decisions with independent accounting and old histories.
-module LifecycleCheck (checks) where
+module LifecycleCheck (checks, payoutSafetyChecks, payoutGroupChecks) where
 
 import Bridge.Domain hiding (fee)
 import Bridge.Lifecycle
@@ -11,12 +11,319 @@ import Control.Monad (foldM)
 import Data.Aeson (Value(Null),object,(.=),encode)
 import qualified Data.ByteString.Lazy as BL
 import Data.Int (Int64)
-import Data.List (nub)
+import Data.List (nub,isPrefixOf)
 import qualified Data.Map.Strict as M
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Test.QuickCheck
+
+-- Release-blocking regressions: no expected-failure wrapper. These must pass
+-- before the unfinished strict-batching implementation may be published.
+payoutSafetyChecks :: IO [Result]
+payoutSafetyChecks = sequence
+  [ check "an unfunded quote cannot borrow inventory from a round that can seal first" $ once $
+      let facts=customerAdmission {queuedOrders=1,availableFloat=10}
+      in counterexample "ready 100 can leave before new net 9 arrives; only 1 unit then remains to close its 100-unit round" $
+        rejected (capacity 100 Wrapped 100 customerLimits facts NativeToWrapped 10)
+  , check "opposite-direction intake preserves fees needed to close an existing small batch" $ once $
+      let first=customerAdmission {nativeOrderBudget=budget 20 0,solanaOrderBudget=budget 40 0}
+          after=first {queuedOrders=1,nativeOrderBudget=budget 20 10,solanaOrderBudget=budget 40 20}
+      in counterexample "first net 9 needs a later closer; opposite net 100 consumes its last 10 native/20 SOL fee units" $
+        not (capacity 100 Wrapped 0 customerLimits first NativeToWrapped 10==Right ()
+          && capacityWith 100 customerLimits after WrappedToNative 102 [batch 100 Wrapped 9]==Right ())
+  , check "batch headroom reserves every required closer, not just one queue slot" $ once $
+      let threshold=toInteger(maxBound::Int64)
+          facts=customerAdmission {availableFloat=threshold}
+          limits=customerLimits {maximumQueued=2}
+          largestNet=toInteger $ units $ net $ good $ quote $ money threshold
+      in counterexample "net 1 plus the largest representable quote cannot reach the threshold with one remaining slot" $
+        1+largestNet<threshold && rejected (capacity threshold Native 0 limits facts WrappedToNative 2)
+  , check "reserved inventory remains usable by the order that completes a funded batch" $ once $
+      let first=customerAdmission {availableFloat=100,nativeOrderBudget=budget 20 0,solanaOrderBudget=budget 40 0}
+          after=first {queuedOrders=1,availableFloat=91,nativeOrderBudget=budget 20 10,solanaOrderBudget=budget 40 20}
+      in counterexample "after admitted net 9 funds, the remaining 91 must admit gross 92/net 91 to complete the batch" $
+        capacity 100 Wrapped 0 customerLimits first NativeToWrapped 10/=Right ()
+        || capacity 100 Wrapped 9 customerLimits after NativeToWrapped 92==Right ()
+  , check "higher current fees protect old batches while allowing their real closer" $ once $
+      let facts=customerAdmission {queuedOrders=1,availableFloat=100,
+            nativeOrderBudget=budget 40 10,solanaOrderBudget=budget 80 20}
+          costs=CostLimits (money 20) (money 30) (money 10)
+          decide direction input=decideBatchOrder (W.PayoutPolicy (money 100) (money 100) 0)
+            customerLimits costs (customerRequest direction input) facts [batch 100 Wrapped 9]
+      in conjoin [counterexample "unrelated intake spends the fee increase" $ decide WrappedToNative 102===Left "insufficient_fee_budget"
+         ,counterexample "saved batch cannot consume its increased allowance" $ case decide NativeToWrapped 92 of
+             Right (Just "existing",_)->True
+             _->False]
+  , check "free-capital consumers retain inventory and the higher saved/current closing fees" $ once $
+      let outstanding=batch 100 Wrapped 9
+      in conjoin
+        [batchClosingCapacity customerCosts outstanding===Right (ClosingCapacity 91 1 10 20)
+        ,batchClosingCapacity (CostLimits (money 20) (money 30) (money 10)) outstanding
+          ===Right (ClosingCapacity 91 1 20 40)
+        ,batchClosingCapacity (CostLimits (money 1) (money 1) (money 1)) outstanding
+          ===Right (ClosingCapacity 91 1 10 20)
+        ,batchClosingCapacity customerCosts outstanding {batchCommitted=100}
+          ===Right (ClosingCapacity 0 0 0 0)]
+  , check "depleted closing headroom permits zero debit without hiding actual insolvency" $
+      forAll (chooseInteger (0,1000000)) $ \available->
+      forAll (chooseInteger (0,1000000)) $ \reserved->
+        conjoin [spendableAfterClosing available reserved===max 0 (available-reserved)
+          ,spendableAfterClosing (-1) reserved===(-1)
+          ,property (spendableAfterClosing available reserved<=available)]
+  , check "fee reallocation preserves reserved refunds but protects closers from new spending" $ once $
+      conjoin
+        [checkFeeReallocation (money 10) 10 100 (budget 10 10)===Right ()
+        ,checkFeeReallocation (money 11) 10 20 (budget 30 10)===Left "insufficient_fee_budget"
+        ,checkFeeReallocation (money 11) 10 20 (budget 31 10)===Right ()
+        ,checkFeeReallocation (money 10) 0 20 (budget 20 0)===Left "insufficient_fee_budget"
+        ,checkFeeReallocation (money 10) 20 100 (budget 100 10)===Left "operating_reservation_missing"]
+  , check "owner admission shares closing capacity but uses earned principal" $ once $
+      let decide asset n limits facts groups=checkBatchMember (W.PayoutPolicy (money 100) (money 100) 0)
+            limits customerCosts (BatchMember asset (money n) (money 0) [(if asset==Native then Native else Sol,money (if asset==Native then 10 else 20))]) facts groups
+          existing=batch 100 Wrapped 9
+          funded=customerAdmission {queuedOrders=1,availableFloat=0,nativeOrderBudget=budget 20 10,solanaOrderBudget=budget 40 20}
+      in conjoin
+        [decide Wrapped 91 customerLimits funded [existing]===Right (Just "existing")
+        ,decide Native 100 customerLimits funded [existing]===Left "insufficient_fee_budget"
+        ,decide Wrapped 1 customerLimits funded [existing]===Left "payout_batch_needs_inventory"
+        ,decide Wrapped 91 customerLimits {maximumQueued=1} funded [existing]===Left "payout_batch_needs_capacity"]
+  , check "owner cancellation cannot strand an unsealed customer's closer" $ once $
+      let after=customerAdmission {queuedOrders=1,availableFloat=90}
+          groups=[batch 100 Wrapped 9]
+      in conjoin
+        [checkBatchResources customerLimits customerCosts Wrapped after groups===Left "payout_batch_needs_inventory"
+        ,checkBatchResources customerLimits customerCosts Wrapped after {availableFloat=91} groups===Right ()
+        ,checkBatchResources customerLimits {maximumQueued=1} customerCosts Wrapped after {availableFloat=91} groups
+          ===Left "payout_batch_needs_capacity"]
+  ]
+ where
+  check name test=putStrLn name >> quickCheckWithResult stdArgs test
+  budget balance held=FeeBudget balance held 0 (money 1000000000)
+  rejected (Left _)=True
+  rejected (Right _)=False
+  batch threshold asset committed=BatchCapacity "existing" asset (money threshold) committed (money 10) (money 20) 100
+  capacity threshold asset waiting limits facts direction input =
+    capacityWith threshold limits facts direction input [batch threshold asset waiting | waiting>0]
+  capacityWith threshold limits facts direction input batches =
+    -- Baseline order admission must succeed; unrelated quote rejection is not
+    -- evidence that the batch-capacity invariant holds.
+    let request=customerRequest direction input
+        admitted=good $ decideOrder limits customerCosts request facts
+    in admitted `seq` (() <$ decideBatchOrder (W.PayoutPolicy (money threshold) (money threshold) 0)
+      limits customerCosts request facts batches)
+
+-- Candidate ownership protocol, independent of Store. This models exact quoted
+-- deposits and immediate wrong-amount refunds. Amounts are net units. Pending
+-- and funded conversions retain both fee allowances, as Store does. Only refunds
+-- release the conversion allowance. Reorgs, late receipts and fee-policy changes
+-- remain outside this model; passing it is not Store acceptance.
+data BatchReceipt = PendingReceipt | ConversionReceipt | RefundReceipt deriving (Eq,Show)
+data BatchModel = BatchModel Bool Asset [(Integer,BatchReceipt)] deriving (Eq,Show)
+data CapacityModel = CapacityModel Integer Integer Integer Integer [BatchModel] deriving (Eq,Show)
+data BatchStep = Offer Asset Integer | Fund Int Int | Expire Int Int | Seal Int | Pay Int | WrongAmount Int Int Integer
+  deriving Show
+
+payoutGroupChecks :: IO [Result]
+payoutGroupChecks = putStrLn "Candidate batch ownership model (not Store acceptance)" >> sequence
+  [ quickCheckWithResult stdArgs {maxSuccess=1000} $ forAll scenario $ \(threshold,start,actions)->
+      let states=scanl (advance threshold) start actions
+          changes=zip3 actions states (drop 1 states)
+          exercised select=any (\(action,before,after)->select action && before/=after) changes
+          paid Pay{}=True; paid _=False
+          expired Expire{}=True; expired _=False
+          refunded WrongAmount{}=True; refunded _=False
+          both (CapacityModel _ _ _ _ batches)=all (\asset->any (\(BatchModel _ a _)->a==asset) batches) [Native,Wrapped]
+      in checkCoverage $ cover 1 (exercised paid) "settlement"
+        $ cover 5 (exercised expired) "expiry"
+        $ cover 5 (exercised refunded) "immediate refund"
+        $ cover 10 (any both states) "both assets"
+        $ cover 5 (any (\(CapacityModel _ _ _ _ batches)->any ((>1).closers threshold) batches) states) "multiple closers"
+        $ counterexample (show $ zip (Nothing:map Just actions) states)
+          (all (solvent threshold) states && all conserved changes && all wellFormed states
+            && all assigned changes
+            && all (headroomMatches threshold) states
+            && all (admissionMatches threshold) changes
+            && all (capacityPreserved threshold) changes && all (closingProgress threshold) states)
+  , quickCheckResult $ once $
+      let bound=toInteger(maxBound::Int64); maximumAmount=money bound
+      in conjoin
+        [closingCapacity maximumAmount 1 maximumAmount maximumAmount
+          ===Right (ClosingCapacity (bound-1) 2 (2*bound) (2*bound))
+        ,closingCapacity (money 100) 0 (money 10) (money 20)===Right (ClosingCapacity 0 0 0 0)
+        ,closingCapacity (money 100) 100 (money 10) (money 20)===Right (ClosingCapacity 0 0 0 0)
+        ,closingCapacity (money 0) 1 (money 10) (money 20)===Left "invalid_payout_capacity"
+        ,closingCapacity (money 100) (-1) (money 10) (money 20)===Left "invalid_payout_capacity"]
+  , quickCheckResult $ once $
+      let offered=advance 100 initial (Offer Wrapped 9)
+          funded=advance 100 offered (Fund 0 0)
+          closed=advance 100 (advance 100 funded (Offer Wrapped 91)) (Fund 0 1)
+          paid=advance 100 (advance 100 (advance 100 closed (Seal 0)) (Pay 0)) (Pay 0)
+      in counterexample "admitted funded net9 must retain usable capacity for its exact net91 closer" $
+        case paid of CapacityModel 100 0 20 0 []->True; _->False
+  , quickCheckResult $ once $
+      let start=CapacityModel 100 200 20 40 []
+          first=advance 100 start (Offer Wrapped 100)
+          second=advance 100 first (Offer Wrapped 100)
+          funded=advance 100 second (Fund 1 0)
+          paid=advance 100 (advance 100 funded (Seal 1)) (Pay 1)
+      in counterexample "independently funded cohort must pay while an earlier full cohort awaits its receipt" $
+        paid==CapacityModel 100 100 20 20 [BatchModel False Wrapped [(100,PendingReceipt)]]
+  , quickCheckResult $ once $
+      let open=advance 100 initial (Offer Wrapped 9)
+          blocked=advance 100 open (Offer Native 100)
+      in blocked==open
+  , quickCheckResult $ once $
+      conjoin [let start=CapacityModel 100 100 nativeFees solFees []
+                   before=advance 100 (advance 100 start (Offer asset 50)) (Offer asset 50)
+                   after=advance 100 before (WrongAmount 0 0 49)
+                   paid=advance 100 after (Pay 1)
+                   replaced=advance 100 paid (Offer asset 50)
+               in counterexample ("one refund must leave its replacement usable: "<>show replaced) $
+                 fits 100 after && fits 100 paid && paid/=after && replaced/=paid
+              | (asset,nativeFees,solFees)<-[(Wrapped,30,40),(Native,20,60)]]
+  , quickCheckResult $ once $
+      let first=advance 100 initial (Offer Wrapped 50)
+          second=advance 100 first (Offer Wrapped 50)
+          refunded=advance 100 second (WrongAmount 0 0 49)
+          paid=advance 100 refunded (Pay 1)
+      in counterexample "spent refund fee requires replenishment, never borrowing actual liabilities" $
+        second/=first && solvent 100 refunded && solvent 100 paid
+          && not(fits 100 paid) && advance 100 paid (Offer Native 100)==paid
+  ]
+ where
+  initial=CapacityModel 100 100 20 40 []
+  largestNet=toInteger $ units $ net $ good $ quote $ money $ toInteger(maxBound::Int64)
+  remaining threshold (BatchModel sealed _ quotes)
+    | sealed || null quotes=0
+    | otherwise=max 0 (threshold-sum(map fst quotes))
+  -- A real pending closer consumes the virtual allocation instead of being
+  -- counted alongside it. Wrong deposits may spend the refund allowance and
+  -- leave closing capacity needing replenishment, never an unfunded liability.
+  closers threshold batch=(remaining threshold batch+largestNet-1) `div` largestNet
+  -- Compare the production calculation with the independent model after every
+  -- transition, including expiry, refunds and multiple legal closing quotes.
+  headroomMatches threshold (CapacityModel _ _ _ _ batches)=and
+    [closingCapacity (money threshold) (sum $ map fst members) (money 10) (money 20)
+      ==Right (ClosingCapacity (remaining threshold batch) (closers threshold batch)
+        (10*closers threshold batch) (20*closers threshold batch))
+    | batch@(BatchModel False _ members)<-batches]
+  required threshold asset batches=sum [sum(map fst quotes)+remaining threshold batch
+    | batch@(BatchModel _ currency quotes)<-batches,currency==asset]
+  fits threshold (CapacityModel native wrapped nativeFees solFees batches)=
+    native>=required threshold Native batches && wrapped>=required threshold Wrapped batches
+      && nativeFees>=feesHeld threshold Native batches && solFees>=feesHeld threshold Sol batches
+      && sum [toInteger(length quotes)+closers threshold batch | batch@(BatchModel _ _ quotes)<-batches]<=10
+  feesHeld threshold currency batches=sum
+    [(if currency==Native then 10 else 20)*(closers threshold batch+toInteger(length
+      [() | (_,receipt)<-quotes,receipt/=RefundReceipt || (asset==Native)==(currency==Native)]))
+    | batch@(BatchModel _ asset quotes)<-batches]
+  admissionMatches threshold (action@(Offer asset quantity),before@(CapacityModel native wrapped nativeFees solFees batches),after)=
+    let actual=[BatchModel True a members | BatchModel _ a members<-batches]
+        request=customerRequest (if asset==Wrapped then NativeToWrapped else WrappedToNative)
+          (quantity+(quantity+98) `div` 99)
+        facts=customerAdmission
+          { queuedOrders=sum [length members | BatchModel _ _ members<-batches]
+          , availableFloat=(if asset==Native then native else wrapped)-required threshold asset actual
+          , nativeOrderBudget=FeeBudget nativeFees (feesHeld threshold Native actual) 0 (money 1000000)
+          , solanaOrderBudget=FeeBudget solFees (feesHeld threshold Sol actual) 0 (money 1000000) }
+        saved=[BatchCapacity (T.pack $ show i) a (money threshold) (sum $ map fst members)
+          (money 10) (money 20) 10 | (i,BatchModel False a members)<-zip [0::Int ..] batches]
+        result=decideBatchOrder (W.PayoutPolicy (money threshold) (money threshold) 0)
+          customerLimits {maximumQueued=10} customerCosts request facts saved
+    in case result of Right _->before/=after; Left _->before==after
+  admissionMatches _ _=True
+  -- Safety is unconditional. Closing progress is conditional on intact closing
+  -- capacity: finite fee balances cannot cover unlimited wrong-deposit refunds.
+  solvent threshold (CapacityModel native wrapped nativeFees solFees batches)=
+    let actual=[BatchModel True asset members | BatchModel _ asset members<-batches]
+    in fits threshold (CapacityModel native wrapped nativeFees solFees actual)
+  capacityPreserved threshold (action,before,after)=case action of
+    WrongAmount{} -> True -- the actual liability still must pass solvent
+    _ -> not(fits threshold before) || fits threshold after
+  closingProgress threshold state@(CapacityModel _ _ _ _ batches)=
+    not(fits threshold state) || all usable
+      [first | asset<-[Native,Wrapped],
+        let candidates=[batch | batch@(BatchModel False currency _)<-batches,currency==asset,remaining threshold batch>0],
+        first:_<-[candidates]]
+   where
+    usable batch@(BatchModel sealed asset members)=
+      sealed || any ((==PendingReceipt).snd) members || remaining threshold batch==0
+        || advance threshold state (Offer asset $ min largestNet $ remaining threshold batch)/=state
+  clean=filter (\(BatchModel _ _ quotes)->not(null quotes))
+  modifyAt index change values=[if n==index then change value else value | (n,value)<-zip [0..] values]
+  advance threshold state@(CapacityModel native wrapped nativeFees solFees batches) action=case action of
+    Offer asset quantity ->
+      let targets=[index | (index,batch@(BatchModel sealed currency _))<-zip [0..] batches,
+            not sealed,currency==asset,remaining threshold batch>0]
+          add (BatchModel sealed currency quotes)=BatchModel sealed currency (quotes<>[(quantity,PendingReceipt)])
+          candidate=case targets of
+            []->batches<>[BatchModel False asset [(quantity,PendingReceipt)]]
+            index:_->modifyAt index add batches
+          next=CapacityModel native wrapped nativeFees solFees candidate
+      in if quantity>0 && quantity<=largestNet && fits threshold next then next else state
+    WrongAmount group member quantity ->case drop group batches of
+      BatchModel False target quotes:_ | quantity>0 && quantity<=toInteger(maxBound::Int64)
+        ,(_,PendingReceipt):_<-drop member quotes ->
+          let source=if target==Native then Wrapped else Native
+              retained=clean $ modifyAt group (const $ BatchModel False target
+                [quote | (index,quote)<-zip [0..] quotes,index/=member]) batches
+              -- Refunds have independent immediate admission, never borrowing a
+              -- conversion group's threshold or changing its scheduling clock.
+              refunded=retained<>[BatchModel True source [(quantity,RefundReceipt)]]
+          in CapacityModel (native+if source==Native then quantity else 0)
+            (wrapped+if source==Wrapped then quantity else 0) nativeFees solFees refunded
+      _->state
+    Fund group member ->CapacityModel native wrapped nativeFees solFees $ modifyAt group
+      (\(BatchModel sealed asset quotes)->BatchModel sealed asset $ modifyAt member (\(n,receipt)->(n,if receipt==PendingReceipt then ConversionReceipt else receipt)) quotes) batches
+    Expire group member ->CapacityModel native wrapped nativeFees solFees $ clean $ modifyAt group
+      (\batch@(BatchModel sealed asset quotes)->if sealed then batch else BatchModel False asset
+        [quote | (index,quote@(_,receipt))<-zip [0..] quotes,index/=member || receipt/=PendingReceipt]) batches
+    Seal group ->CapacityModel native wrapped nativeFees solFees $ modifyAt group
+      (\batch@(BatchModel _ asset quotes)->if not(null quotes) && all ((==ConversionReceipt).snd) quotes && sum(map fst quotes)>=threshold
+        then BatchModel True asset quotes else batch) batches
+    Pay group ->case drop group batches of
+      BatchModel True asset ((quantity,_):quotes):_ ->CapacityModel
+        (native-if asset==Native then quantity else 0)
+        (wrapped-if asset==Wrapped then quantity else 0)
+        (nativeFees-if asset==Native then 10 else 0) (solFees-if asset==Wrapped then 20 else 0) $
+          clean $ modifyAt group (const $ BatchModel True asset quotes) batches
+      _->state
+  wellFormed (CapacityModel _ _ _ _ batches)=all
+    (\(BatchModel sealed _ members)->not(null members) && all (\(_,receipt)->receipt/=RefundReceipt || sealed) members) batches
+  -- Admission may append to exactly one existing cohort, or create a new one.
+  -- It cannot move existing promises into a different cohort to free resources.
+  assigned (Offer{},before@(CapacityModel _ _ _ _ old),after@(CapacityModel _ _ _ _ new))
+    | before/=after = length new>=length old && length new<=length old+1
+      && sum(map count new)==sum(map count old)+1
+      && and [asset==asset' && sealed==sealed' && members `isPrefixOf` members'
+        | (BatchModel sealed asset members,BatchModel sealed' asset' members')<-zip old new]
+   where count (BatchModel _ _ members)=length members
+  assigned _=True
+  conserved (action,before@(CapacityModel n w nf sf batches),after@(CapacityModel n' w' nf' sf' _))=case action of
+    WrongAmount group member quantity | before/=after ->case drop group batches of
+      BatchModel False target quotes:_ | (_,PendingReceipt):_<-drop member quotes ->nf==nf' && sf==sf'
+        && n'-n==(if target==Wrapped then quantity else 0)
+        && w'-w==(if target==Native then quantity else 0)
+      _->False
+    Pay group | before/=after ->case drop group batches of
+      BatchModel True asset ((quantity,receipt):_):_ | receipt/=PendingReceipt ->nf-nf'==(if asset==Native then 10 else 0) && sf-sf'==(if asset==Wrapped then 20 else 0)
+        && n-n'==(if asset==Native then quantity else 0)
+        && w-w'==(if asset==Wrapped then quantity else 0)
+      _->False
+    _->(n,w,nf,sf)==(n',w',nf',sf')
+  scenario=do
+    threshold<-elements [100,toInteger(maxBound::Int64)]
+    start<-CapacityModel <$> chooseInteger (threshold,5*threshold) <*> chooseInteger (threshold,5*threshold) <*> chooseInteger (20,200) <*> chooseInteger (40,400) <*> pure []
+    actions<-steps threshold
+    pure(threshold,start,actions)
+  groupIndex=frequency [(3,pure 0),(1,chooseInt (0,3))]
+  steps threshold=resize 100 $ listOf $ oneof
+    [Offer <$> elements [Native,Wrapped] <*> elements [1,9,threshold `div` 2,min largestNet (threshold-9),min largestNet threshold]
+    ,Fund <$> groupIndex <*> chooseInt (0,2)
+    ,Expire <$> groupIndex <*> chooseInt (0,2)
+    ,Seal <$> groupIndex,Pay <$> groupIndex
+    ,WrongAmount <$> groupIndex <*> chooseInt (0,2) <*> chooseInteger (1,99)]
 
 data FundingCase = Convert Direction Integer Integer | Return Asset Integer | Revenue Asset Integer
   deriving (Eq,Show)
@@ -24,8 +331,53 @@ data History = History [FundingCase] [Int] deriving Show
 type Balances = M.Map (Asset,Account) Integer
 
 checks :: IO [Result]
-checks = sequence
-  [ check "economic phase round trips with one original principal event across winner changes" $
+checks = (++) <$> ((++) <$> payoutSafetyChecks <*> payoutGroupChecks) <*> sequence
+  [ check "payout admission uses aggregate net amounts and the previous committed interval" $
+      forAll (chooseInteger (1,1000000)) $ \n->forAll (chooseInt (0,1000)) $ \wait->
+        let policy=W.PayoutPolicy (money $ 2*n) (money $ 3*n) 0
+            due asset now amounts=payoutRoundDue policy asset now (Just(100,fromIntegral wait)) amounts
+        in conjoin [due Native (100+fromIntegral wait) [money n,money n]===Right True
+          ,due Wrapped (100+fromIntegral wait) [money n,money n]===Right False
+          ,due Native (99+fromIntegral wait) [money n,money n]===Right (wait==0)
+          ,payoutRoundDue policy Native 0 Nothing [money n,money n]===Right True
+          ,payoutRoundDue policy Native 0 Nothing []===Right False]
+  , check "payout totals and deadlines cannot overflow signed base units or timestamps" $ once $
+      let big=money(toInteger(maxBound::Int64)); policy=W.PayoutPolicy big big 31536000
+      in conjoin [payoutRoundDue policy Native 0 Nothing (replicate 1000 big)===Right True
+        ,payoutRoundDue policy Native maxBound (Just(maxBound,1)) [big]===Right False
+        ,payoutRoundDue policy Sol 0 Nothing [big]===Left "invalid_payout_round"
+        ,checkPayoutPolicy policy {W.payoutIntervalSeconds=31536001}===Left "invalid_payout_policy"
+        ,checkPayoutPolicy policy {W.nativePayoutThreshold=money 0}===Left "invalid_payout_policy"]
+  , check "small orders preserve the slot inventory and fees needed to finish a payout batch" $
+      forAll (chooseInteger (2,1000000)) $ \threshold->
+      forAll (elements [NativeToWrapped,WrappedToNative]) $ \direction->
+        let policy=W.PayoutPolicy (money threshold) (money threshold) 0
+            limits=customerLimits {maximumQueued=3}
+            facts=customerAdmission {queuedOrders=2,availableFloat=threshold}
+            checkWith l f n=() <$ decideBatchOrder policy l customerCosts (customerRequest direction n) f []
+            closingInput=threshold+(threshold+98) `div` 99
+            room=limits {maximumQueued=4}
+        in conjoin
+          [checkWith limits facts 2===Left "payout_batch_needs_capacity"
+          ,checkWith limits facts closingInput===Right ()
+          ,checkWith room facts 2===Right ()
+          ,checkWith room facts {availableFloat=threshold-1} 2===Left "payout_batch_needs_inventory"
+          ,checkWith room facts {solanaOrderBudget=FeeBudget 39 0 0 (money 100)} 2===Left "insufficient_fee_budget"
+          ,checkWith room facts {nativeOrderBudget=FeeBudget 19 0 0 (money 100)} 2===Left "insufficient_fee_budget"
+          ,checkWith room facts {solanaOrderBudget=FeeBudget 40 0 0 (money 39)} 2===Left "operating_daily_limit"
+          ,checkWith limits facts {solanaOrderBudget=FeeBudget 20 0 0 (money 20)} closingInput===Right ()]
+  , check "two legal closers reserve two slots and both fee budgets without overflow" $ once $
+      let threshold=toInteger(maxBound::Int64)
+          policy=W.PayoutPolicy (money threshold) (money threshold) 0
+          limits=customerLimits {maximumQueued=3}
+          facts=customerAdmission {availableFloat=threshold,
+            nativeOrderBudget=FeeBudget 30 0 0 (money 30),solanaOrderBudget=FeeBudget 60 0 0 (money 60)}
+          capacity l f=() <$ decideBatchOrder policy l customerCosts (customerRequest WrappedToNative 2) f []
+      in conjoin [capacity limits facts===Right ()
+        ,capacity limits {maximumQueued=2} facts===Left "payout_batch_needs_capacity"
+        ,capacity limits facts {nativeOrderBudget=FeeBudget 29 0 0 (money 30)}===Left "insufficient_fee_budget"
+        ,capacity limits facts {solanaOrderBudget=FeeBudget 60 0 0 (money 59)}===Left "operating_daily_limit"]
+  , check "economic phase round trips with one original principal event across winner changes" $
       forAll (chooseInt (0,7)) $ \generation->forAll (chooseInteger (0,1000000)) $ \nonce->
         let old=T.pack(show nonce); winner="winner-"<>old; original="settlement:"<>old
             phases=[Ready,Active generation,Settled winner original,Cancelled]
@@ -109,12 +461,24 @@ checks = sequence
             currency=if chain=="Native" then Native else Sol
             facts=original {preparationHistory=RetiredPreparation chain (Just generation)
               ,preparationAdmission=Just admission {priorPreparationFee=Just(PriorFeeHold currency (money 10) expired expired)
-                ,customerOperatingHold=Nothing,preparationBudget=FeeBudget 1000 (if expired then 0 else 10) 0 (money 1000)}}
+                ,initialOperatingHold=Nothing,preparationBudget=FeeBudget 1000 (if expired then 0 else 10) 0 (money 1000)}}
             result=created $ good $ decidePreparation (money 10) "{}" facts
         in conjoin [preparedGeneration result===generation,preparedFee result===money 10
              ,savedPayment(preparedView result)===savedPayment(preparationPayment original)
              ,decidePreparation (money 10) "{}" facts {preparationHistory=RetiredPreparation chain Nothing}===Left "preparation_retry_not_authorized"
              ,decidePreparation (money 10) "{}" facts {preparationHistory=RetiredPreparation chain (Just 8)}===Left "preparation_generation_limit"]
+  , check "reserved refund preparation survives a closing shortfall but a larger retry does not" $ once $
+      let original=initialPreparation (Return Native 100)
+          admission=(admitted original) {preparationBudget=FeeBudget 20 20 0 (money 1000),preparationClosingFees=100}
+          reserved=original {preparationAdmission=Just admission}
+          retry=original {preparationHistory=RetiredPreparation "Native" (Just 1)
+            ,preparationAdmission=Just admission {initialOperatingHold=Nothing
+              ,priorPreparationFee=Just(PriorFeeHold Native (money 5) False False)
+              ,preparationBudget=FeeBudget 25 5 0 (money 1000),preparationClosingFees=20}}
+      in conjoin
+        [property (case decidePreparation (money 10) "{}" reserved of Right CreatePreparation{}->True; _->False)
+        ,decidePreparation (money 10) "{}" retry===Left "insufficient_fee_budget"
+        ,property (case decidePreparation (money 5) "{}" retry of Right CreatePreparation{}->True; _->False)]
   , check "preparation rejects invalid plans missing holds and shared budget exhaustion" $ once preparationRefusals
   , check "queue and send reject changed generation stale readiness and replacement selection" $ once sendRefusals
   , check "readiness uses the exact sixty-second boundary without extending time" $
@@ -182,7 +546,7 @@ checks = sequence
             receipt=W.Deposit "extra" (Just "order") asset (money extra) "anchor" 2 True 110
             work=[("convert:order","original","paid")]
             facts=RefundFacts False work "verified-owner" [(T.pack(show feeAsset),allowance,"released")]
-              (Just $ FeeBudget 1000 0 0 $ money 1000)
+              (Just $ FeeBudget 1000 0 0 $ money 1000) 0 0
             refunded=good $ decideRefund (W.request order) receipt customerCosts facts
             withdrawn=good $ withdrawalInput (money 1000) 100 (T.replicate 64 "a") asset (money 1) "owner" "earned"
             histories=History [Convert direction n 1,Return asset extra,Revenue asset 1] [0,1,1,2,0]
@@ -193,6 +557,12 @@ checks = sequence
              ,decideRefund (W.request order) receipt customerCosts facts {refundObligations=[("already","extra","paid")]}===Left "principal_already_resolved"
              ,decideRefund (W.request order) receipt customerCosts facts {refundBudget=Just(FeeBudget 1000 990 0 $ money 1000)}
                 ===(if allowance>10 then Left "insufficient_fee_budget" else Right refunded)
+             ,decideRefund (W.request order) receipt customerCosts facts
+                {refundBudget=Just(FeeBudget (toInteger allowance) 0 0 $ money 1000),refundClosingFees=1}
+                ===Left "insufficient_fee_budget"
+             ,decideRefund (W.request order) receipt customerCosts facts
+                {refundBudget=Just(FeeBudget (toInteger allowance) (toInteger allowance) 0 $ money 1000)
+                ,refundReleasedFees=toInteger allowance,refundClosingFees=100}===Right refunded
              ,decideWithdrawal withdrawn (PaymentTerms (W.policy order) customerCosts) "earned" Nothing (Just(readyOperator,0))===Left "insufficient_earned_fees"]
   , check "expiry cannot free a received deposit or extend grace on clock rollback" $
       forAll (chooseInteger (0,toInteger(maxBound::Int64)-1)) $ \time ->
@@ -579,10 +949,9 @@ initialPreparation :: FundingCase -> PreparationFacts
 initialPreparation funding = PreparationFacts view InitialPreparation (Just admission)
  where
   view=(settlementPayment $ snapshot 0 funding) {savedStatus=PaymentReady}
-  revenue=case funding of Revenue{}->True; _->False
-  held=if revenue then 0 else 20
-  admission=PreparationAdmission readyIntake False True Nothing (if revenue then Nothing else Just $ money held)
-    (toInteger $ units $ paymentAmount $ savedPayment view) (FeeBudget 1000 held 0 (money 1000))
+  held=20
+  admission=PreparationAdmission readyIntake False True Nothing (Just $ money held)
+    (toInteger $ units $ paymentAmount $ savedPayment view) (FeeBudget 1000 held 0 (money 1000)) 0
 
 admitted :: PreparationFacts -> PreparationAdmission
 admitted facts=case preparationAdmission facts of Just admission->admission; Nothing->error "fixture admission missing"
@@ -612,8 +981,8 @@ preparationRefusals = conjoin $
       ,("scanners_not_fresh",original {preparationIntake=readyIntake {intakeTime=161}})
       ,("destination_payment_unresolved",original {destinationBusy=True})
       ,("source_not_eligible",original {preparationSourceEligible=False})
-      ,("operating_reservation_missing",original {customerOperatingHold=Nothing})
-      ,("operating_reservation_missing",original {customerOperatingHold=Just $ money 9})
+      ,("operating_reservation_missing",original {initialOperatingHold=Nothing})
+      ,("operating_reservation_missing",original {initialOperatingHold=Just $ money 9})
       ,("insufficient_fee_budget",original {preparationBudget=FeeBudget 9 20 0 (money 1000)})
       ,("operating_daily_limit",original {preparationBudget=FeeBudget 1000 20 991 (money 1000)})]]
   <>[decidePreparation (money 10) "{}" earned {preparationAdmission=Just (admitted earned) {pendingEarnedBalance=99}}===Left "earned_reservation_missing"]
