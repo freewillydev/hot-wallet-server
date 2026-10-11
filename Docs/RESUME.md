@@ -1098,3 +1098,29 @@ server/server_canonical PostgreSQL contracts PASS (session20803 exit0); fresh
 read-only patch reviewer PASS, static scope only. Disposable PostgreSQL stopped
 and its data removed. No runtime or financial behavior changed. Refunds bypass
 batching; ordinary swaps retain configured thresholds and intervals.
+
+### Pinned Native RPC repair investigation (2026-10-11)
+
+Verified actual ecash-com/bitcoin ca64033c1374 transactions.cpp, not generic
+Bitcoin documentation. listsinceblock has no pagination; target_confirmations
+only selects lastblock. listtransactions count/skip is not a stable cursor:
+conflicted receive entries disappear from its row set. Do not implement offset
+pagination or advance coverage past a truncated response.
+
+gettransaction also omits conflicted receive details (ListTransactions minimum
+depth0). Our negative-confirmation fixture retains them, so it does not prove
+real conflict handling. CommitScan only updates supplied deposits: the repair
+must explicitly invalidate saved receipts for a negatively confirmed transaction,
+preserving bindings/accounting and source-loss review. Existing payout rechecks
+are separate protections; this inspection does not establish a funds-loss exploit.
+
+Read-only investigator confirms whole-response streaming into sealed scratch can
+remove application aggregate caps while preserving coherent capture. It cannot
+resume a truncated HTTP response, reduce daemon memory, recover pruned detached
+blocks, or certify stale custody as fresh. Required repair spans capture, paged
+receipts/evidence, recovery selection, treasury proof lookup and custody overlap;
+the existing60-second freshness guard remains. Production fix is still open.
+Retained pinned-source SHA256:
+5b635c860e448452518bef165c2571474daff9a5991528423d60cffb2343c01a.
+Investigation: Codex Security standalone findings/native-history-pinned-rpc-investigation.md.
+No services started, funds moved, limits raised or runtime changes made.
