@@ -13,3 +13,4 @@ emsdk_separate_review	PASS	history_projection_verifier scoped static review; too
 source_install_9dbb9ee	FAIL	Real Ubuntu retry546b2512-af26-41b2-9bdb-e4e8877bd93c built browser and native executable, then exit1: Go cannot stat inherited root-only cwd while building restic; no bridge services started
 restic_working_directory	PASS	Actual runuser hws-build from /root changed to own mktemp directory then go env GOMOD succeeded; fix uses existing absolute scratch path before go mod download
 restic_separate_review	PASS	history_projection_verifier; restic helper sha256=7908fd75c8609c0ef558cf2a201bd6159c23570b33d860d7f0f57f359e6833f2; full install remains pending
+funding_readme	PASS	history_projection_verifier read-only scoped review against Bootstrap.hs170-198; README sha256=f21955c58840519cc2d1beb3811a4efa5da1dfe296ce3856a4d61348f310f569; no deployment certification

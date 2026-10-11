@@ -73,6 +73,14 @@ changing it requires a reviewed reconfiguration; the updater changes code only.
 Rerun the source command with unchanged configuration to resume. Keep independent
 ledger backups: wallet keys alone do not recover pending transfers.
 
+### Fund startup fees
+
+When setup prints `Fund SOL fees at:`, send **0.01 SOL on Solana Mainnet** to
+that address in one operator-owned transfer. This pays for token-account creation
+and network fees. Wait for confirmation, then rerun the same installer command
+with the unchanged configuration; do not send again just because setup is retried.
+Add ECX and canonical wrapped ECX inventory only after initial startup completes.
+
 ## Update
 
 Rerunning `install.sh` resumes setup; use the separate updater for a new version.
