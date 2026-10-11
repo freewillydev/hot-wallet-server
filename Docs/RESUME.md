@@ -211,3 +211,9 @@ among148 dependencies, retaining bincode maintenance warning; details/hashes in
 DEPENDENCY-REVIEW.md and .audit/layout.tsv. Await plugin installation confirmation,
 then run whole-source review on the actual candidate including any completed
 payout changes. Keep Cabal/base reachability findings and production gate open.
+
+Original configuration permissions and atomic-copy checks are now implemented and
+verified in Ubuntu; prior next-step item is complete only for this scope. See
+DONE.md/.audit/layout.tsv. Next: complete whole-host installer/toolchain/service
+acceptance, while payout-policy choice and Codex Security installation are pending.
+No task VM/container remains. Public activation and financial release stay blocked.

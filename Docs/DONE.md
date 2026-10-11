@@ -218,3 +218,12 @@ installation has been requested through the app and no new scan was run.
 
 Fresh separate single_schema_callgraph review PASS for the refreshed report,
 source boundaries, frozen versions and advisory status; security gate remains open.
+
+## Private installation configuration (2026-10-10)
+
+PASS: original file/directory and saved-state permissions, bounded same-descriptor
+copy, atomic publication, unchanged retry and failed-copy recovery in Ubuntu24.04.
+Fresh separate single_schema_callgraph verified final source/harness/log hashes;
+see .audit/layout.tsv. +28 production lines, no new production files. Task-only VM
+and container deleted. These prefix checks do not certify full installation,
+power-loss durability or any financial/public-release gate.
