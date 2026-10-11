@@ -260,3 +260,10 @@ optional explorer fields retain the network-specific fallback. Solscan must name
 the configured mint; Orca validation checks host/address syntax, not liquidity or
 on-chain pool contents. Scope evidence is recorded in .audit/layout.tsv. This
 does not implement automatic owner sweeps or close payout/release gates.
+
+### Critical evaluator readability
+
+PASS (scoped): flatter dispatch and named local checkpoint steps preserve the gated
+authorization/signing sequence, cleanup and timeout. Separate source-equivalence
+review passed; the full local bridge-test suite passed on HEAD plus only this change.
+Evidence: Docs/.audit/layout.tsv. Production gates remain unchanged.
