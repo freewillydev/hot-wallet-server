@@ -13,3 +13,13 @@ size	PASS	Bridge.Operation.Internal235->228lines; library adds41-line module; no
 reference	PASS	Main.hs unchanged sha256=f1d0777a8d2fddd62881aa5d85f518884c9d4efb451480f1520a677ab2319ea2; original upstream6af7e73 remains clean
 production	FAIL	Scoped type-boundary integration only; payout/Ubuntu/manual-wallet/security/alerts/release-trust gates remain open
 independent_review	PASS	single_schema_audit reviewed staged diff sha256=8549f4c757898b157e018420ed5079c3dd3dbac9c8acc974a6f43c309b27e5aa; only verdict metadata appended
+refl_baseline	PASS	43276daccff2f8fa353e7b1a066b5604d27cbce3; library unchanged at d10f616
+refl_build	PASS	cabal --project-dir=build build all -w ghc-9.14.1 -j1 --offline --builddir=/tmp/hot-wallet-server-build; /tmp/hot-wallet-interpret-build.log sha256=f0ceeb2f62a5553c38f35c07dfe669b3f10d0018b094628c75eb26ba7e0728f5
+refl_properties	PASS	same Cabal options with test bridge-test --test-show-details=direct; 221 property outcomes; /tmp/hot-wallet-interpret-test.log sha256=676414535259a051a5dc62ba1818ca82bb2a9d9b08482c1fbd287ac5a0bf48c5
+refl_types	PASS	Docs/LOCAL-DEVELOPMENT.md capability commands, GHC9.14.1; combined capability positive control and nine intended rejections; /tmp/hot-wallet-interpret-types.log sha256=1feb1a505c5d78c057abdc83a09df9df2ac0d030f4a250b871aaf90bcdb32a9c
+refl_server	PASS	ECX_REBUILD_SERVER_ONLY=1 ECX_REBUILD_CANONICAL=1 ecx-store-check; disposable PG/executable/HTTP; /tmp/hot-wallet-interpret-server.log sha256=d652e9b2d59c32246013a8f168597fd18dda8b0908b8ff82f5704f93e3be2669
+refl_signer	PASS	ECX_REBUILD_TLS_ONLY=1 ECX_REBUILD_CANONICAL=1 ecx-store-check; real HTTPS/PG with public fixture keys only; /tmp/hot-wallet-interpret-tls.log sha256=be45fd71833b6b51506a86fe5de1b5f444390e05d0810db12f607d0a8d78100d
+refl_boundary	PASS	one evalCritical call retained; exact Program shared by authorize/evaluate; no changed key, signing, ledger or chain operation sequence
+refl_size_cleanup	PASS	production1247->1233lines across same2files; tests+6lines; no new production files; task PostgreSQL cluster stopped/removed; no remaining task compilers/test processes
+refl_production	FAIL	Scoped refactor only; offline contracts are not funded acceptance or completion of existing release gates
+refl_independent_review	PASS	current_schema_verifier reviewed staged diff sha256=44cd5d5267df3100cd713b104f7b9e9fd2468a246719d2cbdc91feca34171891; only verdict metadata appended

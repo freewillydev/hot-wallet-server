@@ -117,6 +117,10 @@ fullSuite = do
             wrongResult=interpret (SomeOperation (SignerAction $ PreparedSigning $ SignPrepared "deployment" "payment" 3))
               (Compile :: DSL (SignerCommand 'Critical ReplacementResult))
         in case (wrongSeverity,wrongResult) of (Nothing,Nothing)->True; _->False
+    , check "payload mismatch is rejected before inspecting command branches" $ once $ property $
+        let mismatch=interpret (SomeOperation (error "mismatched command forced" :: WorkerCommand 'Critical ()))
+              (Compile :: DSL (CustomerCommand 'Safe W.PublicConfiguration))
+        in case mismatch of Nothing->True; Just _->False
     , check "result equality determines both severity and operation" $ once $ property $
         case resultIndices (Refl :: Result 'Critical SignPrepared :~: Result 'Critical SignPrepared) of
           (Refl,Refl)->True

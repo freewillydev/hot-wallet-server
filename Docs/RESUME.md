@@ -166,3 +166,14 @@ remains untouched. Broader payout/installer/production gates above remain open.
 Fresh separate `single_schema_audit` passed staged diff
 `8549f4c757898b157e018420ed5079c3dd3dbac9c8acc974a6f43c309b27e5aa`;
 only verdict metadata was appended afterward.
+
+Follow-up: Operation.interpret now branches after Refl using combined Context
+constraints. Execution methods receive Program directly; command/compileOperation,
+the selector adapter and request reconstruction are gone. Both production files
+lose14lines total; six test lines add combined-capability and lazy-mismatch coverage.
+Build,221local property checks,nine compiler rejections and disposable PostgreSQL
+canonical-profile server/HTTPS signer contracts PASS. All temporary test processes
+are stopped. See DONE.md and the appended `.audit/severity.tsv` entries.
+Fresh separate `current_schema_verifier` passed staged diff
+`44cd5d5267df3100cd713b104f7b9e9fd2468a246719d2cbdc91feca34171891`;
+only verdict metadata was appended afterward.

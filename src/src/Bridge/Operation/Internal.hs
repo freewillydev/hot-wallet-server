@@ -28,9 +28,10 @@ data family Evaluation (severity :: Severity)
 class (Typeable caller,Typeable severity,Typeable op)
     => Execution (caller :: Caller) (severity :: Severity) (op :: Severity -> Type -> Type)
     | caller -> op, op -> caller where
-  command :: Typeable a => op severity a -> Program caller severity a
-  authorizeOperation :: Typeable a => Evaluation severity -> op severity a -> IO ()
-  evaluateOperation :: Typeable a => Evaluation severity -> op severity a -> IO a
+  authorizeOperation :: Evaluation severity -> Program caller severity a -> IO ()
+  evaluateOperation :: Evaluation severity -> Program caller severity a -> IO a
+
+type ExecutionContext caller severity a = (Typeable a, Execution caller severity (Command caller))
 
 data CustomerRead a where
   PublicConfig :: CustomerRead PublicConfiguration
@@ -99,7 +100,7 @@ data SignReplacement a where
 data SignPrepared a where
   SignPrepared :: Text -> Text -> Int -> SignPrepared PreparedResult
 
--- Closed signer instruction set, populated by the Execution.command instances.
+-- Closed signer instruction set, compiled only after the payload equality proof.
 data SigningOperation a where
   PreparedSigning :: SignPrepared a -> SigningOperation a
   ReplacementSigning :: SignReplacement a -> SigningOperation a
@@ -127,8 +128,8 @@ data Command (caller :: Caller) (severity :: Severity) a where
   CustomerQuery :: CustomerRead a -> Command 'Customer 'Safe a
   CustomerChange :: CustomerWrite a -> Command 'Customer 'Critical a
   OperatorQuery :: OperatorRead a -> Command 'Operator 'Safe a
-  OperatorChange :: (forall value. OperatorWrite value => value -> Program 'Operator 'Critical a) -> Command 'Operator 'Critical a
-  WorkerAction :: (forall value. WorkerOperations value => value -> Program 'Worker 'Critical a) -> Command 'Worker 'Critical a
+  OperatorChange :: OperatorWrite (OperatorCommand 'Critical a) => (forall value. OperatorWrite value => value -> Program 'Operator 'Critical a) -> Command 'Operator 'Critical a
+  WorkerAction :: WorkerOperations (WorkerCommand 'Critical a) => (forall value. WorkerOperations value => value -> Program 'Worker 'Critical a) -> Command 'Worker 'Critical a
   SignerAction :: SigningOperation a -> Command 'Signer 'Critical a
 
 type CustomerCommand = Command 'Customer
@@ -140,23 +141,20 @@ type SignerCommand = Command 'Signer
 data family Action (caller :: Caller) a
 
 -- Each constructor stores the same closed execution capability as its operation.
--- Caller/severity cannot be weakened when command constructs the DSL.
+-- Caller/severity cannot be weakened when the interpreter constructs the DSL.
 data Program (caller :: Caller) (severity :: Severity) a where
-  ReadOperator :: (Typeable a, Execution 'Operator 'Safe OperatorCommand) => OperatorRead a -> Program 'Operator 'Safe a
-  OperatorDSL :: (Typeable a, Execution 'Operator 'Critical OperatorCommand) => Action 'Operator a -> Program 'Operator 'Critical a
-  WorkerDSL :: (Typeable a, Execution 'Worker 'Critical WorkerCommand) => Action 'Worker a -> Program 'Worker 'Critical a
-  SigningDSL :: (Typeable a, Execution 'Signer 'Critical SignerCommand) => SigningOperation a -> Program 'Signer 'Critical a
-  ReadCustomer :: (Typeable a, Execution 'Customer 'Safe CustomerCommand) => CustomerRead a -> Program 'Customer 'Safe a
-  WriteCustomer :: (Typeable a, Execution 'Customer 'Critical CustomerCommand) => CustomerWrite a -> Program 'Customer 'Critical a
+  ReadOperator :: ExecutionContext 'Operator 'Safe a => OperatorRead a -> Program 'Operator 'Safe a
+  OperatorDSL :: ExecutionContext 'Operator 'Critical a => Action 'Operator a -> Program 'Operator 'Critical a
+  WorkerDSL :: ExecutionContext 'Worker 'Critical a => Action 'Worker a -> Program 'Worker 'Critical a
+  SigningDSL :: ExecutionContext 'Signer 'Critical a => SigningOperation a -> Program 'Signer 'Critical a
+  ReadCustomer :: ExecutionContext 'Customer 'Safe a => CustomerRead a -> Program 'Customer 'Safe a
+  WriteCustomer :: ExecutionContext 'Customer 'Critical a => CustomerWrite a -> Program 'Customer 'Critical a
 
 -- The library existential hides the command family. Its nominal capability
 -- indices retain caller, severity and result without a second request wrapper.
-class (Typeable caller, Typeable severity, Typeable a,
-       Outcome value ~ Program caller severity a)
-    => CompileOperation (caller :: Caller) (severity :: Severity) a value
+class CompileOperation (caller :: Caller) (severity :: Severity) a value
     | value -> caller severity a where
-  compileOperation :: value -> Program caller severity a
-  operationDSL :: value -> DSL value
+  operationDSL :: value -> OperationDSL (Program caller severity a) value
 
 -- Domain methods are real library capabilities on the hidden command payload.
 -- Other callers retain their small closed GADTs (notably the signer boundary).
@@ -166,38 +164,38 @@ type family DomainCaps (caller :: Caller) (severity :: Severity) :: [Type -> Con
   DomainCaps caller severity = '[]
 type PreparationCaps caller severity a = CompileOperation caller severity a ': DomainCaps caller severity
 -- The library owns the severity/caller/result-indexed existential. Selecting the
--- compilation DSL is pure; command produces Program only at explicit resolution.
+-- compilation DSL is pure; Program is produced only at explicit resolution.
 pending :: forall caller severity a value.
            (Operation value (PreparationCaps caller severity a),
             Capabilities (PreparationCaps caller severity a) value,
             Subset (PreparationCaps caller severity a) (PreparationCaps caller severity a))
         => value -> SomeOperationAt Program caller severity a
-pending value = prepareOperation selectDSL (prepare value)
- where
-  -- Only compilation methods are available here, even for worker/operator input.
-  selectDSL :: forall op declared. (Operation op declared, CompileOperation caller severity a op)
-            => op -> OperationDSL (Program caller severity a) op
-  selectDSL operation = OperationDSL (operationDSL operation)
+pending = prepareOperation operationDSL . prepare
 
 checkedOperation :: SomeOperationAt Program caller severity a -> Either Text (Program caller severity a)
 checkedOperation = maybe (Left "operation_dictionary_mismatch") Right . resolveOperation
 
-instance (Typeable a, Execution caller severity (Command caller))
+instance ExecutionContext caller severity a
     => CompileOperation caller severity a (Command caller severity a) where
-  compileOperation = command
-  operationDSL _ = Compile
+  operationDSL _ = OperationDSL Compile
 
-instance (Typeable a, Execution caller severity (Command caller),
+instance (ExecutionContext caller severity a,
           caps ~ PreparationCaps caller severity a, UniqueCapabilities caps)
     => Operation (Command caller severity a) caps where
-  type Context (Command caller severity a) = CompileOperation caller severity a (Command caller severity a)
+  type Context (Command caller severity a) =
+    (CompileOperation caller severity a (Command caller severity a), ExecutionContext caller severity a)
   type Outcome (Command caller severity a) = Program caller severity a
   data DSL (Command caller severity a) where
-    Compile :: CompileOperation caller severity a (Command caller severity a)
-      => DSL (Command caller severity a)
+    Compile :: Context (Command caller severity a) => DSL (Command caller severity a)
   interpret (SomeOperation (value :: actual)) Compile =
     case eqT @actual @(Command caller severity a) of
-      Just Refl -> Just (compileOperation value)
+      Just Refl -> Just $ case value of
+        CustomerQuery op -> ReadCustomer op
+        CustomerChange op -> WriteCustomer op
+        OperatorQuery op -> ReadOperator op
+        OperatorChange select -> select value
+        WorkerAction select -> select value
+        SignerAction op -> SigningDSL op
       Nothing -> Nothing
 
 -- Retain caller identity through dispatch; a critical customer operation cannot

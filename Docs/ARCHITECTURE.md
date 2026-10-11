@@ -59,30 +59,42 @@ its permissive/incomplete sketch types while retaining its constrained design:
 data Command caller severity a where
   CustomerQuery  :: CustomerRead a -> Command 'Customer 'Safe a
   CustomerChange :: CustomerWrite a -> Command 'Customer 'Critical a
-  WorkerAction :: (forall value. WorkerOperations value
+  WorkerAction :: WorkerOperations (WorkerCommand 'Critical a)
+               => (forall value. WorkerOperations value
                => value -> Program 'Worker 'Critical a)
                -> Command 'Worker 'Critical a
   -- Operator writes select OperatorWrite methods; signer leaves remain explicit.
 
-instance (Typeable a, Execution caller severity (Command caller),
+type ExecutionContext caller severity a =
+  (Typeable a, Execution caller severity (Command caller))
+
+instance (ExecutionContext caller severity a,
           caps ~ PreparationCaps caller severity a, UniqueCapabilities caps)
     => Operation (Command caller severity a) caps where
-  type Context (Command caller severity a) = CompileOperation caller severity a (Command caller severity a)
+  type Context (Command caller severity a) =
+    (CompileOperation caller severity a (Command caller severity a), ExecutionContext caller severity a)
   type Outcome (Command caller severity a) = Program caller severity a
   data DSL (Command caller severity a) where
-    Compile :: CompileOperation caller severity a (Command caller severity a)
-            => DSL (Command caller severity a)
+    Compile :: Context (Command caller severity a) => DSL (Command caller severity a)
   interpret (SomeOperation (value :: actual)) Compile =
     case eqT @actual @(Command caller severity a) of
-      Just Refl -> Just (compileOperation value)
+      Just Refl -> Just $ case value of
+        CustomerQuery op -> ReadCustomer op
+        CustomerChange op -> WriteCustomer op
+        OperatorQuery op -> ReadOperator op
+        OperatorChange select -> select value
+        WorkerAction select -> select value
+        SignerAction op -> SigningDSL op
       Nothing -> Nothing
 ```
 
 `Control.Operation` is imported unqualified. Its argument-free `Compile` selector
-carries the precise compilation constraint. Payload arguments occur once in the
-hidden `Command`; the interpreter proves its full type, then calls the specific
-`compileOperation` method. `eqT` compares payload types, including caller, severity
-and result; it does not compare dictionary values or authorize effects.
+carries the combined compilation and execution constraints. Payload arguments occur
+once in the hidden `Command`; only after proving its full type does interpretation
+branch into the six programs. Operator/worker constructors also carry their specific
+domain dictionary, so their branches invoke the selected capability method directly.
+`eqT` compares payload types, including caller, severity and result; it does not
+compare dictionary values or authorize effects.
 
 `Control.Operation.Severity` owns `Safe`, `Critical` and the opaque
 `SomeOperationAt program caller severity result` existential. Its four nominal
@@ -92,13 +104,12 @@ one, or changing its program/result. The bridge has no `Pending`/request wrapper
 operator capability. Their class methods select allowed programs without IO,
 keys or database connections.
 
-`pending` uses the library's `prepareOperation` to select `Compile`. Its explicitly
-typed selector sees only `Operation` and `CompileOperation`, even when packing a
-worker/operator payload. `OperationDSL` proves that the selected output is exactly
-`Program caller severity result`. Packing selects that DSL but does not interpret
-it. `checkedOperation` delegates to `resolveOperation`; the existing Operation
-instance compares payload types with `eqT`, then invokes `compileOperation` to
-produce the program. No evaluation environment enters these steps.
+`pending` passes `operationDSL` directly to the library's `prepareOperation`.
+That method requires only `CompileOperation` and returns `OperationDSL`, proving
+that its selected output is exactly `Program caller severity result`. Compilation
+and domain capabilities remain independently restrictable. Packing selects the
+DSL but does not interpret it. `checkedOperation` delegates to `resolveOperation`,
+which runs the instance above. No evaluation environment enters these steps.
 
 Capability visibility is not irreversible revocation or a sandbox: the library
 retains the canonical dictionaries for interpretation. Severity is classification,
@@ -115,7 +126,9 @@ Cabal's customer-api component exposes only the customer facade, with no runtime
 store or chain dependency. Review component boundaries as well as types.
 
 All six `Execution` instances live in `Critical.hs`, beside the safe and critical
-evaluators. Their methods implement concrete effects except local signer execution,
+evaluators. Their methods consume the compiled `Program` directly, with no
+`command`/`compileOperation` forwarding or reconstruction of the original request.
+Their methods implement concrete effects except local signer execution,
 which belongs directly to the gated critical evaluator. There is no
 `Interpreter` class or arbitrary environment/program execution instance. The core declares an opaque `Evaluation` data family; only `Critical.hs`
 defines its two concrete severity instances and can construct them. Safe resources
@@ -133,8 +146,11 @@ and operator pause retain their previous observation-only access. Customer and
 signer leaves remain small explicit GADTs; signer result constructors remain unique.
 Class implementations are checked with `-Werror=missing-methods`.
 
-Both evaluators use the private `Executable` view to recover `Instruction` and call `authorizeOperation`. Safe evaluation
-then calls `evaluateOperation`. Critical evaluation matches the four `SigningDSL`
+Both evaluators use the private `Executable` view to recover a payload-free
+`ExecutionProof` of the constructor's combined constraints. Authorization and
+evaluation receive the same compiled program; worker/operator selectors are not
+run again. Safe evaluation calls `authorizeOperation` then `evaluateOperation`.
+Critical evaluation authorizes, then matches the four `SigningDSL`
 leaves in a signer context, keeping each read/sign/recheck or checkpoint sequence
 inside its held gate; all other cases call `evaluateOperation`. The signer instance's
 method constructs only the worker's HTTPS client and refuses local signer execution.
@@ -874,8 +890,8 @@ separate release gates.
 | Haskell browser and Cabal asset hooks | `web/`, `build/` |
 | QuickCheck and PostgreSQL contracts | `test/Main.hs`, `test/StoreCheck.hs` |
 
-Servant handlers package typed requests; `Execution.command` resolves them into
-closed DSL instructions. Separate evaluators enforce safe/critical authority.
+Servant handlers package typed requests; `Operation.interpret` proves payload
+equality, then branches into the closed DSL. Separate evaluators enforce safe/critical authority.
 All application database access uses Opaleye inside specific closed operations.
 Only critical evaluation owns the signer client. The signer independently checks
 saved decisions and never broadcasts. The sections above provide the request-to-effect

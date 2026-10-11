@@ -69,23 +69,21 @@ import qualified Servant.Client as SC
 
 -- Evaluators recover their closed effect dictionary from the compiled grammar.
 -- This view is private to evaluator dispatch; it is never returned by a handler.
-data Instruction caller severity a where
-  Instruction :: (Typeable a, Execution caller severity op)
-    => op severity a -> Instruction caller severity a
+data ExecutionProof caller severity a where
+  ExecutionProof :: ExecutionContext caller severity a => ExecutionProof caller severity a
 
-instruction :: Program caller severity a -> Instruction caller severity a
-instruction (ReadOperator op) = Instruction (OperatorQuery op)
-instruction program@OperatorDSL{} = Instruction (OperatorChange (\_ -> program))
-instruction program@WorkerDSL{} = Instruction (WorkerAction (\_ -> program))
-instruction (ReadCustomer op) = Instruction (CustomerQuery op)
-instruction (WriteCustomer op) = Instruction (CustomerChange op)
-instruction (SigningDSL op) = Instruction (SignerAction op)
+executionProof :: Program caller severity a -> ExecutionProof caller severity a
+executionProof ReadOperator{} = ExecutionProof
+executionProof OperatorDSL{} = ExecutionProof
+executionProof WorkerDSL{} = ExecutionProof
+executionProof ReadCustomer{} = ExecutionProof
+executionProof WriteCustomer{} = ExecutionProof
+executionProof SigningDSL{} = ExecutionProof
 
 -- Recover the closed effect capability after restricted library preparation.
 -- Recover the dictionary from the closed DSL, never an unchecked request.
-pattern Executable :: forall caller severity a. ()
-  => forall op. (Typeable a, Execution caller severity op) => op severity a -> Program caller severity a
-pattern Executable op <- (instruction -> Instruction op)
+pattern Executable :: () => ExecutionContext caller severity a => Program caller severity a
+pattern Executable <- (executionProof -> ExecutionProof)
 {-# COMPLETE Executable #-}
 
 -- Safe interpretation has no writer, signer transport, keys or RPC manager.
@@ -113,7 +111,7 @@ evalSafe :: Evaluation 'Safe -> SomeOperationAt Program caller 'Safe a -> IO a
 evalSafe environment request=do
   program<-either reject pure (checkedOperation request)
   traceEvaluation program $ case program of
-    Executable op->authorizeOperation environment op >> evaluateOperation environment op
+    Executable->authorizeOperation environment program >> evaluateOperation environment program
 
 -- Fixed labels only: never inspect/show request arguments, credentials or results.
 -- Signer labels are the Handler/Result relation in test/formal/SignerPaths.tla.
@@ -152,9 +150,8 @@ traceEvaluation program work=case operationPath program of
 -- Ground instances own the closed effect grammar and concrete IO. Payload-type
 -- equality is checked by the library interpreter before these methods run.
 instance Execution 'Customer 'Safe CustomerCommand where
-  command (CustomerQuery op)=ReadCustomer op
   authorizeOperation _ _=pure ()
-  evaluateOperation (SafeEnvironment reader public cache) (CustomerQuery operation)=run operation
+  evaluateOperation (SafeEnvironment reader public cache) (ReadCustomer operation)=run operation
    where
     run :: CustomerRead a -> IO a
     run PublicConfig=do
@@ -179,9 +176,8 @@ instance Execution 'Customer 'Safe CustomerCommand where
     configured=maybe (reject "customer_configuration_unavailable") pure public
 
 instance Execution 'Operator 'Safe OperatorCommand where
-  command (OperatorQuery op)=ReadOperator op
   authorizeOperation _ _=pure ()
-  evaluateOperation (SafeEnvironment reader _ _) (OperatorQuery operation)=run operation
+  evaluateOperation (SafeEnvironment reader _ _) (ReadOperator operation)=run operation
    where
     run :: OperatorRead a -> IO a
     run NativeReviews=evalRead reader ReadNativeReviews
@@ -262,8 +258,8 @@ runProcess rpc reader process=do
 
 evalCritical :: MVar () -> Evaluation 'Critical -> Program caller 'Critical a -> IO a
 evalCritical gate environment operation=withMVar gate $ \_->traceEvaluation operation $ case operation of
-  Executable op->do
-    authorizeOperation environment op
+  Executable->do
+    authorizeOperation environment operation
     case (environment,operation) of
       -- Local key work is reachable only here, while the critical gate is held.
       (SignerEvaluation manager reader settings,SigningDSL signing)->do
@@ -325,7 +321,7 @@ evalCritical gate environment operation=withMVar gate $ \_->traceEvaluation oper
                         H.signSolanaSdk (signingLibrary settings) limits (signingKey settings) actual
                   SolanaReply <$> prepareSolanaSigned (S.solanaCall manager solana) sign limits saved
               verifySigningReply (N.nativeCall manager native) (N.profile native) config before reply)
-      _->evaluateOperation environment op
+      _->evaluateOperation environment operation
 
 -- Private resources, never callbacks or operations supplied by a caller.
 data CriticalEnvironment = CriticalEnvironment
@@ -347,18 +343,17 @@ evalWorker :: Typeable a => CriticalEnvironment
            -> (forall value. WorkerOperations value => value -> Program 'Worker 'Critical a) -> IO a
 evalWorker environment operation=do
   program<-either reject pure (checkedOperation $ workerRequest operation)
-  case program of Executable op->evaluateOperation (WorkerEvaluation environment) op
+  case program of Executable->evaluateOperation (WorkerEvaluation environment) program
 
 evaluateSigning :: Typeable a => CriticalEnvironment -> SigningOperation a -> IO a
 evaluateSigning environment operation=do
   program<-either reject pure (checkedOperation $ pending $ SignerAction operation)
-  case program of Executable op->evaluateOperation (WorkerEvaluation environment) op
+  case program of Executable->evaluateOperation (WorkerEvaluation environment) program
 
 instance Execution 'Signer 'Critical SignerCommand where
-  command (SignerAction op)=SigningDSL op
   authorizeOperation WorkerEvaluation{} _=reject "signer_operation_forbidden"
   authorizeOperation SignerEvaluation{} _=pure ()
-  evaluateOperation (WorkerEvaluation environment@(CriticalEnvironment _ _ _ _ endpoint _ _)) (SignerAction operation)=do
+  evaluateOperation (WorkerEvaluation environment@(CriticalEnvironment _ _ _ _ endpoint _ _)) (SigningDSL operation)=do
     require (paying environment) "observation_only"
     credentials<-signerCredentials endpoint
     certificate<-signerCertificate endpoint
@@ -388,12 +383,11 @@ instance Execution 'Signer 'Critical SignerCommand where
   evaluateOperation SignerEvaluation{} _=reject "signer_evaluator_required"
 
 instance Execution 'Customer 'Critical CustomerCommand where
-  command (CustomerChange op)=WriteCustomer op
   authorizeOperation (WorkerEvaluation environment) _=require (paying environment) "observation_only"
   authorizeOperation SignerEvaluation{} _=reject "signer_context_forbidden"
   evaluateOperation SignerEvaluation{} _=reject "signer_context_forbidden"
   evaluateOperation (WorkerEvaluation environment@(CriticalEnvironment rpc settings config _ _ reader writer))
-      (CustomerChange (Bridge.Operation.Internal.CreateOrder header request))=do
+      (WriteCustomer (Bridge.Operation.Internal.CreateOrder header request))=do
     c<-customer environment
     createCustomerOrder rpc settings config (customerPolicy c) (unsignedSdk c) (\n->evalWorker environment (\cap -> checkpointBackup cap n) >> freshIntake environment) reader writer header request
 
@@ -410,13 +404,10 @@ workerEffect allowed = WorkerDSL . WorkerEffect allowed
 instance OperatorOperations
 
 instance Execution 'Operator 'Critical OperatorCommand where
-  command request@(OperatorChange select)=select request
   authorizeOperation SignerEvaluation{} _=reject "signer_context_forbidden"
-  authorizeOperation (WorkerEvaluation environment) request=case command request of
-    OperatorDSL (OperatorEffect allowed _)->require (allowed || paying environment) "observation_only"
+  authorizeOperation (WorkerEvaluation environment) (OperatorDSL (OperatorEffect allowed _))=require (allowed || paying environment) "observation_only"
   evaluateOperation SignerEvaluation{} _=reject "signer_context_forbidden"
-  evaluateOperation (WorkerEvaluation environment) request=case command request of
-    OperatorDSL (OperatorEffect _ action)->action environment
+  evaluateOperation (WorkerEvaluation environment) (OperatorDSL (OperatorEffect _ action))=action environment
 
 instance OperatorWrite (OperatorCommand 'Critical result) where
   rebroadcastNative _ txid anchor reason = operatorEffect False $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) -> guarded environment $ do
@@ -683,13 +674,10 @@ instance OperatorWrite (OperatorCommand 'Critical result) where
     now<-floor <$> getPOSIXTime
     evalWrite writer (ResumeLedger now [("Native",N.nativeCheckpointHash native),("Solana",tokenOrigin settings),("SolanaOperating",operatingOrigin settings)] reviewed unsigned)
 instance Execution 'Worker 'Critical WorkerCommand where
-  command request@(WorkerAction select)=select request
   authorizeOperation SignerEvaluation{} _=reject "signer_context_forbidden"
-  authorizeOperation (WorkerEvaluation environment) request=case command request of
-    WorkerDSL (WorkerEffect allowed _)->require (allowed || paying environment) "observation_only"
+  authorizeOperation (WorkerEvaluation environment) (WorkerDSL (WorkerEffect allowed _))=require (allowed || paying environment) "observation_only"
   evaluateOperation SignerEvaluation{} _=reject "signer_context_forbidden"
-  evaluateOperation (WorkerEvaluation environment) request=case command request of
-    WorkerDSL (WorkerEffect _ action)->action environment
+  evaluateOperation (WorkerEvaluation environment) (WorkerDSL (WorkerEffect _ action))=action environment
 
 instance WorkerOperations (WorkerCommand 'Critical result) where
   checkpointForUpgrade _ = workerEffect False $ \environment@(CriticalEnvironment _ _ _ _ _ reader _) -> guarded environment $ do

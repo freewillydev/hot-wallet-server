@@ -140,3 +140,20 @@ is claimed; broader production gates remain FAIL.
 Independent `single_schema_audit`: scoped PASS for staged diff SHA256
 `8549f4c757898b157e018420ed5079c3dd3dbac9c8acc974a6f43c309b27e5aa`;
 only this verdict metadata was appended afterward.
+
+## Branching after payload equality (2026-10-10)
+
+PASS: `interpret` branches over all six commands only after `Refl`; its Context
+combines compilation and execution evidence. Execution methods consume the compiled
+Program directly. The command/compileOperation forwarders, selector adapter and
+Program-to-Command reconstruction are removed. Production source: Internal.hs
+228->226lines, Critical.hs1,019->1,007lines (14 fewer; no file added).
+Build-all and221local property checks pass, including rejection without forcing
+a mismatched payload. Combined-capability compilation and nine intended rejections
+pass. Disposable PostgreSQL canonical-profile server/TLS contracts pass with real
+HTTPS and fixture signing: authorization/rotation, serialization, changed-decision
+refusal, durable replay and checkpoint behavior. No live network/funds were used.
+Evidence is appended to `.audit/severity.tsv`; production gates remain FAIL.
+Fresh separate `current_schema_verifier`: scoped PASS for staged diff SHA256
+`44cd5d5267df3100cd713b104f7b9e9fd2468a246719d2cbdc91feca34171891`;
+only this verdict metadata was appended afterward.
