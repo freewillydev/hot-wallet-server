@@ -1,27 +1,34 @@
-Done means: hot-wallet-server repository with requested layout, typed record configuration, unattended install.sh, durable configurable customer payout rounds, accurate README and verified standalone checks plus independent PASS.
+# Production acceptance
 
-Historical source checkpoint: b14cec4c94f0fb6cf6da1e7f07e68ea92f227ba6 published
-on origin/main. Full committed-source bridge-test PASS (session8673). Separate
-read-only verifier PASS for test receipt and classification of all six findings
-in both the current-directory and 27-commit Gitleaks scans: only public hashes,
-checksums and test fixtures. This is reviewed-findings acceptance, not a
-zero-findings scan or production/security certification. Evidence in .audit/payout.tsv.
+**NOT READY.** This checklist supersedes the chronological status notes below.
+Application checkpoint: `240b974`; local acceptance recorded through `a80b7c5`.
+Public source publication is authorized; public service activation remains gated.
 
-All below currently PENDING/FAIL until evidence exists; do not mark finished early.
-- Scope/layout/provenance: server-only src/Docs/build, no token/pool executable, originalunchanged.
-- Config: bounded Read/Eq typedrecord, noShowsecrets/noeval, completevalidation, replaybinding.
-- Installer: noTTY/prompts, externalinputsmodularstrings, repeat-safe, Ubuntu sourcebootstrap.
-- Payouts: perassetnetthreshold+configurablehours, allreadyroundsnapshot, durablereplay,
-  noquoterepricing/noeffect onsettlement orsignedattemptrecovery, customersseepolicy.
-- Tests: Cabal + realdisposablePGroundcontracts + scriptsyntax + nosecretfiles.
-- Review: separatefreshread-only verifier scopedPASS.
-- GitHub: PUBLIC freewillydev/hot-wallet-server main matches final reviewed commit.
-  Public source visibility was explicitly confirmed by the user on 2026-10-10;
-  this does not authorize public activation of an unfinished live server.
+Implemented: server-only layout, typed record setup, current schema23, customer
+wrap/unwrap API, dedicated signer, configurable customer payout rounds, immediate
+refunds, owner scheduling, custom frontend and optional tunnel setup. Local checks
+prove their stated scopes, not production acceptance. Do not reimplement them to
+resolve older "unimplemented" notes below.
 
-This extraction does not certify production; existing security/manualwallet/alerts/
-release-trust/public-access gates remain open. No live deployment is authorized by
-this scoped work and no livecustodychanged.
+| Release requirement | Current evidence | Still required / dependency |
+| --- | --- | --- |
+| Local build and financial regression | PASS: full Cabal suite9216 and rebuilt default PostgreSQL/process/restic contract45304 on current application; prior payout/TLS modes recorded in RESUME | Rerun affected checks only after relevant changes; fixture RPC is not real-network proof. |
+| Native history and recovery | Projection fix has separate static PASS; 10,001-entry custody fixture556ms; actual daemon conflict capture tested earlier | Integrated current scanner/ledger recovery and sustained real-network load. Requires suitable synchronized node/host. Original history finding remains open. |
+| Current funded customer and owner flows | Local scheduling, signing, replay and accounting contracts pass; upstream funded receipts are historical | Current schema23 Signet/Devnet and betanet/Mainnet acceptance, both directions and owner payouts, with exact on-chain/ledger comparisons and no duplicate sends. |
+| Clean Ubuntu installation | Scoped helper/tunnel ARM64 checks pass; source installer exists | Full x86_64 fresh/repeat/interruption/reboot acceptance and dependency source-preservation checks. AWS credentials expired; local snapshot staging needs more disk. |
+| Independent backup and restore | Current local real-restic financial restore passes | Current funded restore on an independent host, key/attempt/ledger equality, source fencing and safe resumption. Do not count same-host fixtures as off-host acceptance. |
+| Customer wallet | Connection-free payment instructions and browser fixtures exist | Actual Solana Pay wallet-app signing, payment association, reload/error/refund acceptance. User deferred wallet availability. |
+| External alerts | Existing monitor/diagnostic evidence is scoped | User-selected destination, delivered failure/recovery notifications and independent outage detection. User deferred destination. |
+| Production signing trust | Review source published; no production trust established | Designated key holder, independently published/pinned public key, exact artifact verification and distribution acceptance. User deferred ownership. |
+| Independent security approval and activation | Standard scan and18-file diff complete; subsequent projection patch has scoped static PASS | Close native-history and dependency applicability gates, obtain final current-release verdict, then explicitly verify public-access policy before activation. A partial scan or scoped PASS is insufficient. |
+
+Next executable deployment step: restore authorized AWS access, inspect the existing
+funded deployment read-only, then provision an isolated acceptance host. Do not
+overwrite its ledger, reuse retired custody or treat old schema tests as current.
+No task VM or disposable PostgreSQL instance is currently left running. Details,
+source hashes and test scope are in [RESUME.md](RESUME.md) and the records below.
+
+## Historical verification records
 
 ## Scoped wallet-mode check (2026-10-10)
 

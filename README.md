@@ -5,8 +5,9 @@ in each direction**. Customers follow payment instructions; no wallet connection
 
 **Ubuntu 24.04 x86_64 · i3 or better · 8 GB RAM · 256 GB SSD · sudo · internet**
 
-**Under development:** unattended installation, payout scheduling and some config
-settings are unfinished. Keep public access off; see [remaining work](Docs/DONE.md).
+**Not production approved:** implementation and local tests are available, but
+deployment, real-wallet and security acceptance remain open. Keep public access
+off; see [remaining work](Docs/DONE.md).
 
 ## Configure
 
