@@ -12,6 +12,23 @@ version-specific evidence; results from earlier installers do not certify this o
 
 ## Packaged setup
 
+### Older installed versions
+
+An installed binary predating `update-settings` cannot parse updater settings.
+For that one transition, use the existing authenticated entry directly, with the
+independently trusted key, downloaded signed release, and original setup folder:
+
+```sh
+sudo python3 build/scripts/release-auth install /root/release-public.pem /root/new-release x86_64 -- update /var/lib/hot-wallet-server/.ecx-bridge
+```
+
+Use the actual original setup folder for your deployment. This retains the same
+signature/checkpoint/schema gates and never reinstalls custody. Afterward add
+`updatePublicKey`, `updateReleaseDirectory` and `updateSetupDirectory` to the
+protected Haskell record; subsequent updates use only `sudo ./build/update.sh`.
+
+### Fresh installation
+
 For a reviewed candidate already downloaded:
 
 ```sh

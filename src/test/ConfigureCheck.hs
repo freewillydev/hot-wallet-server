@@ -203,6 +203,8 @@ importContract parent executable key=do
         ,("solanaVerifierRpcUrl",show ("https://verifier.example.invalid"::String))
         ,("backupRepositoryUrl",show ("rest:https://backup.example.invalid/repository"::String))
         ,("backupPassword",show ("test-backup-password-only"::String)),("resticExecutable",show executable)
+        ,("updatePublicKey",show ("/root/release-public.pem"::String)),("updateReleaseDirectory",show ("/root/new-release"::String))
+        ,("updateSetupDirectory",show ("/var/lib/hot-wallet-server/.ecx-bridge"::String))
         ,("freshCustodyAttestation",show ("NEW_UNUSED_KEYS_WITH_NO_EXISTING_BRIDGE_LEDGER"::String))
         ,("initialFundingOwnership",show ("test owned initial SOL"::String))]
       record values="InstallConfig {"<>concat [separator<>name<>" = "<>value | ((name,value),separator)<-zip values ("":repeat ",")]<>"}"
@@ -228,6 +230,17 @@ importContract parent executable key=do
     imported<-InstallConfig.validateInstallConfig (read $ record values)
     require (imported==key) "valid_ipv6_configuration_rejected"
   savePrivate conf (B8.pack $ record fields)
+  (updateCode,updateOut,updateErr)<-readProcessWithExitCode executable ["update-settings",conf] ""
+  require (updateCode==ExitSuccess && secretFree(updateOut<>updateErr)
+    && (eitherDecodeStrict' (B8.pack updateOut) :: Either String Value)==Right
+      (object ["publicKey" .= ("/root/release-public.pem"::String),"release" .= ("/root/new-release"::String)
+        ,"setup" .= ("/var/lib/hot-wallet-server/.ecx-bridge"::String)])) "update_settings_projection_failed"
+  forM_ ["relative","/root/bad\npath"] $ \bad->do
+    let invalid=parent</>"invalid-update.conf"
+    savePrivate invalid (B8.pack $ record $ replace "updateReleaseDirectory" (show bad))
+    (code,stdout,stderr)<-readProcessWithExitCode executable ["update-settings",invalid] ""
+    require (code/=ExitSuccess && secretFree(stdout<>stderr)) "invalid_update_path_accepted"
+    removeFile invalid
   (first,out,err)<-invoke conf output
   require (first==ExitSuccess) "import_contract_first_install_failed"
   let privateFiles=[output</>name | name<-["install.conf","sources.json","bootstrap.json","setup.json","interface.json","hosting.json","backup.repository","backup.password"]]

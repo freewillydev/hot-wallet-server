@@ -1,19 +1,20 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 -- Installation input is data, parsed by Read; it is never evaluated as Haskell.
 -- Deliberately no Show instance: the record contains credentials and private keys.
-module InstallConfig (InstallConfig(..),readInstallConfig,validateInstallConfig) where
+module InstallConfig (InstallConfig(..),readInstallConfig,validateInstallConfig,updateSettings) where
 import Bridge.AdminKey (readPrivate)
 import Bridge.Domain (parseCoins,units)
 import Bridge.Error
 import Bridge.Identity (publicKey)
 import Bridge.RPC (independentHttps)
 import Bridge.NativeKey (validMainnetXpub)
-import Bridge.Wallet (nativeDescriptors)
+import Bridge.Wallet (nativeDescriptors,protectWalletProcess)
 import Control.Exception (catch)
 import Control.Monad (forM_)
 import Data.List (isPrefixOf,stripPrefix)
 import Data.Maybe (fromMaybe,isJust)
 import Data.IP (IP)
+import Data.Aeson (Value,object,(.=))
 import Crypto.Error (CryptoFailable(..))
 import qualified Crypto.PubKey.Ed25519 as Ed
 import qualified Data.ByteArray as BA
@@ -39,6 +40,7 @@ data InstallConfig = InstallConfig
   , solanaRpcUrl :: String, solanaVerifierRpcUrl :: String
   , backupRepositoryUrl :: String, backupPassword :: String
   , resticExecutable :: FilePath
+  , updatePublicKey :: FilePath, updateReleaseDirectory :: FilePath, updateSetupDirectory :: FilePath
   , freshCustodyAttestation :: String, initialFundingOwnership :: String
   } deriving (Read,Eq)
 
@@ -48,6 +50,17 @@ readInstallConfig file=do
   config<-either (const $ reject "invalid_haskell_install_record") pure (readEither $ B8.unpack bytes)
   _<-validateInstallConfig config
   pure(bytes,config)
+
+-- Export only non-secret update paths; never source/evaluate the record as shell.
+updateSettings :: FilePath -> IO Value
+updateSettings file=do
+  protectWalletProcess
+  (_,config)<-readInstallConfig file
+  let paths=[updatePublicKey config,updateReleaseDirectory config,updateSetupDirectory config]
+  forM_ paths $ \path->require (isAbsolute path && normalise path==path && length path<=4096
+    && all (\c->c>=' ' && c/='\DEL') path) "absolute_update_paths_required"
+  pure $ object ["publicKey" .= updatePublicKey config,"release" .= updateReleaseDirectory config
+    ,"setup" .= updateSetupDirectory config]
 
 -- Validate the entire input before creating any installation material. Return
 -- only the decoded Solana key bytes to the private configuration publisher.

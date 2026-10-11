@@ -4,6 +4,10 @@
 Application checkpoint: `240b974`; local acceptance recorded through `a80b7c5`.
 Public source publication is authorized; public service activation remains gated.
 
+Configuration-based updater: focused Cabal checks and separate static review PASS
+(see `.audit/installer-update.tsv`). `update.sh` takes no arguments; live upgrade
+acceptance is still pending. Older binaries need the documented bootstrap route.
+
 Implemented: server-only layout, typed record setup, current schema23, customer
 wrap/unwrap API, dedicated signer, configurable customer payout rounds, immediate
 refunds, owner scheduling, custom frontend and optional tunnel setup. Local checks

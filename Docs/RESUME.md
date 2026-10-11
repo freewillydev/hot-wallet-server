@@ -8,6 +8,12 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Implemented and checked
 
+- Updater now takes no arguments. Installed `update-settings` safely reads the
+  protected Haskell record and returns only the three update paths; wallet process
+  protections precede secret reads. Example/README updated. Older binaries need
+  the authenticated one-time bootstrap documented in INSTALL.md. Focused tests
+  and separate review passed; no live deployment or funds were changed.
+
 - 2026-10-11: `build/update.sh` authenticates a signed candidate and routes its
   `start` through the existing checkpointed upgrade lifecycle. Source and `.run`
   first setup create `/root/hot-wallet/server.conf` privately (700 directory,

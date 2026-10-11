@@ -4,6 +4,7 @@ module Main (main) where
 import Data.Version (showVersion)
 import qualified Paths_ecx_bridge as Package
 import Menu (launch)
+import qualified InstallConfig
 import Configure (configure,configureAdvanced,configureFile,start,startAdvanced,initializeNative)
 import qualified Bridge.Config as C
 import qualified Bridge.Fence as Fence
@@ -41,6 +42,7 @@ main=(getArgs >>= command) `catch` (\(BridgeError code)->
   command []=launch
   command [flag] | flag `elem` ["version","--version"] = putStrLn ("ecx-bridge " <> showVersion Package.version)
   command ["configure-file",input,directory]=configureFile input directory
+  command ["update-settings",file]=InstallConfig.updateSettings file >>= LBS.putStrLn . encode
   command ["configure"]=configure
   command ["configure","--advanced"]=configureAdvanced
   command ["initialize-native-wallet",directory]=initializeNative directory

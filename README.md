@@ -76,15 +76,21 @@ ledger backups: wallet keys alone do not recover pending transfers.
 ## Update
 
 Rerunning `install.sh` resumes setup; use the separate updater for a new version.
-Download the reviewed, signed release directory (`.run`, `release-index.json`,
-`release-index.sig`) and obtain its trusted public key independently:
+In `/root/hot-wallet/server.conf`, set `updatePublicKey` to the independently
+trusted release public key, `updateReleaseDirectory` to the downloaded signed
+release directory (`.run`, `release-index.json`, `release-index.sig`), and
+`updateSetupDirectory` to your original setup directory. Then run:
 
 ```sh
-sudo ./build/update.sh /root/release-public.pem /root/new-release /var/lib/hot-wallet-server/.ecx-bridge
+sudo ./build/update.sh
 ```
 
-The last path is your **original setup directory** (interactive installs normally
-use `/var/lib/ecx-bridge-setup/.ecx-bridge`). The updater verifies the signature,
+This requires an installed version supporting configuration-based updates. Older
+versions need the [one-time upgrade](Docs/INSTALL.md#older-installed-versions)
+first; add the three fields above to their configuration file.
+
+Interactive installs normally use `/var/lib/ecx-bridge-setup/.ecx-bridge` for the
+setup directory. The updater verifies the signature,
 checkpoints custody to backup, updates code and checks readiness before resuming.
 Keys, ledger and settings are retained. A changed schema is refused. After an
 interruption, rerun the same command; never delete the upgrade journal. This flow
