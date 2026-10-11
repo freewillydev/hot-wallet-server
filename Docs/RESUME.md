@@ -1062,3 +1062,22 @@ phase, which must still be run separately with both profiles.
 
 Both full Canonical/Devnet PG+HTTPS contracts also PASS on this source
 (session40286 exit0). Temporary PostgreSQL and process-test services cleaned.
+
+### Consolidated current-source local acceptance (2026-10-11)
+
+All 17 documented PostgreSQL modes have passing receipts on application source
+3113658: 14 modes in session70742 exit0, plus the three TLS modes from sessions
+28761/40286. The macOS harness adapts toolchain/build paths and the SDK suffix;
+this is not Ubuntu installation acceptance. The updated recipe clears all mode
+selectors and includes payout, complete-resume, cohort-residue and active-Native
+cases. Its schema reference is corrected from22 to23.
+
+The 1001-history case completed full refund/settlement/replay sequences, real
+encrypted restic restore and financial comparisons. Mean customer ReadOrder over
+ten reads was about18ms at one refund,28ms at100 and220ms at1001 on this host.
+These are local timings, not a concurrent production capacity guarantee. The
+separate history-progress case passed restart, stale CAS, rollback, contiguous
+checkpoint and duplicate-posting refusal. All14 harness modes returned exit0.
+The disposable PostgreSQL cluster and retained synthetic history backup were
+removed after shutdown; logs remain in the receipt's temporary evidence directory.
+No application change, live funds, public ingress or production gate waiver.
