@@ -1368,3 +1368,15 @@ Net+23 production lines/two existing files,+46 tests/one; no dependency/schema/A
 changes. Temporary PG removed; no live funds/deployment/public ingress changes.
 This supersedes the adjacent-only custody cache. Original finding remains OPEN
 for integrated real-network/load acceptance; all DONE production gates remain.
+
+### Custody load acceptance (2026-10-11)
+
+Expanded the existing distinct-history contract from257 to10,001 entries and
+replaced its fixed clock with monotonic elapsed seconds, retaining the production
+60-second freshness check. Real PostgreSQL verification took538ms; full default
+PG/process/backup contract session91468 exit0. Test-only net+3lines, no production
+changes. Evidence: Codex Security artifacts/native-custody-10001-pg.log, SHA256
+8c31430fa8c1f686f6bf999232b27bfc7ff9892d54a963f621e2cce7a9c4daa6.
+Temporary PG stopped/removed. No independent verdict or live-RPC acceptance is
+claimed. Ubuntu capacity rechecked: no Lima instance, AWS ecx-dev session expired;
+login approval requested. Full-install and other production gates remain open.

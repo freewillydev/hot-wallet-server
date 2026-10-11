@@ -3264,7 +3264,7 @@ custodyContract database store fixtures reader = do
       inspectAppeared action confirmations=inspect (pure 100) (pure ()) (appeared action confirmations) good Nothing settings
   expectStore "custody_native_history_advanced" (inspectAppeared (pure ()) 0)
   seed 0
-  let distinctIds=[T.justifyRight 64 '0' (T.pack $ show n) | n<-[3000..3256::Int]]
+  let distinctIds=[T.justifyRight 64 '0' (T.pack $ show n) | n<-[3000..13000::Int]]
       distinctHistory identifiers wallet method params=if method=="listsinceblock" then pure $ object
         ["lastblock" .= ("fixture-anchor"::T.Text)
         ,"transactions" .= [object ["txid" .= key,"confirmations" .= (0::Int)] | key<-identifiers]
@@ -3272,10 +3272,13 @@ custodyContract database store fixtures reader = do
        else nativeCall wallet method params
   forM_ distinctIds $ \key->fixture fixtures $ SeedTreasuryEvidence "Native" key "unconfirmed" "reference" 0 proof
   started<-getMonotonicTimeNSec
-  (_,_,distinctMatches,_)<-inspect (pure 100) (pure ()) (distinctHistory distinctIds) good Nothing settings
+  let elapsedClock=do
+        now<-getMonotonicTimeNSec
+        pure (100+fromIntegral ((now-started) `div` 1000000000))
+  (_,_,distinctMatches,_)<-inspect elapsedClock (pure ()) (distinctHistory distinctIds) good Nothing settings
   unless distinctMatches (fail "distinct custody history changed balances")
   finished<-getMonotonicTimeNSec
-  putStrLn $ "Native custody 257 distinct transactions: "<>show ((finished-started) `div` 1000000)<>" ms"
+  putStrLn $ "Native custody "<>show (length distinctIds)<>" distinct transactions: "<>show ((finished-started) `div` 1000000)<>" ms"
   forM_ [0,1,127,128,129] $ \count->do
     (_,_,matches,_)<-inspect (pure 100) (pure ()) (distinctHistory $ take count distinctIds) good Nothing settings
     unless matches (fail "custody batch boundary changed balances")
