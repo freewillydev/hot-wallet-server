@@ -424,6 +424,12 @@ against network saturation; hosting/network protection remains external.
 
 ## Restic security candidate
 
+`build/install.sh` provisions the exact reviewed binary automatically at
+`/usr/local/lib/hot-wallet-server/restic`, the default in `example.conf`. It builds
+as the unprivileged build account, checks the source/patch and final binary pins,
+and refuses to replace a different existing binary. Source builds and retries
+reuse the Go download/build caches. No backup credential is passed to the builder.
+
 The restic source is an external deployment dependency, not application code.
 Fetch `github.com/restic/restic@v0.19.1` using `go mod download -json` and verify its
 `Sum` against `build/assets/toolchains.json`. Apply `build/install/restic-security.patch` to a
@@ -431,7 +437,7 @@ separate writable copy of that verified source. From that copy, the reviewed ARM
 candidate was built with:
 
 ```sh
-GOTOOLCHAIN=go1.26.8 GOMAXPROCS=1 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -p=1 -mod=readonly -trimpath -tags=disable_grpc_modules -ldflags='-s -w' -o restic-patched ./cmd/restic
+GOTOOLCHAIN=go1.26.9 GOMAXPROCS=1 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -p=1 -mod=readonly -trimpath -tags=disable_grpc_modules -o restic-patched ./cmd/restic
 ```
 
 For x86-64 use `GOARCH=amd64`. Check the output against the matching pinned

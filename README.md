@@ -34,6 +34,7 @@ Separate fields with commas inside the braces. This is data read by Haskell's
 
 Supply the ECX recovery phrase, Solana base58 private key, two independent RPC
 URLs and backup settings. Keys are imported; missing or invalid keys stop setup.
+Keep the default `resticExecutable`; the installer provisions that reviewed backup tool.
 New wallets are generated only through interactive startup. Fresh installation
 requires unused custody; existing custody needs ledger restoration.
 

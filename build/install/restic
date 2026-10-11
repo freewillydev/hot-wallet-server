@@ -1,0 +1,38 @@
+#!/bin/sh
+# Build the reviewed backup dependency without custody input or root privileges.
+set -eu
+umask 077
+[ "$(id -u)" != 0 ] || { echo 'Refusing to build restic as root.' >&2; exit 1; }
+[ "$#" = 2 ] || { echo 'Usage: restic ABSOLUTE_CACHE_DIRECTORY ARCHITECTURE' >&2; exit 1; }
+case "$1" in /*) ;; *) exit 1;; esac
+case "$2" in aarch64) goarch=arm64;; x86_64) goarch=amd64;; *) exit 1;; esac
+support=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+pins="$support/../assets/toolchains.json"
+expected=$(jq -er --arg arch "$2" '."restic-reviewed"[$arch]' "$pins")
+hash() { openssl dgst -sha256 -r "$1" | cut -d' ' -f1; }
+mkdir -p "$1"
+output="$1/restic-$2"
+if [ -f "$output" ] && [ "$(hash "$output")" = "$expected" ]; then
+  printf '%s\n' "$output"
+  exit 0
+fi
+temporary=$(mktemp -d "$1/build.XXXXXXXX")
+trap 'rm -rf -- "$temporary"' EXIT
+trap 'exit 1' HUP INT TERM
+[ "$(hash "$support/restic-security.patch")" = "$(jq -er '."restic-reviewed".patchSha256' "$pins")" ] || exit 1
+GOTOOLCHAIN=$(jq -er '."restic-reviewed".go' "$pins")
+export GOTOOLCHAIN
+export GOMAXPROCS=1 GOMEMLIMIT=512MiB CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" GOFLAGS= GOWORK=off
+export GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org GONOSUMDB= GONOPROXY=
+go mod download -json "$(jq -er '."restic-reviewed".source' "$pins")" > "$temporary/module.json"
+[ "$(jq -er .Sum "$temporary/module.json")" = "$(jq -er '."restic-reviewed".sourceSum' "$pins")" ] || exit 1
+mkdir "$temporary/source"
+cp -R "$(jq -er .Dir "$temporary/module.json")/." "$temporary/source/"
+chmod -R u+w "$temporary/source"
+patch -d "$temporary/source" -p1 < "$support/restic-security.patch" >&2
+cd "$temporary/source"
+go build -p=1 -mod=readonly -trimpath -tags="$(jq -er '."restic-reviewed".tags' "$pins")" \
+  -o "$temporary/restic" ./cmd/restic
+[ "$(hash "$temporary/restic")" = "$expected" ] || { echo 'Restic build does not match reviewed checksum.' >&2; exit 1; }
+mv -f -- "$temporary/restic" "$output"
+printf '%s\n' "$output"

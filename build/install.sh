@@ -50,7 +50,7 @@ fi
 trap - EXIT HUP INT TERM
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends build-essential cmake jq curl git pkg-config libpq-dev libgmp-dev libffi-dev zlib1g-dev libssl-dev libncurses-dev xz-utils bzip2 unzip python3 openssl ca-certificates
+apt-get install -y --no-install-recommends build-essential cmake jq curl git pkg-config libpq-dev libgmp-dev libffi-dev zlib1g-dev libssl-dev libncurses-dev xz-utils bzip2 unzip python3 openssl ca-certificates golang-go patch
 # Build without root privileges. Toolchain setup is resumable and never sees config.
 account=hws-build
 if ! getent passwd "$account" >/dev/null; then
@@ -61,6 +61,8 @@ buildhome=$(getent passwd "$account" | cut -d: -f6)
 # Freeze one commit, and finish its archive before extracting anything. A new
 # commit gets a clean tree; retries reuse only a completely extracted tree.
 commit=$(git -c safe.directory="$root" -C "$root" rev-parse --verify 'HEAD^{commit}')
+pins=$(git -c safe.directory="$root" -C "$root" show "$commit:build/assets/toolchains.json")
+expected_restic=$(printf '%s\n' "$pins" | jq -er --arg arch "$(uname -m)" '."restic-reviewed"[$arch]')
 source="$buildhome/source-$commit"
 archive=$(mktemp "$state/source.XXXXXXXX")
 trap 'rm -f -- "$archive"' EXIT
@@ -91,6 +93,26 @@ runuser -u "$account" -- sh -c '
 rm -f -- "$archive"
 trap - EXIT HUP INT TERM
 runuser -u "$account" -- sh "$source/build/install/toolchain"
+restic=$(runuser -u "$account" -- sh "$source/build/install/restic" "$buildhome/restic" "$(uname -m)")
+backup_tools=/usr/local/lib/hot-wallet-server
+[ ! -L "$backup_tools" ] || { echo 'Backup tool directory must not be a symlink.' >&2; exit 1; }
+install -d -o root -g root -m 0755 "$backup_tools"
+pending=$(mktemp "$backup_tools/.restic.XXXXXXXX")
+trap 'rm -f -- "$pending"' EXIT
+trap 'exit 1' HUP INT TERM
+install -o root -g root -m 0600 "$restic" "$pending"
+printf '%s  %s\n' "$expected_restic" "$pending" | sha256sum --check --status
+if [ -e "$backup_tools/restic" ] || [ -L "$backup_tools/restic" ]; then
+  [ -f "$backup_tools/restic" ] && [ ! -L "$backup_tools/restic" ] &&
+    [ "$(stat -c '%u:%a:%h' "$backup_tools/restic")" = 0:755:1 ] && cmp -s "$pending" "$backup_tools/restic" || {
+    echo 'Existing restic differs; reviewed update required.' >&2; exit 1;
+  }
+  rm -f -- "$pending"
+else
+  chmod 0755 "$pending"
+  mv -T -- "$pending" "$backup_tools/restic"
+fi
+trap - EXIT HUP INT TERM
 binary=$(runuser -u "$account" -- sh -c 'cd "$1"; export PATH="$HOME/.ghcup/bin:$HOME/.cargo/bin:$PATH"; ghcup run --ghc 9.14.1 --cabal 3.16.1.0 -- cabal --project-dir=build list-bin exe:ecx-bridge' sh "$source")
 [ -x "$binary" ] || { echo 'Cabal did not produce the server executable.' >&2; exit 1; }
 "$binary" configure-file "$state/server.conf" "$state/.ecx-bridge" </dev/null

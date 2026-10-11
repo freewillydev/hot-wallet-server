@@ -217,3 +217,15 @@ verified in Ubuntu; prior next-step item is complete only for this scope. See
 DONE.md/.audit/layout.tsv. Next: complete whole-host installer/toolchain/service
 acceptance, while payout-policy choice and Codex Security installation are pending.
 No task VM/container remains. Public activation and financial release stay blocked.
+
+## Reviewed backup-tool provisioning (2026-10-10)
+
+PASS for this scope: install.sh builds restic without root or custody credentials,
+verifies the unchanged source/patch/binary pins, and publishes verified bytes in a
+root-owned directory. Existing different binaries are refused; matching retries
+preserve the installed file. Both ARM64 and x86-64 builds reproduce the exact
+pinned checksums. The build recipe uses Go1.26.9 without stripping debug symbols.
+Ubuntu24.04 x86-64 checks passed actual execution, root0755 publication, unchanged
+retry, altered-byte/permission refusal and symlink refusal. See .audit/layout.tsv.
+This is dependency build/publication acceptance, not a full fresh-host installation
+or independent security approval. Financial and public-release gates remain open.

@@ -227,3 +227,15 @@ Fresh separate single_schema_callgraph verified final source/harness/log hashes;
 see .audit/layout.tsv. +28 production lines, no new production files. Task-only VM
 and container deleted. These prefix checks do not certify full installation,
 power-loss durability or any financial/public-release gate.
+
+## Reviewed backup-tool provisioning (2026-10-10)
+
+PASS for this scope: install.sh builds restic without root or custody credentials,
+verifies the unchanged source/patch/binary pins, and publishes verified bytes in a
+root-owned directory. Existing different binaries are refused; matching retries
+preserve the installed file. Both ARM64 and x86-64 builds reproduce the exact
+pinned checksums. The build recipe uses Go1.26.9 without stripping debug symbols.
+Ubuntu24.04 x86-64 checks passed actual execution, root0755 publication, unchanged
+retry, altered-byte/permission refusal and symlink refusal. See .audit/layout.tsv.
+This is dependency build/publication acceptance, not a full fresh-host installation
+or independent security approval. Financial and public-release gates remain open.
