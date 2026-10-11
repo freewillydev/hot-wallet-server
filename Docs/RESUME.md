@@ -146,9 +146,23 @@ Current-schema backup/restore and payment invariants pass actual isolated Postgr
 contracts; all local build/test logs are in `.audit/current-schema.tsv`.
 Config examples are deleted; example.conf remains. No live data changed.
 
-Latest user request: integrate Safe/Critical indexing into operation-capabilities
-and use its existential directly instead of the bridge's Pending wrapper. The
-bridge currently pins library main1c93d57; indexed-pipeline branch2d7bb4a is separate
-unmerged work and must not be overwritten. Preserve caller/result nominal types,
-closed command families, payload eqT in the Operation instance, pure preparation
-and one critical evaluator entry. Finish the schema commit before changing this.
+## Library-owned severity existential
+
+The bridge now pins operation-capabilities0.1.1.0 at
+`d10f6168cddcb01e89517546dd5c4b8749829c3e` (published tag v0.1.1.0).
+`Control.Operation.Severity` owns Safe/Critical and the opaque nominal
+`SomeOperationAt program caller severity result`. Pending is removed; signer
+handlers and evaluator boundaries use the library type directly. Plan only selects
+safe/critical routing. The closed Program, eqT check, unique result families,
+runtime authorization and single critical call site are retained.
+
+Build-all, full bridge-test (220 property checks), positive capability compilation
+and nine expected compiler rejections PASS. Library checks: eight properties with
+10,000 cases each and 21 expected compiler rejections PASS; separate library review
+passed before publication. Commands/hashes are in `.audit/severity.tsv`.
+Internal.hs shrank235->228lines; the reusable library adds one41-line module.
+No live custody, service or schema changed. The unrelated indexed-pipeline branch
+remains untouched. Broader payout/installer/production gates above remain open.
+Fresh separate `single_schema_audit` passed staged diff
+`8549f4c757898b157e018420ed5079c3dd3dbac9c8acc974a6f43c309b27e5aa`;
+only verdict metadata was appended afterward.

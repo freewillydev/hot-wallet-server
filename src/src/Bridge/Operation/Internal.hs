@@ -1,7 +1,7 @@
 {-# LANGUAGE FlexibleInstances, DataKinds, FunctionalDependencies, RoleAnnotations, TypeFamilies, TypeFamilyDependencies, ConstraintKinds, UndecidableSuperClasses, TypeApplications, ScopedTypeVariables, RankNTypes, QuantifiedConstraints, UndecidableInstances #-}
 {-# OPTIONS_GHC -Werror=incomplete-patterns #-}
 -- Closed grammar and capability contract. Handler selections cannot supply IO.
-module Bridge.Operation.Internal where
+module Bridge.Operation.Internal (module Bridge.Operation.Internal, Severity(..), SomeOperationAt) where
 
 import Data.Aeson (ToJSON,FromJSON(..),genericParseJSON,defaultOptions,Options(..))
 import GHC.Generics (Generic)
@@ -9,13 +9,12 @@ import Bridge.Domain (Asset,Amount)
 import Bridge.Wire
 import Data.Kind (Type,Constraint)
 import Data.Typeable (Typeable,eqT)
-import Data.Proxy (Proxy(..))
 import Data.Type.Equality ((:~:)(Refl))
 import Control.Operation
+import Control.Operation.Severity
 import Data.Text (Text)
 import Data.Int (Int64)
 
-data Severity = Safe | Critical
 data Caller = Customer | Signer | Worker | Operator
 
 -- All four callers have exactly one operation family. Severity is an index of
@@ -166,28 +165,22 @@ type family DomainCaps (caller :: Caller) (severity :: Severity) :: [Type -> Con
   DomainCaps 'Worker 'Critical = '[WorkerOperations]
   DomainCaps caller severity = '[]
 type PreparationCaps caller severity a = CompileOperation caller severity a ': DomainCaps caller severity
--- Servant needs a partially applied Type -> Type constructor, hence this
--- zero-cost newtype rather than an unsaturated type synonym. The existential
--- and its capability evidence belong entirely to the library.
-newtype Pending caller severity a = Pending (SomeOperationWith
-  (PreparationCaps caller severity a) (PreparationCaps caller severity a))
-type role Pending nominal nominal nominal
-
-pending :: (Operation value (PreparationCaps caller severity a),
+-- The library owns the severity/caller/result-indexed existential. Selecting the
+-- compilation DSL is pure; command produces Program only at explicit resolution.
+pending :: forall caller severity a value.
+           (Operation value (PreparationCaps caller severity a),
             Capabilities (PreparationCaps caller severity a) value,
             Subset (PreparationCaps caller severity a) (PreparationCaps caller severity a))
-        => value -> Pending caller severity a
-pending = Pending . prepare
+        => value -> SomeOperationAt Program caller severity a
+pending value = prepareOperation selectDSL (prepare value)
+ where
+  -- Only compilation methods are available here, even for worker/operator input.
+  selectDSL :: forall op declared. (Operation op declared, CompileOperation caller severity a op)
+            => op -> OperationDSL (Program caller severity a) op
+  selectDSL operation = OperationDSL (operationDSL operation)
 
--- The generic compilation boundary sees only CompileOperation. It receives no
--- evaluation environment and cannot call Execution methods. Interpretation is
--- explicit and total: a mismatched existential is rejected, never cast or forced.
-checkedOperation :: forall caller severity a. Pending caller severity a -> Either Text (Program caller severity a)
-checkedOperation (Pending operations) = do
-  compilation <- either (const $ Left "operation_capability_mismatch") Right $
-    pipeline (Restrict (Proxy @'[CompileOperation caller severity a])) operations
-  withCapabilities (\value -> maybe (Left "operation_dictionary_mismatch") Right
-    (interpret (forgetCapabilities compilation) (operationDSL value))) compilation
+checkedOperation :: SomeOperationAt Program caller severity a -> Either Text (Program caller severity a)
+checkedOperation = maybe (Left "operation_dictionary_mismatch") Right . resolveOperation
 
 instance (Typeable a, Execution caller severity (Command caller))
     => CompileOperation caller severity a (Command caller severity a) where
@@ -210,8 +203,8 @@ instance (Typeable a, Execution caller severity (Command caller),
 -- Retain caller identity through dispatch; a critical customer operation cannot
 -- be substituted with a critical operator or signer operation as grammar grows.
 data Plan (caller :: Caller) a where
-  SafePlan :: Pending caller 'Safe a -> Plan caller a
-  CriticalPlan :: Pending caller 'Critical a -> Plan caller a
+  SafePlan :: SomeOperationAt Program caller 'Safe a -> Plan caller a
+  CriticalPlan :: SomeOperationAt Program caller 'Critical a -> Plan caller a
 
 type role Plan nominal nominal
 safe :: (Typeable a, Execution 'Customer 'Safe CustomerCommand) => CustomerRead a -> Plan 'Customer a
@@ -226,7 +219,7 @@ operatorRead :: (Typeable a, Execution 'Operator 'Safe OperatorCommand) => Opera
 operatorRead=SafePlan . pending . OperatorQuery
 
 workerRequest :: (Typeable a, Execution 'Worker 'Critical WorkerCommand, WorkerOperations (WorkerCommand 'Critical a))
-              => (forall value. WorkerOperations value => value -> Program 'Worker 'Critical a) -> Pending 'Worker 'Critical a
+              => (forall value. WorkerOperations value => value -> Program 'Worker 'Critical a) -> SomeOperationAt Program 'Worker 'Critical a
 workerRequest select = pending (WorkerAction select)
 
 -- Pure HTTP/control assembly carries these closed instance requirements.

@@ -1,0 +1,15 @@
+check	status	evidence
+baseline	PASS	29b589f80cd2555d92a56135cbafae84b33812a2
+library_pin	PASS	d10f6168cddcb01e89517546dd5c4b8749829c3e; remote main and v0.1.1.0 verified; actual Cabal plan agrees
+library_build	PASS	cabal build all -w ghc-9.14.1 -j1 --offline --constraint='QuickCheck ==2.18.0.0' --builddir=/tmp/operation-severity-build; /tmp/operation-severity-build.log sha256=5e15d70458b7cf3dd10f14692748e437a252258944253e1c7f4d930d0b787b5b
+library_properties	PASS	same options with cabal test all --test-show-details=direct; 8x10000; /tmp/operation-severity-test.log sha256=edb0321ced3f28abb3ec6fad6b859e02f4242648b67529b92446d561d8ac9ba0
+library_types	PASS	GHC=ghc-9.14.1 bash test/check-capabilities.sh; 21 expected compiler rejections; /tmp/operation-severity-types.log sha256=93b56f71006f2d7bb295748e7b7d2810fbf837a6e82ff5cd42749f0f625b109e
+library_review	PASS	current_schema_verifier reviewed staged diff sha256=f9db577019a261d875dfc2408870bc7fdf976d8ea5022ad6e36ebdaf052f4a4a; published unchanged
+bridge_build	PASS	cabal --project-dir=build build all -w ghc-9.14.1 -j1 --builddir=/tmp/hot-wallet-server-build; /tmp/hot-wallet-severity-build.log sha256=36b20582289ecc6c44b2faa3d836935185e6351fc28d379fb508f51251dbc24f
+bridge_properties	PASS	cabal --project-dir=build test bridge-test -w ghc-9.14.1 -j1 --offline --builddir=/tmp/hot-wallet-server-build --test-show-details=direct; 220 property checks; /tmp/hot-wallet-severity-test.log sha256=a6fdeabc1206126cc5164aa8668aaa7598f8f10946f343c0759cbe912c29a592
+bridge_types	PASS	Docs/LOCAL-DEVELOPMENT.md capability commands with pinned package0.1.1.0; positive control and9expected rejections inspected; /tmp/hot-wallet-severity-types.log sha256=1feb1a505c5d78c057abdc83a09df9df2ac0d030f4a250b871aaf90bcdb32a9c
+runtime_boundary	PASS	sole Bridge evalCritical call remains in runProcess; no modified authentication, signing, persistence or chain IO sequence
+size	PASS	Bridge.Operation.Internal235->228lines; library adds41-line module; no new process
+reference	PASS	Main.hs unchanged sha256=f1d0777a8d2fddd62881aa5d85f518884c9d4efb451480f1520a677ab2319ea2; original upstream6af7e73 remains clean
+production	FAIL	Scoped type-boundary integration only; payout/Ubuntu/manual-wallet/security/alerts/release-trust gates remain open
+independent_review	PASS	single_schema_audit reviewed staged diff sha256=8549f4c757898b157e018420ed5079c3dd3dbac9c8acc974a6f43c309b27e5aa; only verdict metadata appended

@@ -136,8 +136,8 @@ in [RELEASE-REVIEW.md](RELEASE-REVIEW.md#final-review-artifacts).
 
 ## operation-capabilities
 
-The Haskell library is pinned to commit `1c93d574cc48d4a8446c390e119b8fa04c93a659`
-of freewillydev/operation-capabilities, version0.1.0.0. Its MIT copyright and license
+The Haskell library is pinned to commit `d10f6168cddcb01e89517546dd5c4b8749829c3e`
+of freewillydev/operation-capabilities, version0.1.1.0. Its MIT copyright and license
 are retained in [the bundled notice](third-party/operation-capabilities/LICENSE).
 It depends only on base. The bridge uses checked interpretation, not its partial
 `execute` convenience function.

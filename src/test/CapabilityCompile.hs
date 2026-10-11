@@ -24,7 +24,7 @@ hiddenWorker = Stage (\value -> queuePayment value "transaction" `seq` Right val
 #endif
 #ifdef BAD_IO
 injectIO :: (Execution 'Worker 'Critical WorkerCommand, WorkerOperations (WorkerCommand 'Critical ()))
-         => IO () -> Pending 'Worker 'Critical ()
+         => IO () -> SomeOperationAt Program 'Worker 'Critical ()
 injectIO action = workerRequest (\_ -> action)
 #endif
 
@@ -37,19 +37,19 @@ widen :: Pipeline (PreparationCaps 'Customer 'Safe ()) '[] (PreparationCaps 'Cus
 widen = Restrict (Proxy @(PreparationCaps 'Customer 'Safe ()))
 #endif
 #ifdef BAD_CALLER
-wrongCaller :: Pending 'Customer 'Critical a -> Pending 'Signer 'Critical a
+wrongCaller :: SomeOperationAt Program 'Customer 'Critical a -> SomeOperationAt Program 'Signer 'Critical a
 wrongCaller = id
 #endif
 #ifdef BAD_SEVERITY
-wrongSeverity :: Pending 'Customer 'Safe a -> Pending 'Customer 'Critical a
+wrongSeverity :: SomeOperationAt Program 'Customer 'Safe a -> SomeOperationAt Program 'Customer 'Critical a
 wrongSeverity = id
 #endif
 #ifdef BAD_RESULT
-wrongResult :: Pending 'Signer 'Critical PreparedResult -> Pending 'Signer 'Critical ReplacementResult
+wrongResult :: SomeOperationAt Program 'Signer 'Critical PreparedResult -> SomeOperationAt Program 'Signer 'Critical ReplacementResult
 wrongResult = id
 #endif
 
 #ifdef BAD_COERCE
-coerceCaller :: Pending 'Customer 'Critical a -> Pending 'Signer 'Critical a
+coerceCaller :: SomeOperationAt Program 'Customer 'Critical a -> SomeOperationAt Program 'Signer 'Critical a
 coerceCaller = coerce
 #endif

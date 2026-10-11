@@ -109,7 +109,7 @@ cachedPublicReport reader cache now=modifyMVar cache $ \saved->do
         && maybe False (\at->at<=now && now-at<=60) (W.reportCustodyAt value)}
   pure(Just(stamp,report),aged <$> report)
 
-evalSafe :: Evaluation 'Safe -> Pending caller 'Safe a -> IO a
+evalSafe :: Evaluation 'Safe -> SomeOperationAt Program caller 'Safe a -> IO a
 evalSafe environment request=do
   program<-either reject pure (checkedOperation request)
   traceEvaluation program $ case program of
@@ -239,7 +239,7 @@ runProcess rpc reader process=do
   -- The only critical dispatch call site. It cannot escape this service lifetime.
   -- Each OS process owns its own gate; the two processes share no mutable state.
   gate<-newMVar ()
-  let dispatch :: forall caller a. Pending caller 'Critical a -> IO a
+  let dispatch :: forall caller a. SomeOperationAt Program caller 'Critical a -> IO a
       dispatch request=do
         program<-either reject pure (checkedOperation request)
         evalCritical gate environment program
@@ -1013,7 +1013,7 @@ refreshSource environment@(CriticalEnvironment rpc settings config _ _ reader wr
 
 -- The caller owns this lifetime (run it alongside HTTP with structured concurrency).
 -- Async cancellation and database failures escape; they are never retried as work.
-runWorkerLoop :: (forall a. Pending 'Worker 'Critical a -> IO a) -> IO ()
+runWorkerLoop :: (forall a. SomeOperationAt Program 'Worker 'Critical a -> IO a) -> IO ()
 runWorkerLoop evaluate=forever $ do
   evaluate (workerRequest runWorkerCycle) `catch` (\(BridgeError code)->hPutStrLn stderr ("worker: "<>T.unpack code))
   threadDelay 15000000

@@ -66,7 +66,7 @@ fullSuite = do
           _->False
     , check "signer trace labels match the formal path/result relation" $ once $ property $
         let prepared :<|> replacement :<|> draft :<|> checkpoint=signingServer ()
-            label :: Pending caller severity a -> Maybe (T.Text,T.Text,T.Text)
+            label :: SomeOperationAt Program caller severity a -> Maybe (T.Text,T.Text,T.Text)
             label request=either (const Nothing) operationPath (checkedOperation request)
         in [label (prepared ("deployment","payment",3)),label (replacement ("deployment",7))
            ,label (draft ("deployment","parent",good $ amount 2)),label (checkpoint ("deployment",9))]
@@ -81,7 +81,7 @@ fullSuite = do
               ,typeRep(Proxy @(Context (OperatorCommand 'Critical ())))
               ,typeRep(Proxy @(Context (WorkerCommand 'Critical ())))
               ,typeRep(Proxy @(Context (SignerCommand 'Critical ())))]
-            select :: Pending caller severity a -> T.Text
+            select :: SomeOperationAt Program caller severity a -> T.Text
             select request=case checkedOperation request of
               Left _->"mismatch"
               Right operation->case operation of

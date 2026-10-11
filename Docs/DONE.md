@@ -124,3 +124,19 @@ for staged diff SHA256 `07fcc04827636d27f34f97f02cd2006a2cdf0a62dd07e74063e7447e
 only this verdict metadata was added afterward. Overall production/payout/Ubuntu
 installation gates remain FAIL. Old migration-based
 bundles and changed schema hashes refuse automatic upgrade.
+
+## Library-owned severity existential (2026-10-10)
+
+PASS: build-all and the full local bridge-test suite against library0.1.1.0 at
+`d10f6168cddcb01e89517546dd5c4b8749829c3e`. The bridge's Pending wrapper is removed;
+the library's opaque nominal SomeOperationAt carries program/caller/severity/result.
+The original closed grammar, eqT proof, unique signer outputs, runtime checks and
+sole critical dispatch call remain. Existing HTTP dispatch/transport checks pass.
+One positive and nine negative compilation checks passed with the expected
+capability/type diagnostics. Library tests independently passed80,000 cases and
+21 compiler rejection checks; separate library review passed before publication.
+Evidence: `.audit/severity.tsv`. No new funded, PostgreSQL or Ubuntu acceptance
+is claimed; broader production gates remain FAIL.
+Independent `single_schema_audit`: scoped PASS for staged diff SHA256
+`8549f4c757898b157e018420ed5079c3dd3dbac9c8acc974a6f43c309b27e5aa`;
+only this verdict metadata was appended afterward.

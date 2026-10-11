@@ -102,11 +102,11 @@ checks=sequence
         Nothing->counterexample "SDK contract check exceeded 120 seconds" False
   , check "worker loop backs off after policy errors and propagates shutdown" $ once $ ioProperty $ do
       calls<-newIORef (0::Int)
-      let refuse :: forall a. Pending 'Worker 'Critical a -> IO a
+      let refuse :: forall a. SomeOperationAt Program 'Worker 'Critical a -> IO a
           refuse request=either reject pure (checkedOperation request) >>= \case
             WorkerDSL _->modifyIORef' calls (+1) >> reject "offline_loop_contract"
             _->fail "loop dispatched unexpected operation"
-          stop :: forall a. Pending 'Worker 'Critical a -> IO a
+          stop :: forall a. SomeOperationAt Program 'Worker 'Critical a -> IO a
           stop _=throwIO ThreadKilled
       waited<-timeout 100000 (runWorkerLoop refuse)
       count<-readIORef calls
@@ -235,7 +235,7 @@ checks=sequence
           result=SignedAttempt "fixture-id" "fixture-bytes" "fixture-proof" Nothing
           quantity=either (error . T.unpack) id (D.amount 2)
           unsigned=W.NativeDraft "fixture-psbt" (W.NativeTx "fixture-id" 2 0 [] []) [] quantity
-          evaluate :: forall a. Pending 'Signer 'Critical a -> IO a
+          evaluate :: forall a. SomeOperationAt Program 'Signer 'Critical a -> IO a
           evaluate request=either reject pure (checkedOperation request) >>= \case
             SigningDSL (CheckpointSigning (CheckpointCustody identity sequenceNo))->do
               modifyIORef' calls (<>[(identity,"checkpoint",fromIntegral sequenceNo)])

@@ -21,7 +21,7 @@ results belong in RELEASE-REVIEW; they are not assumptions that new code is safe
 
 ```mermaid
 flowchart TD
-  API["API.hs: pure Servant handler"] --> Request["Plan / Pending → library interpret → Program"]
+  API["API.hs: pure Servant handler"] --> Request["Plan / SomeOperationAt → library interpret → Program"]
   Request --> Safe["evalSafe: authorized reads"]
   Request --> Dispatch["runProcess: sole evalCritical call"]
   Dispatch --> Critical["evalCritical: authorize + concrete operation"]
@@ -51,9 +51,9 @@ Read it before changing the operation boundary. The production grammar corrects
 its permissive/incomplete sketch types while retaining its constrained design:
 
 ```haskell
--- The library supplies the existential and nominal capability indices.
-newtype Pending caller severity a = Pending (SomeOperationWith
-  (PreparationCaps caller severity a) (PreparationCaps caller severity a))
+-- The library supplies severity and the indexed existential directly.
+-- Signer handlers use this partially applied carrier:
+-- SomeOperationAt Program 'Signer 'Critical
 
 -- One closed payload type fixes caller, severity and result together.
 data Command caller severity a where
@@ -84,28 +84,32 @@ hidden `Command`; the interpreter proves its full type, then calls the specific
 `compileOperation` method. `eqT` compares payload types, including caller, severity
 and result; it does not compare dictionary values or authorize effects.
 
-`Pending` is a zero-cost newtype required by Servant's partially applied
-`Type -> Type` handler parameter. It contains the library's `SomeOperationWith`,
-not another custom existential. Its nominal indices prevent caller, severity or
-result coercion. `PreparationCaps` contains `CompileOperation` and, for critical
-worker/operator requests, the actual `WorkerOperations` or `OperatorWrite` class.
-For example, `workerRequest (\cap -> queuePayment cap txid)` selects an allowed
-method without supplying IO, keys or a database connection. A stage constrained by
-`WorkerOperations` can use worker methods; it cannot use operator methods.
+`Control.Operation.Severity` owns `Safe`, `Critical` and the opaque
+`SomeOperationAt program caller severity result` existential. Its four nominal
+indices prevent coercing a customer into a signer, a safe operation into a critical
+one, or changing its program/result. The bridge has no `Pending`/request wrapper.
+`PreparationCaps` still contains `CompileOperation` and the applicable worker or
+operator capability. Their class methods select allowed programs without IO,
+keys or database connections.
 
-`checkedOperation` narrows the visible row to `CompileOperation` before its terminal
-`withCapabilities` step. It hands the canonical existential to the library's
-`interpret`, whose `eqT` check chooses the matching compiled result. These are
-visible dictionary restrictions, not irreversible revocation or sandboxing:
-`forgetCapabilities` intentionally retains canonical capability evidence for
-interpretation. Financial authorization still belongs to the evaluators.
+`pending` uses the library's `prepareOperation` to select `Compile`. Its explicitly
+typed selector sees only `Operation` and `CompileOperation`, even when packing a
+worker/operator payload. `OperationDSL` proves that the selected output is exactly
+`Program caller severity result`. Packing selects that DSL but does not interpret
+it. `checkedOperation` delegates to `resolveOperation`; the existing Operation
+instance compares payload types with `eqT`, then invokes `compileOperation` to
+produce the program. No evaluation environment enters these steps.
+
+Capability visibility is not irreversible revocation or a sandbox: the library
+retains the canonical dictionaries for interpretation. Severity is classification,
+not financial authorization; concrete evaluators still enforce that policy.
 
 The compiler emits the closed `Program` effect grammar. Its six constructors retain
 the precise execution constraints and leaf result types. This separates the
 library's pure compilation DSL from concrete IO without copying business rules.
 `Plan caller a` contains a safe or critical pending operation. Customer handlers
 have `ServerT CustomerAPI (Plan 'Customer)`; signer handlers use
-`ServerT SigningAPI (Pending 'Signer 'Critical)`. Servant's hoist compiles/evaluates
+`ServerT SigningAPI (SomeOperationAt Program 'Signer 'Critical)`. Servant's hoist compiles/evaluates
 the existential; only the concrete result is serialized. Handlers select constrained methods; they cannot supply an IO callback. Customer order creation confers no operator or signer authority.
 Cabal's customer-api component exposes only the customer facade, with no runtime,
 store or chain dependency. Review component boundaries as well as types.
