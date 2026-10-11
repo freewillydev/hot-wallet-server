@@ -1336,3 +1336,19 @@ files, +23 test lines; no module/dependency/schema/API additions. Disposable PG
 stopped and removed; no funds/deployment/public access changed. Finding remains
 OPEN: real-node long-history/conflict/reorg acceptance and wider release gates
 remain; nonadjacent proofs still reread and a custody timeout still pauses.
+
+### Actual daemon conflict RPC (2026-10-11)
+
+Pinned ECX31.1 ca64033c binary, isolated/network-disabled regtest: received then
+reorged/double-spent output becomes confirmations=-1, details=[], no blockhash,
+walletconflicts=[]; removed history retains it. Initial harness wrongly expected
+a known conflict ID; corrected assertion and repeat run PASS (session33590).
+Current production NativeHistory parses the real captures through HTTP, including
+the removed entry and compact zero-conflict count (session99098 PASS). Existing
+recovery fixture now matches the absent blockhash; complete bridge-test PASS
+(session42042). No production code changed; test net +5 lines in one file.
+Both disposable nodes/wallets removed; user node and funds untouched. Evidence:
+Codex Security findings/native-daemon-conflict-checkpoint.md and its listed logs,
+helpers and public captures. This is actual-daemon RPC compatibility, not public
+Signet/Betanet or integrated scanner/ledger recovery acceptance; those gates and
+the large-history deadline finding remain OPEN.

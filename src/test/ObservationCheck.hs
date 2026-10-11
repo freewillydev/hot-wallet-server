@@ -290,10 +290,15 @@ nativeChecks=do
   sequence
     [ check "native source loss requires matching scanner/wallet conflict, absent mempool and spent output" $ once $ ioProperty $ do
         let position=object ["height" .= (20::Int),"hash" .= tip]
-            source depth=deposit {W.depositConfirmations=max 0 depth,W.depositEligible=depth>=3}
-            evidence depth=("saved-hash",object ["anchor" .= tip,"proof" .= object ["confirmations" .= (depth::Int)]])
-            transactionAt depth=replace ["details"] (toJSON [detail | depth>=0]) $
+            anchor depth=if depth<0 then "unconfirmed" else tip
+            source depth=deposit {W.depositAnchor=anchor depth,W.depositConfirmations=max 0 depth,W.depositEligible=depth>=3}
+            evidence depth=("saved-hash",object ["anchor" .= anchor depth,"proof" .= object ["confirmations" .= (depth::Int)]])
+            -- Pinned ECX daemon capture: negative receive has neither a blockhash
+            -- nor details; walletconflicts can also be empty in the receiver.
+            transactionAt depth=withoutOldBlock depth $ replace ["details"] (toJSON [detail | depth>=0]) $
               replace ["lastprocessedblock"] position $ replace ["confirmations"] (toJSON (depth::Int)) transaction
+            withoutOldBlock depth (Object fields) | depth<0=Object (KM.delete "blockhash" fields)
+            withoutOldBlock _ value=value
             call depth _ method params=case method of
               "gettransaction"->pure (transactionAt depth)
               "getmempoolentry"->if depth<0 then reject "rpc_error_-5" else pure $ object ["vsize" .= (120::Int)]
