@@ -26,7 +26,14 @@ fi
 . "$HOME/.local/share/ecx-emsdk/emsdk_env.sh"
 ghcup config add-release-channel cross
 emconfigure ghcup install ghc javascript-unknown-ghcjs-9.12.2
-export ECX_GHC_JS="$HOME/.ghcup/bin/javascript-unknown-ghcjs-ghc-9.12.2"
+# Use the installed toolchain directory, not GHCup's optional active symlinks.
+# Cabal's browser hook needs the matching ghc-pkg beside this compiler.
+ECX_GHC_JS=$(ghcup whereis ghc javascript-unknown-ghcjs-9.12.2)
+[ -x "$ECX_GHC_JS" ] && [ -x "$(dirname -- "$ECX_GHC_JS")/javascript-unknown-ghcjs-ghc-pkg" ] || {
+  echo 'GHC JavaScript compiler or matching package tool is missing.' >&2
+  exit 1
+}
+export ECX_GHC_JS
 export ECX_EMSDK="$HOME/.local/share/ecx-emsdk"
 ghcup run --ghc 9.14.1 --cabal 3.16.1.0 -- cabal --project-dir=build update
 ghcup run --ghc 9.14.1 --cabal 3.16.1.0 -- cabal --project-dir=build build exe:ecx-bridge -j1

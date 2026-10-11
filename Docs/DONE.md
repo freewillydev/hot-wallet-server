@@ -180,3 +180,12 @@ checks. The targeted configure contract PASSes; no chain or services were used.
 Separate single_schema_callgraph PASS for source diff SHA256
 `d7605419c9d508443d53404892225b3d9077a52f5afb137ee729f5b71294ecbe`.
 Evidence: `.audit/layout.tsv`. Payout and production gates remain open.
+
+## Installer compiler discovery (2026-10-10)
+
+PASS for the scoped GHC JavaScript discovery correction: use the pinned installed
+compiler directory reported by GHCup, and require its matching executable package
+tool before building. Shell syntax and isolated shell checks cover spaces in paths,
+failed lookup, missing compiler and non-executable package tool. Separate read-only
+single_schema_callgraph review PASS; see .audit/layout.tsv. No Ubuntu installation
+or production acceptance is implied. No live service or custody was changed.
