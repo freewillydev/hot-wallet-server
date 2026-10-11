@@ -892,7 +892,7 @@ checkRebroadcast saved facts = do
 -- Cleanup and expiry remain distinct evidence. Releasing earned-fee reserves
 -- permits only completed wholly unsigned cleanup; preparation may also accept
 -- the independently proved and approved expiry of exactly one saved attempt.
-data GenerationEnd = OpenGeneration | UnsignedCleanup Bool | SolanaRetired Text Bool Bool deriving (Eq,Show)
+data GenerationEnd = OpenGeneration | UnsignedCleanup (Maybe Text) Bool | SolanaRetired Text Bool Bool deriving (Eq,Show)
 successorGeneration :: Bool -> [(Int64,GenerationEnd)] -> [(Text,Int64)] -> Maybe Int
 successorGeneration includeExpired rows attempts
   | null rows || length rows>8 || map fst rows/=[0..fromIntegral(length rows)-1] = Nothing
@@ -900,7 +900,7 @@ successorGeneration includeExpired rows attempts
   | otherwise = Nothing
  where
   permitted (generation,ending)=case ending of
-    UnsignedCleanup done->done && all ((/=generation).snd) attempts
+    UnsignedCleanup draft done->draft==Nothing && done && all ((/=generation).snd) attempts
     SolanaRetired txid expired approved->includeExpired && expired && approved
       && filter ((==generation).snd) attempts==[(txid,generation)]
     OpenGeneration->False

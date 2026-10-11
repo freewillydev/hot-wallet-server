@@ -441,7 +441,7 @@ checks = sequence
              ,checkRebroadcast saved facts {rebroadcastReview=("changed",fst review,snd review)}===Left "native_rebroadcast_not_missing"]
   , check "shared generation history keeps unsigned cleanup separate from proved approved expiry" $
       forAll (chooseInt (1,8)) $ \count -> forAll (vectorOf count arbitrary) $ \expired ->
-        let rows=[(fromIntegral g,if retired then SolanaRetired (T.pack $ show g) True True else UnsignedCleanup True)
+        let rows=[(fromIntegral g,if retired then SolanaRetired (T.pack $ show g) True True else UnsignedCleanup Nothing True)
                  | (g,retired)<-zip [0::Int ..] expired]
             attempts=[(T.pack $ show g,fromIntegral g) | (g,True)<-zip [0::Int ..] expired]
         in conjoin [successorGeneration True rows attempts===Just count
@@ -449,10 +449,12 @@ checks = sequence
              ,successorGeneration True rows (attempts<>[("future",fromIntegral count)])===Nothing
              ,successorGeneration True (rows<>rows) attempts===Nothing
              ,successorGeneration True ((0,OpenGeneration):drop 1 rows) attempts===Nothing
-             ,successorGeneration True ((0,UnsignedCleanup False):drop 1 rows) attempts===Nothing
+             ,successorGeneration True ((0,UnsignedCleanup Nothing False):drop 1 rows) attempts===Nothing
+             ,conjoin [successorGeneration allowExpiry ((0,UnsignedCleanup (Just draft) True):drop 1 rows) attempts===Nothing
+                      | allowExpiry<-[False,True],draft<-["signed-compatible-draft","", "null"]]
              ,successorGeneration True ((0,SolanaRetired "0" True False):drop 1 rows) attempts===Nothing
              ,successorGeneration True ((0,SolanaRetired "0" False True):drop 1 rows) attempts===Nothing
-             ,successorGeneration True ((0,UnsignedCleanup True):drop 1 rows) (("signed",0):attempts)===Nothing]
+             ,successorGeneration True ((0,UnsignedCleanup Nothing True):drop 1 rows) (("signed",0):attempts)===Nothing]
   ]
  where
   check name test=putStrLn name >> quickCheckWithResult stdArgs {maxSuccess=300} test

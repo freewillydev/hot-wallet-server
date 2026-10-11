@@ -294,3 +294,17 @@ Tests used disposable Ubuntu 24.04 socket and service fixtures, not a real node.
 This supersedes the managed-path portion of the native RPC finding above; external
 node authentication, real-node/full-install acceptance and the overall production
 security gate remain open. Initial standalone-client quiescence remains required.
+
+### Historical cancellation successor guard
+
+PASS (scoped): every historical cancelled generation must have no saved draft
+before it can permit a successor or earned-reserve release. A completed cleanup
+and absent attempt are insufficient. Full isolated bridge-test passed; disposable
+PostgreSQL default contracts and separate complete-native-resume refusal passed.
+The latter retains exact resume and unchanged ledger/reserve assertions without
+unsafe fixture cleanup. Expiry/cancellation fixtures now use genuinely undrafted
+work. Production source has no net added lines. Evidence is in .audit/layout.tsv.
+
+Still OPEN: audit/quarantine already-created historical successors or released
+reserves; implement safe recovery of complete drafts with unknown signing outcome.
+These tests are local contracts, not funded-chain or whole-production acceptance.

@@ -86,7 +86,7 @@ import qualified Data.Text as T
 import qualified Database.PostgreSQL.Simple as PG
 import Database.PostgreSQL.Simple.Types (Identifier(..))
 import qualified Opaleye as O
-import System.Exit (ExitCode(..))
+import System.Exit (ExitCode(..),exitSuccess)
 import System.Environment (getEnv,lookupEnv,getEnvironment)
 
 main :: IO ()
@@ -970,39 +970,40 @@ ledgerMain = do
         expectStore "scanners_not_fresh" (evalWrite writer $ ResumeLedger 161 origins [] Nothing)
         evalRead reader ReadState >>= check . ledgerPaused
         evalRead reader ReadBalances >>= check . (==beforeResume)
-        -- Isolate resume from the unrelated review orders seeded below.
-        let resumeKey=digest "native-preparation-resume-contract"
-            identifier="fee:"<>resumeKey
-        fixture fixtures RefreshCustody
-        void $ evalWrite writer (ReserveFees 100 resumeKey Native (money 10) "recipient" "resume contract")
-        fixture fixtures ReadyIntake
-        void $ evalWrite writer (PreparePayment 100 identifier (money 5) "{}")
-        evalWrite writer (SaveDraft identifier 0 "{\"fixture\":1}")
-        prepared<-evalRead reader (ReadPreparation identifier)
-        work<-evalRead reader ReadNativeLockWork
-        check (work==Just(NativeLockWork prepared False []))
-        evalWrite writer (Pause "unknown native signing outcome")
-        fixture fixtures RefreshCustody
-        held<-evalRead reader ReadBalances
-        expectStore "unresolved_intents_require_review" (evalWrite writer $ ResumeLedger 100 origins [] Nothing)
-        forM_ work $ \saved->do
-          forM_ [prepared {preparedDraft=Just "changed"},prepared {preparedGeneration=1}] $ \changed->
-            expectStore "resume_preparation_changed" (evalWrite writer $ ResumeLedger 100 origins [] (Just saved {lockPreparation=changed}))
-          expectStore "resume_preparation_changed" (evalWrite writer $ ResumeLedger 100 origins [] (Just saved {lockCancelling=True}))
-        evalWrite writer (ResumeLedger 100 origins [] work)
-        evalRead reader ReadState >>= check . not . ledgerPaused
-        evalRead reader (ReadPreparation identifier) >>= check . (==prepared)
-        evalRead reader ReadBalances >>= check . (==held)
-        -- This synthetic fixture never called a signer; clean up via closed DSL.
-        evalWrite writer (Pause "resume fixture cleanup")
-        fixture fixtures RefreshCustody
-        evalWrite writer (BeginCancellation prepared 100 "fixture cleanup" "{}")
-        expectStore "resume_preparation_changed" (evalWrite writer $ ResumeLedger 100 origins [] work)
-        evalWrite writer (FinishCancellation prepared "fixture cleanup" "{}")
-        fixture fixtures RefreshCustody
-        void $ evalWrite writer (CancelFees resumeKey "fixture cleanup")
-        evalRead reader ReadBalances >>= check . (==beforeResume)
-        putStrLn "PASS: native preparation resume preserves exact work and refuses changed or cancelling evidence"
+        completeDraft<-(==Just "1") <$> lookupEnv "ECX_REBUILD_COMPLETE_RESUME_ONLY"
+        when completeDraft $ do
+          let resumeKey=digest "native-preparation-resume-contract"
+              identifier="fee:"<>resumeKey
+          fixture fixtures RefreshCustody
+          void $ evalWrite writer (ReserveFees 100 resumeKey Native (money 10) "recipient" "resume contract")
+          fixture fixtures ReadyIntake
+          void $ evalWrite writer (PreparePayment 100 identifier (money 5) "{}")
+          evalWrite writer (SaveDraft identifier 0 "{\"fixture\":1}")
+          prepared<-evalRead reader (ReadPreparation identifier)
+          work<-evalRead reader ReadNativeLockWork
+          check (work==Just(NativeLockWork prepared False []))
+          evalWrite writer (Pause "unknown native signing outcome")
+          fixture fixtures RefreshCustody
+          held<-evalRead reader ReadBalances
+          expectStore "unresolved_intents_require_review" (evalWrite writer $ ResumeLedger 100 origins [] Nothing)
+          forM_ work $ \saved->do
+            forM_ [prepared {preparedDraft=Just "changed"},prepared {preparedGeneration=1}] $ \changed->
+              expectStore "resume_preparation_changed" (evalWrite writer $ ResumeLedger 100 origins [] (Just saved {lockPreparation=changed}))
+            expectStore "resume_preparation_changed" (evalWrite writer $ ResumeLedger 100 origins [] (Just saved {lockCancelling=True}))
+          evalWrite writer (ResumeLedger 100 origins [] work)
+          evalRead reader ReadState >>= check . not . ledgerPaused
+          evalRead reader (ReadPreparation identifier) >>= check . (==prepared)
+          evalRead reader ReadBalances >>= check . (==held)
+          evalWrite writer (Pause "unknown signer reply")
+          fixture fixtures RefreshCustody
+          unchanged<-evalRead reader ReadState
+          expectStore "preparation_signature_outcome_unknown" (evalRead reader $ ReadUnsignedPreparation identifier)
+          expectStore "preparation_signature_outcome_unknown" (evalWrite writer $ BeginCancellation prepared 100 "fixture cleanup" "{}")
+          expectStore "fee_withdrawal_payment_exists" (evalWrite writer $ CancelFees resumeKey "fixture cleanup")
+          evalRead reader ReadBalances >>= check . (==held)
+          evalRead reader ReadState >>= check . (==unchanged)
+          putStrLn "PASS: isolated complete native draft resumes exactly and refuses cleanup without releasing reserves"
+          exitSuccess
       fixture fixtures SeedOrders
       let auth="Bearer "<>T.replicate 64 "0"
       hidden <- evalRead reader (ReadOrder auth "hidden")
@@ -3610,9 +3611,10 @@ expiryContract fixtures reader writer=do
   repeated<-evalRead reader ReadState
   check (ledgerSequence repeated==ledgerSequence approved)
   expectStore "retry_approval_conflict" (evalWrite writer $ ApproveSolanaRetry 110 expired "different" proof)
-  next<-prepare identifier
-  check (preparedGeneration next==1 && savedPayment(preparedView next)==savedPayment(preparedView prepared))
-  -- A mixed history of proved expiry and unsigned cancellation remains bounded.
+  ready
+  next<-evalWrite writer (PreparePayment 110 identifier (money 20) "{}")
+  check (preparedGeneration next==1 && preparedDraft next==Nothing && savedPayment(preparedView next)==savedPayment(preparedView prepared))
+  -- A mixed history of proved expiry and undrafted cancellation remains bounded.
   paused
   evalWrite writer (BeginCancellation next 110 "unsigned retry" "{}")
   evalWrite writer (FinishCancellation next "unsigned retry" "{}")
@@ -4306,8 +4308,7 @@ restorationContract fixtures reader writer=do
   evalWrite writer (ApproveSolanaRetry 110 expired "covered retry" expiryProof)
   ready
   second<-evalWrite writer (PreparePayment 110 key (money 10) "{}")
-  check (preparedGeneration second==1)
-  evalWrite writer (SaveDraft key 1 "{}")
+  check (preparedGeneration second==1 && preparedDraft second==Nothing)
   unsigned<-evalRead reader (ReadUnsignedPreparation key)
   evalWrite writer (Pause "cancel covered retry")
   fixture fixtures RefreshCustody

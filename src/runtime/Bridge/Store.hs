@@ -2585,22 +2585,22 @@ retryGeneration :: PG.Connection -> Text -> IO (Maybe Int)
 retryGeneration=nextGeneration True
 nextGeneration :: Bool -> PG.Connection -> Text -> IO (Maybe Int)
 nextGeneration includeExpired c identifier = do
-  rows<-O.runSelect c $ O.limit 9 $ O.orderBy (O.asc (\(g,_,_)->g)) $ do
-    (key,g,_,_,retired,cancelled)<-S.workPreparations
+  rows<-O.runSelect c $ O.limit 9 $ O.orderBy (O.asc (\(g,_,_,_)->g)) $ do
+    (key,g,_,draft,retired,cancelled)<-S.workPreparations
     O.where_ (key O..== O.sqlStrictText identifier)
-    pure (g,retired,cancelled)
-    :: IO [(Int64,Maybe Text,Int64)]
+    pure (g,draft,retired,cancelled)
+    :: IO [(Int64,Maybe Text,Maybe Text,Int64)]
   attempts<-O.runSelect c $ do
     (tx,key,_,g,_,_)<-S.workAttempts
     O.where_ (key O..== O.sqlStrictText identifier)
     pure (tx,g)
     :: IO [(Text,Int64)]
-  if null rows || length rows>8 || map (\(g,_,_)->g) rows/=[0..fromIntegral(length rows)-1]
+  if null rows || length rows>8 || map (\(g,_,_,_)->g) rows/=[0..fromIntegral(length rows)-1]
     then pure Nothing else do
-      endings<-forM rows $ \(g,retired,cancelled)->(g,) <$> case (retired,cancelled) of
+      endings<-forM rows $ \(g,draft,retired,cancelled)->(g,) <$> case (retired,cancelled) of
         (Nothing,1)->do
           done<-readCancellation c identifier (fromIntegral g)
-          pure $ UnsignedCleanup (case done of Just(_,_,True)->True; _->False)
+          pure $ UnsignedCleanup draft (case done of Just(_,_,True)->True; _->False)
         (Just txid,0) | includeExpired->do
           expired<-expiryProof c txid
           approved<-retryReason c txid

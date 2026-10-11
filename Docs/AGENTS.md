@@ -65,3 +65,9 @@ Wallet generation is restricted to interactive startup. Record-based setup must
 validate and preserve supplied ECX/Solana keys; never add missing-key generation
 fallbacks. Test mixed-mode and interrupted-import refusal when changing this flow.
 Docs/DONE.md is the authoritative acceptance checklist; pending checks stay FAIL.
+
+Cancellation verification requires both the ordinary ecx-store-check PostgreSQL
+contract and ECX_REBUILD_COMPLETE_RESUME_ONLY=1 on a separate fresh disposable
+contract database. The latter exits after exact complete-draft resume and refusal
+checks; it is not a substitute for the full contract. Never run fixture commands
+on a live ledger. Clear unrelated test-mode environment selectors before running.

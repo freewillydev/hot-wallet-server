@@ -273,3 +273,13 @@ See .audit/layout.tsv for exact evidence. No live wallet/service/funds touched.
 Next: real-node/full-install acceptance and remaining cancellation/release gates;
 keep public access off. This does not resolve external node transport or arbitrary
 privileged firewall changes. Unrelated payout/schema work remains unpublished.
+
+### Cancellation verification follow-up
+
+Historical successor admission now checks raw nullable draft_json for every
+cancelled generation. Pure suite and real disposable PostgreSQL contracts passed,
+including complete-native-resume isolation and backup/restore. No schema changes.
+The complete-draft cancellation restriction remains: no assertion that missing
+recorded bytes means unsigned. Historical already-created successors/reserve
+releases still require audit/quarantine before production. Payout WIP remains
+unpublished; public activation remains off.
