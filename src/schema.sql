@@ -87,6 +87,7 @@ CREATE TABLE native_replacement_drafts(critical_sequence BIGINT PRIMARY KEY CHEC
 CREATE TABLE native_winner_changes(critical_sequence BIGINT PRIMARY KEY CHECK(critical_sequence>0), previous_txid TEXT NOT NULL REFERENCES attempts(txid), winner_txid TEXT NOT NULL REFERENCES attempts(txid), previous_observation TEXT NOT NULL CHECK(bridge_json_valid(previous_observation) AND length(previous_observation)<=32768), observation_json TEXT NOT NULL CHECK(bridge_json_valid(observation_json) AND length(observation_json)<=32768), evidence_hash TEXT NOT NULL REFERENCES observation_evidence(hash), fee_delta BIGINT NOT NULL CHECK(fee_delta<>0), CHECK(previous_txid<>winner_txid));
 
 CREATE TABLE preparations(intent_id TEXT NOT NULL REFERENCES intents(id), generation BIGINT NOT NULL CHECK(generation>=0), policy_json TEXT NOT NULL, draft_json TEXT, retired_txid TEXT UNIQUE REFERENCES solana_expiries(txid), cancelled BIGINT NOT NULL DEFAULT 0 CHECK(cancelled IN(0,1)), PRIMARY KEY(intent_id,generation));
+CREATE INDEX signable_cancellations ON preparations(intent_id) WHERE cancelled=1 AND draft_json IS NOT NULL;
 
 CREATE TABLE solana_retry_approvals(expired_txid TEXT PRIMARY KEY REFERENCES solana_expiries(txid), reason TEXT NOT NULL, proof_json TEXT NOT NULL, critical_sequence BIGINT NOT NULL);
 

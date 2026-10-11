@@ -1003,6 +1003,37 @@ ledgerMain = do
           evalRead reader ReadBalances >>= check . (==held)
           evalRead reader ReadState >>= check . (==unchanged)
           putStrLn "PASS: isolated complete native draft resumes exactly and refuses cleanup without releasing reserves"
+          -- Reproduce an old ledger that already admitted a successor after
+          -- unsafe cleanup. All schema constraints remain enabled.
+          fixture fixtures (HistoricalCancelledDraft identifier)
+          successor<-evalRead reader (ReadPreparation identifier)
+          check (preparedGeneration successor==1)
+          -- Retain a late signer reply even while quarantined; never send it.
+          let tx="historical-successor"
+          void $ evalWrite writer (RecordAttempt successor $ SignedAttempt tx "retained fixture bytes" "{}" (Just "historical-input:0"))
+          fixture fixtures CoverBackup
+          fixture fixtures ReadyIntake
+          beforeQuarantine<-evalRead reader ReadState
+          let refused :: IO a -> IO ()
+              refused=expectStore "historical_signed_cancellation_requires_review"
+          refused (evalRead reader $ CheckIntake 100)
+          refused (evalRead reader $ ReadSigningDecision 100 identifier 1)
+          refused (evalRead reader $ ReadReplacementDraftContext 100 tx (money 2))
+          refused (evalRead reader $ ReadReplacementSigning 100 1)
+          refused (evalRead reader $ ReadNativeRebroadcastContext tx)
+          refused (evalWrite writer $ MarkBroadcast 100 tx)
+          refused (evalWrite writer $ AuthorizeSend 100 tx)
+          refused (evalWrite writer $ ReserveFees 100 (digest "quarantined-reserve") Native (money 1) "recipient" "must refuse")
+          evalRead reader ReadState >>= check . (==beforeQuarantine)
+          evalRead reader ReadBalances >>= check . (==held)
+          evalWrite writer (Pause "historical quarantine")
+          fixture fixtures RefreshCustody
+          pausedState<-evalRead reader ReadState
+          retained<-evalRead reader (ReadAttempt tx)
+          refused (evalWrite writer $ ResumeLedger 100 origins [retained] Nothing)
+          evalRead reader ReadState >>= check . (==pausedState)
+          evalRead reader (ReadAttempt tx) >>= check . (=="signed") . recordedState
+          putStrLn "PASS: historical cancelled complete draft with active successor freezes intake, signing, replacement, rebroadcast and spending; state/bytes remain readable and unchanged"
           exitSuccess
       fixture fixtures SeedOrders
       let auth="Bearer "<>T.replicate 64 "0"
@@ -1923,8 +1954,24 @@ data Fixture a where
   LargeBalances :: Fixture ()
   CheckHolds :: T.Text -> Direction -> Int64 -> Fixture Bool
   ProtectHolds :: T.Text -> Fixture ()
+  HistoricalCancelledDraft :: T.Text -> Fixture ()
   CheckPhases :: T.Text -> T.Text -> Fixture Bool
 fixture :: PG.Connection -> Fixture a -> IO a
+fixture c (HistoricalCancelledDraft key) = PG.withTransaction c $ do
+  let text=O.sqlStrictText; num=O.sqlInt8
+  sequences<-O.runUpdate c O.Update {O.uTable=S.deployment,
+    O.uUpdateWith= \r->r {S.criticalSequence=S.criticalSequence r+1},O.uWhere=const $ O.sqlBool True,O.uReturning=O.rReturning S.criticalSequence}
+  n<-case sequences of [one]->pure one; _->fail "missing fixture deployment"
+  void $ O.runInsert c O.Insert {O.iTable=S.preparationCancellations,
+    O.iRows=[(text key,num 0,text "historical unsafe cleanup",text "{}",num n,num 1)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+  void $ O.runUpdate c O.Update {O.uTable=S.preparations,
+    O.uUpdateWith= \(k,g,p,d,r,_)->(k,g,p,d,r,num 1),O.uWhere= \(k,g,_,_,_,_)->k O..== text key O..&& g O..== num 0,O.uReturning=O.rCount}
+  void $ O.runUpdate c O.Update {O.uTable=S.paymentRoots,
+    O.uUpdateWith= \r->r {S.rootPhase=text "ready",S.rootGeneration=O.null},O.uWhere= \r->S.rootId r O..== text key,O.uReturning=O.rCount}
+  void $ O.runInsert c O.Insert {O.iTable=S.preparations,
+    O.iRows=[(text key,num 1,text "{}",O.toNullable $ text "{}",O.null,num 0)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+  void $ O.runUpdate c O.Update {O.uTable=S.paymentRoots,
+    O.uUpdateWith= \r->r {S.rootPhase=text "active",S.rootGeneration=O.toNullable $ num 1},O.uWhere= \r->S.rootId r O..== text key,O.uReturning=O.rCount}
 fixture c (ReportWaiters role) = O.runSelect c $ do
     (user,event,query)<-O.selectTable $ O.tableWithSchema "pg_catalog" "pg_stat_activity" $ p3
       (O.requiredTableField "usename",O.requiredTableField "wait_event_type",O.requiredTableField "query")

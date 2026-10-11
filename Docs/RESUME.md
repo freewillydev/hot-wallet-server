@@ -283,3 +283,17 @@ The complete-draft cancellation restriction remains: no assertion that missing
 recorded bytes means unsigned. Historical already-created successors/reserve
 releases still require audit/quarantine before production. Payout WIP remains
 unpublished; public activation remains off.
+
+### Historical quarantine checkpoint
+
+Cancelled populated drafts now quarantine spending deployment-wide, including
+previously admitted successors. Local PostgreSQL historical-successor and ordinary
+contracts passed on the isolated schema22 candidate; mixed schema23/payout WIP is
+excluded. Read-only cancellation_release_verifier source/test verdict: scoped PASS.
+Native executable compilation passed; the pure suite was not rerun this turn.
+The disposable PostgreSQL cluster is removed; no live services/funds changed.
+
+Next: audit actual funded-ledger history and resolve remaining recovery/release
+gates. AWS ecx-dev authentication expired; the attempted login also timed out
+without user sign-in. No current EC2 state or remote ledger has been verified.
+No AWS login process remains. Public access stays off.

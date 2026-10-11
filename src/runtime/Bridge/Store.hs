@@ -673,8 +673,20 @@ nextSequence c = do
 fresh :: PG.Connection -> Int64 -> IO ()
 fresh c now = custodyFacts c >>= checked . checkCustody now
 
+-- Historical cleanup may have released a signable draft before the worker
+-- recorded its signature. Freeze new spending, but retain reads and backups.
+checkCancellationHistory :: PG.Connection -> IO ()
+checkCancellationHistory c = do
+  unsafe<-O.runSelect c $ O.limit 1 $ do
+    (key,_,_,draft,_,cancelled)<-O.selectTable S.preparations
+    O.where_ (cancelled O..== O.sqlInt8 1 O..&& O.not (O.isNull draft))
+    pure key
+    :: IO [Text]
+  require (null unsafe) "historical_signed_cancellation_requires_review"
+
 readOperator :: PG.Connection -> Text -> Int64 -> IO OperatorFacts
 readOperator c identity now = do
+  checkCancellationHistory c
   state<-metadata c identity
   OperatorFacts now (S.paused state==1) <$> custodyFacts c
 
@@ -975,6 +987,7 @@ intakeReady c identity now = readIntake c identity now >>= checked . checkIntake
 
 readIntake :: PG.Connection -> Text -> Int64 -> IO IntakeFacts
 readIntake c identity now = do
+  checkCancellationHistory c
   require (now>=0) "invalid_order_time"
   d <- metadata c identity
   scans<-scanFacts <$> readScans c
@@ -3318,6 +3331,7 @@ replacementMember c decision = do
 -- ordinary send path, so this checks its own exact draft/family binding.
 replacementSigning :: PG.Connection -> Text -> Bool -> Int64 -> Int64 -> IO ([(RecordedAttempt,N.NativeSigned)],N.NativeDraft)
 replacementSigning c identity backed now decision = do
+  checkCancellationHistory c
   require (decision>0) "invalid_native_replacement_decision"
   state<-metadata c identity
   require (S.paused state==1) "pause_before_operator_action"
@@ -3527,6 +3541,7 @@ nativeResolved c saved = do
 -- principal, acquire new inputs or turn an unresolved intent into a payment.
 nativeRebroadcastContext :: PG.Connection -> Text -> Text -> IO (RecordedAttempt,[(RecordedAttempt,N.NativeSigned)],Text,Value,Int64)
 nativeRebroadcastContext c identity txid = do
+  checkCancellationHistory c
   state<-metadata c identity
   require (S.paused state==1) "pause_before_operator_action"
   saved<-readAttempt c txid

@@ -308,3 +308,20 @@ work. Production source has no net added lines. Evidence is in .audit/layout.tsv
 Still OPEN: audit/quarantine already-created historical successors or released
 reserves; implement safe recovery of complete drafts with unknown signing outcome.
 These tests are local contracts, not funded-chain or whole-production acceptance.
+
+### Historical cancellation quarantine
+
+PASS (local scope): any cancelled preparation with non-NULL draft_json now blocks
+new intake, ordinary/replacement signing, rebroadcast authorization and new
+spending, including already-admitted successors. Reads, Pause and late signer-byte
+retention remain available. Operator actions using readOperator also stop; this is
+not a claim that every recovery action remains usable. No automatic repair or
+override is provided. Fresh schema installs include a matching partial index;
+existing ledgers need that index for equivalent performance, not correctness.
+
+The isolated executable build and both fresh PostgreSQL contracts passed. The
+historical fixture preserves schema constraints and checks refusal without balance
+or sequence changes. Replacement/rebroadcast coverage checks early refusal, not
+fully prepared pending flows; released-reserve coverage is source-reviewed only.
+See .audit/layout.tsv. Historical funded-ledger reconciliation, safe complete-draft
+recovery, independent security review and production acceptance remain OPEN.
