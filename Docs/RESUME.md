@@ -194,3 +194,12 @@ Installation URL validation is independently reviewed and tested; see DONE.md an
 .audit/layout.tsv. Unpublished payout work still fails liveness review for pending
 quote/round timing, shared fees and extreme thresholds. User policy choice is
 pending; do not treat its passing fixture suite as release acceptance.
+
+Installer source staging now has Ubuntu 24.04 arm64 execution evidence for the
+production extraction/locking blocks (see DONE.md and .audit/layout.tsv), following
+the published GHC JS discovery correction. Task-only test VM/container removed;
+all preexisting Colima profiles still stopped. No compiler or node started.
+Next installer work: validate original configuration permissions before copying,
+then complete whole-host unattended install/repeat/reboot acceptance. Source-stage
+checks do not certify the toolchain bootstrap, service provisioning or production.
+Payout-policy choice remains pending and failed payout work remains unpublished.

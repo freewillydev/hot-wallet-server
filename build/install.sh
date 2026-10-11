@@ -12,6 +12,8 @@ case "$1" in /*) config=$1;; *) echo 'Supply an absolute configuration path.' >&
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 state=/var/lib/hot-wallet-server
 install -d -m 0700 "$state"
+exec 9>"$state/install.lock"
+flock -n 9 || { echo 'Another installation is running.' >&2; exit 1; }
 # Keep the caller's original. Refuse silently replacing a bound installation.
 if [ -e "$state/server.conf" ]; then
   cmp -s "$config" "$state/server.conf" || { echo 'Configuration differs from saved installation; reviewed update required.' >&2; exit 1; }
@@ -28,13 +30,40 @@ if ! getent passwd "$account" >/dev/null; then
 fi
 buildhome=$(getent passwd "$account" | cut -d: -f6)
 [ "$buildhome" = /var/lib/hot-wallet-build ] || { echo 'Unexpected build account home.' >&2; exit 1; }
-# Use an isolated copy; runtime data/private input are excluded even if accidentally nearby.
-install -d -o "$account" -g "$account" -m 0750 "$buildhome/source"
-git -c safe.directory="$root" -C "$root" archive --format=tar HEAD src Docs build LICENSE | tar -C "$buildhome/source" -xf -
-git -c safe.directory="$root" -C "$root" rev-parse HEAD > "$buildhome/source/source-commit"
-chown -R "$account:$account" "$buildhome/source"
-runuser -u "$account" -- sh "$buildhome/source/build/install/toolchain"
-binary=$(runuser -u "$account" -- sh -c 'cd "$1"; export PATH="$HOME/.ghcup/bin:$HOME/.cargo/bin:$PATH"; ghcup run --ghc 9.14.1 --cabal 3.16.1.0 -- cabal --project-dir=build list-bin exe:ecx-bridge' sh "$buildhome/source")
+# Freeze one commit, and finish its archive before extracting anything. A new
+# commit gets a clean tree; retries reuse only a completely extracted tree.
+commit=$(git -c safe.directory="$root" -C "$root" rev-parse --verify 'HEAD^{commit}')
+source="$buildhome/source-$commit"
+archive=$(mktemp "$state/source.XXXXXXXX")
+trap 'rm -f -- "$archive"' EXIT
+trap 'exit 1' HUP INT TERM
+git -c safe.directory="$root" -C "$root" archive --format=tar "$commit" src Docs build LICENSE > "$archive"
+# Only the build user writes inside its home, including extraction and cleanup.
+runuser -u "$account" -- sh -c '
+  set -eu
+  umask 077
+  source=$1
+  commit=$2
+  if [ -e "$source" ] || [ -L "$source" ]; then
+    [ -d "$source" ] && [ ! -L "$source" ] &&
+      [ -f "$source/source-commit" ] && [ ! -L "$source/source-commit" ] &&
+      [ "$(cat "$source/source-commit")" = "$commit" ] || {
+        echo "Incomplete or mismatched source tree; refusing to build." >&2; exit 1;
+      }
+    exit 0
+  fi
+  temporary=$(mktemp -d "$source.XXXXXXXX")
+  trap '\''rm -rf -- "$temporary"'\'' EXIT
+  trap '\''exit 1'\'' HUP INT TERM
+  tar -C "$temporary" -xf -
+  printf "%s\n" "$commit" > "$temporary/source-commit"
+  mv -T -- "$temporary" "$source"
+  trap - EXIT
+' sh "$source" "$commit" < "$archive"
+rm -f -- "$archive"
+trap - EXIT HUP INT TERM
+runuser -u "$account" -- sh "$source/build/install/toolchain"
+binary=$(runuser -u "$account" -- sh -c 'cd "$1"; export PATH="$HOME/.ghcup/bin:$HOME/.cargo/bin:$PATH"; ghcup run --ghc 9.14.1 --cabal 3.16.1.0 -- cabal --project-dir=build list-bin exe:ecx-bridge' sh "$source")
 [ -x "$binary" ] || { echo 'Cabal did not produce the server executable.' >&2; exit 1; }
 "$binary" configure-file "$state/server.conf" "$state/.ecx-bridge" </dev/null
 "$binary" start "$state/.ecx-bridge" </dev/null

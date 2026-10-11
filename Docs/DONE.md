@@ -189,3 +189,20 @@ tool before building. Shell syntax and isolated shell checks cover spaces in pat
 failed lookup, missing compiler and non-executable package tool. Separate read-only
 single_schema_callgraph review PASS; see .audit/layout.tsv. No Ubuntu installation
 or production acceptance is implied. No live service or custody was changed.
+
+## Installer source publication (2026-10-10)
+
+The installer captures one Git commit, checks archive creation before extraction,
+then extracts as the build account into a temporary directory and atomically
+publishes a commit-specific source tree. Same-commit retries retain caches;
+new commits cannot inherit deleted source files. A private flock serializes installs.
+Ubuntu 24.04 arm64 checks PASS for fresh/repeat extraction, build-user ownership,
+new-commit isolation, mismatched identity, archive failure, malformed archive,
+source symlink refusal and concurrent-install exclusion. The harness exercises
+production script blocks with real Git/tar/runuser/flock; this is not a complete
+Ubuntu build/install/reboot acceptance. Logs and hashes are in .audit/layout.tsv.
+The temporary 1GB VM and its container were stopped and deleted; other profiles
+remain stopped. No live deployment or custody changed.
+
+Fresh separate single_schema_callgraph review: **PASS** for the exact installer
+hash, test harness and final execution log above; broader gates remain open.
