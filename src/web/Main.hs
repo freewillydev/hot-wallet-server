@@ -174,8 +174,9 @@ loadConfig state = do
     then "Test coins only. Select Devnet in your Solana Pay wallet; the transfer URI does not select a network."
     else "Verify the configured networks before paying."
   text "mint" (pubMint cfg)
-  solanaExplorer cfg "address" (pubMint cfg) >>= link "mint-link" . Just
   let links = pubLinks cfg
+  explorer <- maybe (solanaExplorer cfg "address" $ pubMint cfg) pure (tokenExplorerUrl links)
+  link "mint-link" (Just explorer)
   link "support-link" (supportUrl links)
   link "jupiter-link" (jupiterUrl links)
   link "orca-link" (orcaUrl links)

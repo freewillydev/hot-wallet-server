@@ -156,7 +156,7 @@ checks=sequence
           quote=either (error . show) id (D.quote amount)
           request=W.OrderRequest D.NativeToWrapped amount "recipient" "refund" Nothing "key"
           order=W.OrderView "order" request quote "AwaitingDeposit" 200 (Just "instruction") Nothing (W.PolicySnapshot 2 "finalized" "deployment")
-          config=W.PublicConfiguration W.L2LSignetDevnet "devnet" (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing)
+          config=W.PublicConfiguration W.L2LSignetDevnet "devnet" (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing Nothing)
             "deployment" "mint" "owner" 8 M.empty False False (W.Availability False "paused") Nothing
           instruction=W.PaymentInstruction "solana:fixture" "reference" "mint" amount "verified_source_owner"
           evaluate :: forall a. Plan 'Customer a -> IO a
@@ -497,7 +497,7 @@ fundingCheck=bracket temporary removeDirectoryRecursive $ \dir->do
       hashed=fastPBKDF2_SHA256 (Parameters 600000 32) ("test-only-password"::BS.ByteString) salt::BS.ByteString
       hex value=TE.decodeUtf8 (Hex.convertToBase Hex.Base16 value)
       amount=either (error . show) id (D.amount 100)
-      config=W.PublicConfiguration W.L2LSignetDevnet "devnet" (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing)
+      config=W.PublicConfiguration W.L2LSignetDevnet "devnet" (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing Nothing)
         "deployment" "mint" "owner" 8 M.empty False False (W.Availability False "paused") Nothing
       fallback _ respond=respond $ responseLBS status404 [] "missing"
       send app method credentials=runSession (srequest $ SRequest ((setPath defaultRequest "/funding")

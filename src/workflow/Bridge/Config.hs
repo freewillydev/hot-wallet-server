@@ -3,7 +3,7 @@
 module Bridge.Config
   ( Config(..),loadConfig,validateConfig,validateSetupConfig,fingerprint,nativeSettings,solanaSettings
   , observerSettings,storePolicy,solanaPolicy,publicConfiguration
-  , defaultInterface,loadInterface,validateInterface ) where
+  , defaultInterface,loadInterface,validateInterface,validateLinks ) where
 import Bridge.Domain (Amount,amount,units)
 import Bridge.Wire (Profile(..),InterfaceConfig(..),PublicConfiguration(..),Availability(..),PaymentTerms(..),PolicySnapshot(..),CostLimits(..))
 import Bridge.Identity (digest,publicKey)
@@ -118,7 +118,7 @@ validateSetupConfig c = do
 -- Public presentation settings are separate from financial identity and orders.
 defaultInterface :: Profile -> InterfaceConfig
 defaultInterface p = InterfaceConfig Nothing Nothing Nothing
-  (if p==L2LSignetDevnet then Just "https://explorer.signet.drivechain.info/tx/" else Nothing) Nothing
+  (if p==L2LSignetDevnet then Just "https://explorer.signet.drivechain.info/tx/" else Nothing) Nothing Nothing
 
 loadInterface :: Config -> Maybe FilePath -> IO InterfaceConfig
 loadInterface c file = do
@@ -132,17 +132,24 @@ loadInterface c file = do
   pure links
 
 validateInterface :: Config -> InterfaceConfig -> IO ()
-validateInterface c links = do
+validateInterface c = validateLinks (profile c) (mint c)
+
+validateLinks :: Profile -> Text -> InterfaceConfig -> IO ()
+validateLinks network token links = do
   mapM_ (\url->require (httpsLink url && not(T.any (`elem` ("?#"::String)) url) && maybe False ((=="/") . path) (parseLink url)) "invalid_public_origin") (publicOrigin links)
   mapM_ (\url->require (httpsLink url || mailLink url) "invalid_support_url") (supportUrl links)
   mapM_ (\url->require (httpsLink url && "/tx/" `T.isSuffixOf` url && not(T.any (`elem` ("?#"::String)) url)) "invalid_native_explorer") (nativeExplorerBase links)
-  require (profile c==CanonicalBeta || (jupiterUrl links==Nothing && orcaUrl links==Nothing)) "trading_links_require_mainnet"
-  mapM_ (\url->require (httpsLink url && allowedHost ["jup.ag","www.jup.ag"] url && mint c `T.isInfixOf` url) "invalid_jupiter_link") (jupiterUrl links)
+  require (network==CanonicalBeta || (jupiterUrl links==Nothing && orcaUrl links==Nothing && tokenExplorerUrl links==Nothing)) "trading_links_require_mainnet"
+  mapM_ (\url->require (httpsLink url && allowedHost ["jup.ag","www.jup.ag"] url && token `T.isInfixOf` url) "invalid_jupiter_link") (jupiterUrl links)
   mapM_ (\url->do
     require (httpsLink url && allowedHost ["orca.so","www.orca.so"] url && not(T.any (`elem` ("?#"::String)) url)) "invalid_orca_link"
     case parseLink url of
       Just r | Just pool<-T.stripPrefix "/pools/" (TE.decodeUtf8 $ path r)->either (const $ reject "invalid_orca_pool") (const $ pure ()) (publicKey pool)
       _->reject "invalid_orca_pool") (orcaUrl links)
+  mapM_ (\url->require (httpsLink url && allowedHost ["solscan.io","www.solscan.io"] url
+    && not(T.any (`elem` ("?#"::String)) url)
+    && maybe False ((==TE.encodeUtf8 ("/token/"<>token)) . path) (parseLink url))
+    "invalid_token_explorer_link") (tokenExplorerUrl links)
  where
   parseLink :: Text -> Maybe Request
   parseLink = parseRequest . T.unpack

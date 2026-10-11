@@ -661,7 +661,7 @@ reportCacheMain=do
       native=N.NativeSettings W.L2LSignetDevnet "http://127.0.0.1:29432" "/unused" "workflow" 1 (T.replicate 64 "0")
       chain=ObserverSettings native (Solana.SolanaSettings W.L2LSignetDevnet "https://api.devnet.solana.com" Nothing key key key) 2 "sol-origin" "opening-signature"
       policy=H.SolanaPolicy "contract" "contract" key key key (money 10) (money 10)
-      public=W.PublicConfiguration W.L2LSignetDevnet "devnet" (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing)
+      public=W.PublicConfiguration W.L2LSignetDevnet "devnet" (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing Nothing)
         "contract" key key 8 (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)]) False False (W.Availability False "starting") Nothing
       check message ok=unless ok (fail message)
   bracket (PG.connect settings) PG.close $ \fixtures->do
@@ -2803,7 +2803,7 @@ orderWorkflowContract fixtures reader writer storePolicy = do
       solana=Solana.SolanaSettings W.L2LSignetDevnet "https://api.devnet.solana.com" Nothing key key key
       chainSettings=ObserverSettings native solana 2 "sol-origin" "opening-signature"
       config=H.SolanaPolicy "contract" "contract" key key key (money 10) (money 10)
-      public=W.PublicConfiguration W.L2LSignetDevnet "devnet" (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing)
+      public=W.PublicConfiguration W.L2LSignetDevnet "devnet" (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing Nothing)
         "contract" key key 8 (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)]) False False (W.Availability False "starting") Nothing
       customerSettings=CustomerSettings public storePolicy "/unused/sdk"
       endpoint=SigningEndpoint 9443 "/unused/auth"
@@ -4028,7 +4028,7 @@ tlsMain=do
                   configuredNative=native {N.nativeCookie=cookie}
                   header="Bearer "<>T.replicate 64 "c"
                   order=W.OrderRequest WrappedToNative (money 10) "native-recipient" "" Nothing "checkpoint-http"
-                  publicConfig=W.PublicConfiguration profile cluster (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing)
+                  publicConfig=W.PublicConfiguration profile cluster (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing Nothing)
                     "codec-fixture" mint owner 8 (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)])
                     True False (W.Availability False "starting") Nothing
               writeFile cookie "fixture:fixture"; setFileMode cookie 0o600

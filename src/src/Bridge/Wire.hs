@@ -30,7 +30,7 @@ data Profile = L2LSignetDevnet | ECXBetanetDevnet | CanonicalBeta deriving (Eq, 
 data InterfaceConfig = InterfaceConfig
   { supportUrl :: !(Maybe Text), jupiterUrl :: !(Maybe Text)
   , orcaUrl :: !(Maybe Text), nativeExplorerBase :: !(Maybe Text)
-  , publicOrigin :: !(Maybe Text)
+  , publicOrigin :: !(Maybe Text), tokenExplorerUrl :: !(Maybe Text)
   } deriving (Eq,Show,Generic,ToJSON)
 instance FromJSON InterfaceConfig where
   parseJSON = genericParseJSON defaultOptions { rejectUnknownFields = True }

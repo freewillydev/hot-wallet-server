@@ -25,6 +25,7 @@ import Bridge.Wallet (mnemonic,mixWalletEntropy,walletKey,nativeDescriptors)
 import Bridge.NativeKey (deriveChild)
 import qualified Bridge.Native as N
 import Bridge.Wire (Profile(..))
+import qualified Bridge.Wire as W
 import Bridge.Error (BridgeError(..),require)
 import Bridge.RPC (fieldValue)
 import qualified Data.Aeson.KeyMap as KM
@@ -193,7 +194,7 @@ importContract parent executable key=do
         ,("ownerEcxXpub",show ("xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz"::String))
         ,("ownerSolPubkey",show $ T.unpack $ base58 $ B.drop 32 key)
         ,("externalLinkSolscan",show ("https://solscan.io/token/"<>T.unpack Bootstrap.canonicalMint))
-        ,("externalLinkOrca",show ("https://www.orca.so/pools/test"::String))
+        ,("externalLinkOrca",show ("https://www.orca.so/pools/nNKg814Wq3uTkoG4fM8LzvBQv4Fu2iCgKFmK2YmPQzM"::String))
         ,("solanaRpcUrl",show ("https://primary.example.invalid"::String))
         ,("solanaVerifierRpcUrl",show ("https://verifier.example.invalid"::String))
         ,("backupRepositoryUrl",show ("rest:https://backup.example.invalid/repository"::String))
@@ -222,13 +223,14 @@ importContract parent executable key=do
   savePrivate conf (B8.pack $ record fields)
   (first,out,err)<-invoke conf output
   require (first==ExitSuccess) "import_contract_first_install_failed"
-  let privateFiles=[output</>name | name<-["install.conf","sources.json","bootstrap.json","setup.json","backup.repository","backup.password"]]
+  let privateFiles=[output</>name | name<-["install.conf","sources.json","bootstrap.json","setup.json","interface.json","backup.repository","backup.password"]]
         <>[output<>"-keys/"<>name | name<-["solana.keypair.json","ecx-recovery.txt","native-unlock"]]
   before<-mapM B.readFile privateFiles
   modes<-mapM (fmap ((.&. 0o777).fileMode) . getFileStatus) privateFiles
   (second,reout,reerr)<-invoke conf output
   after<-mapM B.readFile privateFiles
   config<-Bootstrap.setupConfig output
+  links<-C.loadInterface config (Just $ output</>"interface.json")
   importedKey<-B.readFile(output<>"-keys/solana.keypair.json")
   importedPhrase<-B.readFile(output<>"-keys/ecx-recovery.txt")
   generated<-mapM doesDirectoryExist [output<>"-solana-wallet",output<>"-ecx-wallet"]
@@ -245,6 +247,11 @@ importContract parent executable key=do
     ,replace "backupRepositoryUrl" (show ("rest:https://backup.example.invalid/repository#fragment"::String))
     ,replace "backupRepositoryUrl" (show ("rest:https://backup.example.invalid:invalid/repository"::String))
     ,replace "backupRepositoryUrl" (show ("rest:https://backup.example.invalid/\x100"::String))
+    ,replace "externalLinkOrca" (show ("https://www.orca.so/pools/invalid"::String))
+    ,replace "externalLinkOrca" (show ("https://untrusted.example.invalid/pools/nNKg814Wq3uTkoG4fM8LzvBQv4Fu2iCgKFmK2YmPQzM"::String))
+    ,replace "externalLinkSolscan" (show ("https://solscan.io/token/wrong-mint"::String))
+    ,replace "externalLinkSolscan" (show ("https://untrusted.example.invalid/token/"<>T.unpack Bootstrap.canonicalMint))
+    ,replace "externalLinkSolscan" (show ("https://user:password@solscan.io/token/"<>T.unpack Bootstrap.canonicalMint))
     ,replace "websiteDirectory" ("Just "<>show ("relative/site"::String))
     ,replace "websiteDirectory" ("Just "<>show (parent</>"missing-site"))])) $ \(n,values)->do
       let file=parent</>("invalid-"<>show n<>".conf"); dest=parent</>("invalid-"<>show n)
@@ -281,6 +288,8 @@ importContract parent executable key=do
     && siteChanged/=ExitSuccess && retainedSite==siteSetup
     && second==ExitSuccess && before==after && before==unchanged && all(==0o600)modes
     && secretFree(out<>err<>reout<>reerr) && C.custodyOwner config==base58(B.drop 32 key)
+    && W.orcaUrl links==Just "https://www.orca.so/pools/nNKg814Wq3uTkoG4fM8LzvBQv4Fu2iCgKFmK2YmPQzM"
+    && W.tokenExplorerUrl links==Just ("https://solscan.io/token/"<>Bootstrap.canonicalMint)
     && importedKey==L.toStrict(encode $ B.unpack key) && importedPhrase==B8.pack(phrase<>"\n")
     && not(or generated) && and invalid && changedCode/=ExitSuccess && mixedCode/=ExitSuccess
     && resumeCode/=ExitSuccess && "record_setup_incomplete_rerun_install" `isInfixOf` resumeError && not(or mixedKeys))

@@ -251,3 +251,12 @@ still passes. Fresh read-only single_schema_callgraph scoped review PASS.
 This validates key encoding, not owner possession or automatic earned-fee sweeps;
 those sweeps and broader production gates remain incomplete. Specification:
 https://github.com/bitcoin/bips/blob/master/bip-0032.mediawiki#serialization-format
+
+## Configured customer links (2026-10-10)
+
+Record setup now validates and publishes externalLinkOrca/externalLinkSolscan to
+interface.json, and the browser uses the configured token explorer. Missing
+optional explorer fields retain the network-specific fallback. Solscan must name
+the configured mint; Orca validation checks host/address syntax, not liquidity or
+on-chain pool contents. Scope evidence is recorded in .audit/layout.tsv. This
+does not implement automatic owner sweeps or close payout/release gates.

@@ -2,6 +2,7 @@
 -- Configuration imports custody; only interactive startup generates new wallets.
 module Configure (configure,configureAdvanced,configureFile,start,startAdvanced,startSetup,initializeNative) where
 import qualified Bridge.Config as C
+import qualified Bridge.Wire as W
 import qualified Bootstrap
 import qualified NodeSetup
 import qualified Upgrade
@@ -74,6 +75,11 @@ configureFile input output=do
   file<-makeAbsolute input
   (bytes,settings)<-I.readInstallConfig file
   keyBytes<-I.validateInstallConfig settings
+  defaultsLinks<-either (const $ reject "invalid_interface_defaults") pure $
+    parseEither parseJSON (Bootstrap.interface Nothing)
+  let links=defaultsLinks {W.orcaUrl=Just $ T.pack $ I.externalLinkOrca settings
+        ,W.tokenExplorerUrl=Just $ T.pack $ I.externalLinkSolscan settings}
+  C.validateLinks W.CanonicalBeta Bootstrap.canonicalMint links
   website<-traverse websiteManifest (I.websiteDirectory settings)
   directory<-makeAbsolute output
   withFamily (directory<>"-configure") $ do
@@ -124,7 +130,7 @@ configureFile input output=do
     C.validateSetupConfig config
     mapM_ (\(name,value)->publishSetup (directory</>name) (L.toStrict $ encode value))
       [("sources.json",sources),("bootstrap.json",Object defaults)
-      ,("interface.json",Bootstrap.interface Nothing),("setup.json",setup)]
+      ,("interface.json",toJSON links),("setup.json",setup)]
     putStrLn "Saved immutable private installation record; no prompts, signing or broadcast."
 
 websiteManifest :: FilePath -> IO Value

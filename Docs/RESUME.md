@@ -241,3 +241,8 @@ still passes. Fresh read-only single_schema_callgraph scoped review PASS.
 This validates key encoding, not owner possession or automatic earned-fee sweeps;
 those sweeps and broader production gates remain incomplete. Specification:
 https://github.com/bitcoin/bips/blob/master/bip-0032.mediawiki#serialization-format
+
+Configured customer links are now wired through record setup, interface.json and
+the browser (see DONE.md and .audit/layout.tsv). Owner withdrawals still require
+paused operator authorization; automatic sweeps must use a distinct closed ledger
+authorization and the resolved payout-round policy, not bypass that check.
