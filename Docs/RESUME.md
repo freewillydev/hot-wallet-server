@@ -1168,3 +1168,29 @@ ac58f0c4b644202a7d5b263bf2f68e147dba73517a297dac2812a16cb8329600).
 This closes the backup helper's root path-following issue, not node-originated
 denial of service or whole-host x86_64 installation acceptance. Other managed-node
 root filesystem operations still warrant separate review. Public access stays off.
+
+### Native capture feasibility (2026-10-11)
+
+Existing pinned Aeson2.3.2 token parsing handles streamed history without a new
+dependency or custom JSON lexer. The corrected probe inspected one million IDs:
+exit0,6MiB GHC memory,18,956,288-byte peak process RSS,1.55s wall time. A separate
+actual localhost HTTP capture/replay probe passed a100,000-row response above4MiB.
+Late RPC errors, truncated/trailing JSON, HTTP500 and timeout released no rows;
+all captures were removed. Validation/replay use duplicates of the same open
+descriptor, never reopen its pathname. Fixture server/client exited. These are
+protocol feasibility tests, not live-chain acceptance or a production fix.
+
+Retained through Codex Security: artifacts/NativeHistoryProbe.hs and
+native-history-probe.log; artifacts/NativeCaptureProbe.hs and
+native-capture-probe.log; findings/native-capture-integration-evidence.md.
+Read-only native_capture_integration investigation confirms schema23 can hold
+the needed checkpoint scratch and receipt-specific evidence without DDL. Do not
+reuse CommitScan unchanged for partial pages: it advances coverage and clears
+failure. Keep the real cursor and incomplete health until the full captured
+response and recovery sweep are processed; never reuse offsets against a new
+response or refresh the original observation timestamp to pass freshness.
+
+Integration remains open: large individual transaction parsing, per-receipt proof
+binding/treasury verification, atomic partial-page commits, keyset source recovery,
+and streamed custody overlap with its existing60s deadline. No production code,
+schema, funds or public access changed. Native-history finding remains open.
