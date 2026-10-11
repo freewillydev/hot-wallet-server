@@ -12,7 +12,8 @@ import Bridge.Wallet (nativeDescriptors)
 import Control.Exception (catch)
 import Control.Monad (forM_)
 import Data.List (isPrefixOf,stripPrefix)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe,isJust)
+import Data.IP (IP)
 import Crypto.Error (CryptoFailable(..))
 import qualified Crypto.PubKey.Ed25519 as Ed
 import qualified Data.ByteArray as BA
@@ -23,7 +24,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Network.HTTP.Client (parseRequest,HttpException,secure,host)
 import System.FilePath (isAbsolute,normalise)
-import Text.Read (readEither)
+import Text.Read (readEither,readMaybe)
 
 data InstallConfig = InstallConfig
   { serverIp :: String, domain :: String
@@ -78,8 +79,14 @@ validateInstallConfig c=do
   require (isAbsolute $ resticExecutable c) "absolute_reviewed_restic_path_required"
   _<-either reject pure (publicKey $ T.pack $ ownerSolPubkey c)
   validMainnetXpub (T.pack $ ownerEcxXpub c) >>= (`require` "owner_ecx_xpub_required")
-  require (not(null $ domain c) && length(domain c)<=253 && all (`elem` (['a'..'z']<>['0'..'9']<>".-")) (domain c)) "invalid_domain"
-  require (not(null $ serverIp c) && length(serverIp c)<=45 && all (`elem` (['0'..'9']<>['a'..'f']<>".:")) (serverIp c)) "invalid_server_ip"
+  let labels=T.splitOn "." (T.pack $ domain c)
+      alphanumeric character=character `elem` (['a'..'z']<>['0'..'9'])
+      label value=not(T.null value) && T.length value<=63
+        && alphanumeric(T.head value) && alphanumeric(T.last value)
+        && T.all (\character->alphanumeric character || character=='-') value
+  require (length(domain c)<=253 && all label labels) "invalid_domain"
+  require (length(serverIp c)<=45 && all (`elem` ("0123456789abcdefABCDEF:."::String)) (serverIp c)
+    && isJust (readMaybe (serverIp c) :: Maybe IP)) "invalid_server_ip"
   forM_ (cloudflareTunnelToken c) $ \token->require (length token>=32 && length token<=4096 && not(any (`elem` ['\n','\r',' ','\0']) token)) "invalid_cloudflare_tunnel_token"
   forM_ (websiteDirectory c) $ \path->require (isAbsolute path && normalise path==path && length path<=4096
     && all (\character->character>=' ' && character/='\DEL') path) "absolute_website_directory_required"

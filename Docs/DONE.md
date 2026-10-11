@@ -325,3 +325,10 @@ or sequence changes. Replacement/rebroadcast coverage checks early refusal, not
 fully prepared pending flows; released-reserve coverage is source-reviewed only.
 See .audit/layout.tsv. Historical funded-ledger reconciliation, safe complete-draft
 recovery, independent security review and production acceptance remain OPEN.
+
+Address configuration validation: scoped PASS. Hostnames require nonempty labels
+of at most 63 characters without edge hyphens; use lowercase names without a
+trailing root dot. IP literals use pinned iproute1.7.15 plus an ASCII grammar guard.
+The isolated configure contract rejects 19 malformed/unsupported host/IP records
+before setup publication and accepts IPv4 and three IPv6 forms. This is syntax
+validation, not proof of DNS ownership, reachability or public-address routing.

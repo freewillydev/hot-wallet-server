@@ -297,3 +297,8 @@ Next: audit actual funded-ledger history and resolve remaining recovery/release
 gates. AWS ecx-dev authentication expired; the attempted login also timed out
 without user sign-in. No current EC2 state or remote ledger has been verified.
 No AWS login process remains. Public access stays off.
+
+Address validation checkpoint: isolated HEAD plus installer IP/hostname checks
+passed configure-only Cabal acceptance (session78214 exit0); no live services or
+funds changed. Test/build processes ended. Payout work remains excluded, with two
+red regressions; AWS authentication and production security gates remain open.

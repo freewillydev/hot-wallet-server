@@ -2,6 +2,7 @@ module ConfigureCheck (contract,walletProperty) where
 import qualified Bridge.Config as C
 import qualified NodeSetup
 import qualified Bootstrap
+import qualified InstallConfig
 import qualified Token
 import qualified Token.Operation as TO
 import Bridge.SDKBuild (sdkLibraryPath)
@@ -30,7 +31,7 @@ import Bridge.Error (BridgeError(..),require)
 import Bridge.RPC (fieldValue)
 import qualified Data.Aeson.KeyMap as KM
 import Data.IORef
-import Control.Monad (unless,forM)
+import Control.Monad (unless,forM,forM_)
 import qualified Data.ByteArray.Encoding as Hex
 import Data.Word (Word8)
 import Test.QuickCheck hiding ((.&.))
@@ -220,6 +221,9 @@ importContract parent executable key=do
       conf=parent</>"server.conf"
       invoke path destination=readProcessWithExitCode executable ["configure-file",path,destination] ""
       secretFree out=all (not . (`isInfixOf` out)) [phrase,T.unpack(base58 key),"test-backup-password-only"]
+  forM_ [replace "serverIp" (show address) | address<-["::1","2001:DB8::1","::ffff:127.0.0.1"]] $ \values->do
+    imported<-InstallConfig.validateInstallConfig (read $ record values)
+    require (imported==key) "valid_ipv6_configuration_rejected"
   savePrivate conf (B8.pack $ record fields)
   (first,out,err)<-invoke conf output
   require (first==ExitSuccess) "import_contract_first_install_failed"
@@ -235,7 +239,9 @@ importContract parent executable key=do
   importedPhrase<-B.readFile(output<>"-keys/ecx-recovery.txt")
   generated<-mapM doesDirectoryExist [output<>"-solana-wallet",output<>"-ecx-wallet"]
   invalid<-forM (zip [0::Int ..]
-    (map (replace "ownerEcxXpub" . show) badXpubs <>
+    (map (replace "serverIp" . show) ([".","1.2.3","256.1.2.3","1.2.3.4.5","2001::db8::1","[::1]","::1%lo0"," 127.0.0.1","\f127.0.0.1","(127.0.0.1)","2130706433","0x7f000001"]::[String])
+    <>map (replace "domain" . show) ([".",".example.org","example..org","example.org.","-bridge.example.org","bridge-.example.org",replicate 64 'a'<>".org"]::[String])
+    <>map (replace "ownerEcxXpub" . show) badXpubs <>
     [replace "ecxSeedBip39" (show (""::String)),replace "solKeyB58" (show (""::String))
     ,replace "ecxSeedBip39" (show $ unwords $ replicate 12 "abandon")
     ,replace "solKeyB58" (show $ T.unpack $ base58 $ B.take 32 key<>B.replicate 32 0)
