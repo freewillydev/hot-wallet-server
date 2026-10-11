@@ -7,6 +7,7 @@ import Bridge.Domain (parseCoins,units)
 import Bridge.Error
 import Bridge.Identity (publicKey)
 import Bridge.RPC (independentHttps)
+import Bridge.NativeKey (validMainnetXpub)
 import Bridge.Wallet (nativeDescriptors)
 import Control.Exception (catch)
 import Control.Monad (forM_)
@@ -76,7 +77,7 @@ validateInstallConfig c=do
   require (length(backupPassword c)>=16 && not(any (`elem` ['\n','\r','\0']) (backupPassword c))) "backup_password_minimum_16_characters"
   require (isAbsolute $ resticExecutable c) "absolute_reviewed_restic_path_required"
   _<-either reject pure (publicKey $ T.pack $ ownerSolPubkey c)
-  require (take 4(ownerEcxXpub c)=="xpub" && length(ownerEcxXpub c)<=120) "owner_ecx_xpub_required"
+  validMainnetXpub (T.pack $ ownerEcxXpub c) >>= (`require` "owner_ecx_xpub_required")
   require (not(null $ domain c) && length(domain c)<=253 && all (`elem` (['a'..'z']<>['0'..'9']<>".-")) (domain c)) "invalid_domain"
   require (not(null $ serverIp c) && length(serverIp c)<=45 && all (`elem` (['0'..'9']<>['a'..'f']<>".:")) (serverIp c)) "invalid_server_ip"
   forM_ (cloudflareTunnelToken c) $ \token->require (length token>=32 && length token<=4096 && not(any (`elem` ['\n','\r',' ','\0']) token)) "invalid_cloudflare_tunnel_token"

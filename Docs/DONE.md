@@ -239,3 +239,15 @@ Ubuntu24.04 x86-64 checks passed actual execution, root0755 publication, unchang
 retry, altered-byte/permission refusal and symlink refusal. See .audit/layout.tsv.
 This is dependency build/publication acceptance, not a full fresh-host installation
 or independent security approval. Financial and public-release gates remain open.
+
+## Owner public-key validation (2026-10-10)
+
+PASS: record setup validates the owner's mainnet BIP32 public key structure,
+checksum, root metadata and compressed secp256k1 curve point before writing setup.
+The existing libsecp256k1 dependency performs point parsing; no signing path or
+new dependency is added. Eight malformed-key cases, including recomputed-checksum
+semantic failures, pass the real configure-file refusal contract; valid-key replay
+still passes. Fresh read-only single_schema_callgraph scoped review PASS.
+This validates key encoding, not owner possession or automatic earned-fee sweeps;
+those sweeps and broader production gates remain incomplete. Specification:
+https://github.com/bitcoin/bips/blob/master/bip-0032.mediawiki#serialization-format

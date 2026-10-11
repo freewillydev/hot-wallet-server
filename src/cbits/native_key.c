@@ -26,3 +26,12 @@ int ecx_native_child(const unsigned char *parent, const unsigned char *tweak,
     }
     return ok;
 }
+
+/* Haskell supplies exactly 33 bytes. Parsing checks curve membership. */
+int ecx_native_public_valid(const unsigned char *encoded) {
+    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
+    secp256k1_pubkey pub;
+    int ok = secp256k1_ec_pubkey_parse(ctx, &pub, encoded, 33);
+    secp256k1_context_destroy(ctx);
+    return ok;
+}

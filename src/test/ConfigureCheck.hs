@@ -17,7 +17,8 @@ import System.Timeout (timeout)
 import Control.Exception (evaluate,finally,AsyncException(ThreadKilled))
 import qualified Data.ByteString.Char8 as B8
 import Crypto.MAC.HMAC (hmac,HMAC)
-import Crypto.Hash (SHA256)
+import Crypto.Hash (SHA256,Digest,hash)
+import qualified Data.ByteString.Base58 as B58
 import Crypto.Random (getRandomBytes)
 import Bridge.AdminKey (savePrivate)
 import Bridge.Wallet (mnemonic,mixWalletEntropy,walletKey,nativeDescriptors)
@@ -201,6 +202,19 @@ importContract parent executable key=do
         ,("initialFundingOwnership",show ("test owned initial SOL"::String))]
       record values="InstallConfig {"<>concat [separator<>name<>" = "<>value | ((name,value),separator)<-zip values ("":repeat ",")]<>"}"
       replace name value=map (\(k,v)->(k,if k==name then value else v)) fields
+      -- Recompute checksums so malformed versions/metadata/curve points reach
+      -- semantic validation rather than failing only at Base58Check.
+      xpub=read $ maybe (error "missing test xpub") id (lookup "ownerEcxXpub" fields) :: String
+      payload=maybe (error "invalid test xpub") (B.take 78) $
+        B58.decodeBase58 B58.bitcoinAlphabet (B8.pack xpub)
+      sha value=BA.convert(hash value :: Digest SHA256) :: B.ByteString
+      encoded value=T.unpack $ base58 (value<>B.take 4(sha $ sha value))
+      badXpubs=["xpub",init xpub<>"1","1"<>xpub
+        ,encoded (B.pack [0x04,0x35,0x87,0xcf]<>B.drop 4 payload)
+        ,encoded (B.take 4 payload<>B.singleton 0<>B.replicate 8 1<>B.drop 13 payload)
+        ,encoded (B.take 45 payload<>B.singleton 4<>B.replicate 32 0)
+        ,encoded (B.take 45 payload<>B.singleton 2<>B.replicate 32 255)
+        ,encoded (B.take 45 payload<>B.singleton 2<>B.replicate 32 0)]
       output=parent</>"record-setup"
       conf=parent</>"server.conf"
       invoke path destination=readProcessWithExitCode executable ["configure-file",path,destination] ""
@@ -219,6 +233,7 @@ importContract parent executable key=do
   importedPhrase<-B.readFile(output<>"-keys/ecx-recovery.txt")
   generated<-mapM doesDirectoryExist [output<>"-solana-wallet",output<>"-ecx-wallet"]
   invalid<-forM (zip [0::Int ..]
+    (map (replace "ownerEcxXpub" . show) badXpubs <>
     [replace "ecxSeedBip39" (show (""::String)),replace "solKeyB58" (show (""::String))
     ,replace "ecxSeedBip39" (show $ unwords $ replicate 12 "abandon")
     ,replace "solKeyB58" (show $ T.unpack $ base58 $ B.take 32 key<>B.replicate 32 0)
@@ -231,7 +246,7 @@ importContract parent executable key=do
     ,replace "backupRepositoryUrl" (show ("rest:https://backup.example.invalid:invalid/repository"::String))
     ,replace "backupRepositoryUrl" (show ("rest:https://backup.example.invalid/\x100"::String))
     ,replace "websiteDirectory" ("Just "<>show ("relative/site"::String))
-    ,replace "websiteDirectory" ("Just "<>show (parent</>"missing-site"))]) $ \(n,values)->do
+    ,replace "websiteDirectory" ("Just "<>show (parent</>"missing-site"))])) $ \(n,values)->do
       let file=parent</>("invalid-"<>show n<>".conf"); dest=parent</>("invalid-"<>show n)
       savePrivate file (B8.pack $ record values)
       (code,stdout,stderr)<-invoke file dest
