@@ -157,3 +157,16 @@ Evidence is appended to `.audit/severity.tsv`; production gates remain FAIL.
 Fresh separate `current_schema_verifier`: scoped PASS for staged diff SHA256
 `44cd5d5267df3100cd713b104f7b9e9fd2468a246719d2cbdc91feca34171891`;
 only this verdict metadata was appended afterward.
+
+## Critical evaluator readability (2026-10-10)
+
+Scoped PASS: evalCritical now separates authorization, signer dispatch and the four
+operations visibly, with named RPC aliases and SignedAttempt fields. The function
+is 67 -> 115 physical lines (+48, mostly layout); no new file or authority path.
+The sole call, gate, checks, IO ordering, cleanup and unique results are unchanged.
+Independent single_schema_callgraph passed source diff SHA256
+`e811cdace6a4a0e0c82a8d5f0254dbc929ec0baee1db8db626e069897c56d2f0`.
+Build, 223 local checks and five disposable PostgreSQL/process modes pass on the
+combined working tree, which also contains unstaged payout work. Only this
+readability refactor is published here; this is not a production acceptance claim.
+Evidence: `.audit/severity.tsv`. Temporary test services stopped; no funds moved.

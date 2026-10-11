@@ -177,3 +177,15 @@ are stopped. See DONE.md and the appended `.audit/severity.tsv` entries.
 Fresh separate `current_schema_verifier` passed staged diff
 `44cd5d5267df3100cd713b104f7b9e9fd2468a246719d2cbdc91feca34171891`;
 only verdict metadata was appended afterward.
+
+## Critical evaluator readability checkpoint
+
+The readability-only evalCritical change has a separate source-equivalence PASS;
+see DONE.md and .audit/severity.tsv. Full local suite: 223 checks; all five
+disposable PostgreSQL/process modes pass on the combined working tree.
+Payout-round work remains unstaged, including schema 23 and configuration wiring.
+Before publishing it, resolve admission-capacity saturation: funded tiny orders
+below the aggregate threshold can fill maximumQueued and prevent progress. Do not
+waive the configured threshold or treat a larger finite cap as a complete fix.
+Update current schema documentation and obtain a fresh final review afterward.
+No live ledger, custody or deployment changed; production gates remain FAIL.

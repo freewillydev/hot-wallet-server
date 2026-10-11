@@ -257,71 +257,119 @@ runProcess rpc reader process=do
         (concurrently_ (runWorkerLoop dispatch) (runControl directory evaluate))
 
 evalCritical :: MVar () -> Evaluation 'Critical -> Program caller 'Critical a -> IO a
-evalCritical gate environment operation=withMVar gate $ \_->traceEvaluation operation $ case operation of
-  Executable->do
-    authorizeOperation environment operation
-    case (environment,operation) of
-      -- Local key work is reachable only here, while the critical gate is held.
-      (SignerEvaluation manager reader settings,SigningDSL signing)->do
-        let native=signingNative settings
-            solana=signingSolana settings
-            config=signingPolicy settings
-            -- The signer gate is already held; each closed read gets a fresh timestamp.
-            withStableDecision :: Eq decision => (Int64 -> StoreRead decision) -> (decision -> IO a) -> IO a
-            withStableDecision query work=do
-              let readDecision=do
-                    now<-floor <$> getPOSIXTime
-                    evalRead reader (query now)
-              before<-readDecision
-              result<-work before
-              after<-readDecision
-              require (before==after) "signing_decision_changed"
-              pure result
-        case signing of
-          CheckpointSigning (CheckpointCustody identity minimumSequence)->do
-            require (identity==H.fingerprint config && minimumSequence>=0) "invalid_custody_checkpoint"
-            (deployment,backup,parent)<-maybe (reject "custody_checkpoint_not_configured") pure (signingBackup settings)
-            require (C.fingerprint deployment==identity && C.nativeSettings deployment==native
-              && C.solanaSettings deployment==solana && C.nativeUnlockFile deployment==signingNativeUnlock settings) "signer_profile_mismatch"
-            result<-timeout 300000000 $ bracket
-              (evalCustodyRecovery manager deployment $ ExportCheckpoint reader (signingKey settings) parent minimumSequence)
-              (removeDirectoryRecursive . takeDirectory . fst) $ \(manifest,sequenceNo)->do
-                receipt<-evalCustodyRecovery manager deployment (UploadCustody backup manifest sequenceNo)
-                after<-evalRead reader ReadState
-                require (ledgerSequence after==sequenceNo) "custody_backup_changed"
-                pure receipt
-            CheckpointResult <$> maybe (reject "custody_checkpoint_timeout") pure result
-          DraftSigning (DraftReplacement identity parent fee)->do
-            require (identity==H.fingerprint config) "signer_profile_mismatch"
-            DraftResult <$> withStableDecision (\now->ReadReplacementDraftContext now parent fee)
-              (\family->NP.draftNativeReplacement (N.nativeCall manager native) native (map snd family) fee)
-          ReplacementSigning (SignReplacement identity decision)->do
-            require (identity==H.fingerprint config) "signer_profile_mismatch"
-            (family,signed)<-withStableDecision (\now->ReadReplacementSigning now decision) $ \(family,draft)->do
-              signed<-withNativeUnlock (N.nativeCall manager native) native (signingNativeUnlock settings) $
-                NP.signNativeReplacement (N.nativeCall manager native) native (map snd family) draft
-              pure (family,signed)
-            parent<-case reverse family of (saved,_):_->pure saved; _->reject "native_replacement_family_bounds"
-            pure $ ReplacementResult $ SignedAttempt (NP.nativeTxid $ NP.signedNativeTransaction signed) (NP.signedNativeBytes signed)
-              (TE.decodeUtf8 $ BL.toStrict $ encode signed) (commonInput $ recordedSigned parent)
-          PreparedSigning (SignPrepared identity identifier generation)->do
-            require (identity==H.fingerprint config) "signer_profile_mismatch"
-            PreparedResult <$> withStableDecision (\now->ReadSigningDecision now identifier generation) (\before->do
-              plan<-resolveSigningPlan (N.profile native) config before
-              reply<-case plan of
-                NativeAuthorization saved draft->do
-                  _<-N.nativeIdentity manager native
-                  withNativeUnlock (N.nativeCall manager native) native (signingNativeUnlock settings) $
-                    NativeReply <$> NP.signNativeDraft (N.nativeCall manager native) saved draft
-                SolanaAuthorization saved expected->do
-                  _<-S.solanaIdentity manager solana
-                  let limits=config {H.maxSolFee=solPlanFeeLimit saved,H.maxSolAccountRent=solPlanRentLimit saved}
-                      sign actual=do
-                        require (actual==expected) "saved_solana_request_mismatch"
-                        H.signSolanaSdk (signingLibrary settings) limits (signingKey settings) actual
-                  SolanaReply <$> prepareSolanaSigned (S.solanaCall manager solana) sign limits saved
-              verifySigningReply (N.nativeCall manager native) (N.profile native) config before reply)
-      _->evaluateOperation environment operation
+evalCritical gate environment operation =
+  withMVar gate $ \_ ->
+    traceEvaluation operation $ case operation of
+      Executable -> do
+        authorizeOperation environment operation
+        case (environment, operation) of
+          -- Only the signer process holds keys. Keep all local key work inside
+          -- this evaluator, under the gate and after caller authorization.
+          (SignerEvaluation manager reader settings, SigningDSL signing) -> do
+            let native = signingNative settings
+                solana = signingSolana settings
+                config = signingPolicy settings
+                nativeRpc = N.nativeCall manager native
+                solanaRpc = S.solanaCall manager solana
+                expectedIdentity = H.fingerprint config
+
+                -- Re-read the durable decision after the work. Changed authority
+                -- discards the result; each read uses a fresh timestamp.
+                withStableDecision
+                  :: Eq decision
+                  => (Int64 -> StoreRead decision)
+                  -> (decision -> IO result)
+                  -> IO result
+                withStableDecision query work = do
+                  let readDecision = do
+                        now <- floor <$> getPOSIXTime
+                        evalRead reader (query now)
+                  before <- readDecision
+                  result <- work before
+                  after <- readDecision
+                  require (before == after) "signing_decision_changed"
+                  pure result
+
+            case signing of
+              CheckpointSigning (CheckpointCustody identity minimumSequence) -> do
+                require (identity == expectedIdentity && minimumSequence >= 0)
+                  "invalid_custody_checkpoint"
+                (deployment, backup, parent) <-
+                  maybe (reject "custody_checkpoint_not_configured") pure
+                    (signingBackup settings)
+                require
+                  ( C.fingerprint deployment == identity
+                    && C.nativeSettings deployment == native
+                    && C.solanaSettings deployment == solana
+                    && C.nativeUnlockFile deployment == signingNativeUnlock settings
+                  ) "signer_profile_mismatch"
+
+                -- Export, upload, then verify that the ledger stayed at the
+                -- exported sequence. Always remove the temporary export.
+                result <- timeout 300000000 $ bracket
+                  (evalCustodyRecovery manager deployment $
+                    ExportCheckpoint reader (signingKey settings) parent minimumSequence)
+                  (removeDirectoryRecursive . takeDirectory . fst) $
+                  \(manifest, sequenceNo) -> do
+                    receipt <- evalCustodyRecovery manager deployment
+                      (UploadCustody backup manifest sequenceNo)
+                    after <- evalRead reader ReadState
+                    require (ledgerSequence after == sequenceNo) "custody_backup_changed"
+                    pure receipt
+                CheckpointResult <$>
+                  maybe (reject "custody_checkpoint_timeout") pure result
+
+              DraftSigning (DraftReplacement identity parent fee) -> do
+                require (identity == expectedIdentity) "signer_profile_mismatch"
+                DraftResult <$> withStableDecision
+                  (\now -> ReadReplacementDraftContext now parent fee)
+                  (\family -> NP.draftNativeReplacement nativeRpc native (map snd family) fee)
+
+              ReplacementSigning (SignReplacement identity decision) -> do
+                require (identity == expectedIdentity) "signer_profile_mismatch"
+                (family, signed) <- withStableDecision
+                  (\now -> ReadReplacementSigning now decision) $ \(family, draft) -> do
+                    signed <- withNativeUnlock nativeRpc native (signingNativeUnlock settings) $
+                      NP.signNativeReplacement nativeRpc native (map snd family) draft
+                    pure (family, signed)
+                parent <- case reverse family of
+                  (saved, _) : _ -> pure saved
+                  [] -> reject "native_replacement_family_bounds"
+                pure $ ReplacementResult $ SignedAttempt
+                  { signedId = NP.nativeTxid (NP.signedNativeTransaction signed)
+                  , signedBytes = NP.signedNativeBytes signed
+                  , signedPolicy = TE.decodeUtf8 (BL.toStrict $ encode signed)
+                  , commonInput = commonInput (recordedSigned parent)
+                  }
+
+              PreparedSigning (SignPrepared identity identifier generation) -> do
+                require (identity == expectedIdentity) "signer_profile_mismatch"
+                signed <- withStableDecision
+                  (\now -> ReadSigningDecision now identifier generation) $ \prepared -> do
+                    plan <- resolveSigningPlan (N.profile native) config prepared
+                    reply <- case plan of
+                      NativeAuthorization saved draft -> do
+                        _ <- N.nativeIdentity manager native
+                        withNativeUnlock nativeRpc native (signingNativeUnlock settings) $
+                          NativeReply <$> NP.signNativeDraft nativeRpc saved draft
+
+                      SolanaAuthorization saved expected -> do
+                        _ <- S.solanaIdentity manager solana
+                        let limits = config
+                              { H.maxSolFee = solPlanFeeLimit saved
+                              , H.maxSolAccountRent = solPlanRentLimit saved
+                              }
+                            sign actual = do
+                              require (actual == expected) "saved_solana_request_mismatch"
+                              H.signSolanaSdk (signingLibrary settings) limits
+                                (signingKey settings) actual
+                        SolanaReply <$> prepareSolanaSigned solanaRpc sign limits saved
+
+                    verifySigningReply nativeRpc (N.profile native) config prepared reply
+                pure (PreparedResult signed)
+
+          -- Worker/customer/operator effects use the same authorized Program.
+          _ -> evaluateOperation environment operation
 
 -- Private resources, never callbacks or operations supplied by a caller.
 data CriticalEnvironment = CriticalEnvironment

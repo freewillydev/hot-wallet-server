@@ -23,3 +23,14 @@ refl_boundary	PASS	one evalCritical call retained; exact Program shared by autho
 refl_size_cleanup	PASS	production1247->1233lines across same2files; tests+6lines; no new production files; task PostgreSQL cluster stopped/removed; no remaining task compilers/test processes
 refl_production	FAIL	Scoped refactor only; offline contracts are not funded acceptance or completion of existing release gates
 refl_independent_review	PASS	current_schema_verifier reviewed staged diff sha256=44cd5d5267df3100cd713b104f7b9e9fd2468a246719d2cbdc91feca34171891; only verdict metadata appended
+readable_baseline	PASS	0cddf4c80a80831f4cf57177ad3209817fc5ece0; only evalCritical staged; payout work excluded
+readable_review	PASS	single_schema_callgraph source-equivalence verdict; source diff sha256=e811cdace6a4a0e0c82a8d5f0254dbc929ec0baee1db8db626e069897c56d2f0; staged Critical.hs sha256=6f2a18b522819b65cc6ca118628af7d030943a2f6913e1687f4b6681c9ec722a; sole call unchanged
+readable_build	PASS	/tmp/hot-wallet-round-build.log sha256=b934c2907647482b8d738c04190f9a3a6f3c0cc0a0dfd1819c089eddbc2f00e2; combined working tree includes unstaged payout work
+readable_properties	PASS	/tmp/hot-wallet-round-test-final.log sha256=ab7fa7152320a210a33b8e1ec98978ef4cdef936322a06471d51b46e581ecc17; combined working tree includes unstaged payout work
+readable_pg_payout	PASS	/tmp/hot-wallet-round-payout.log sha256=dd3e7825fc373cf93fad296886fef30268c8039f5a6d006df08d7c6cc539798c; combined working tree includes unstaged payout work
+readable_pg_default	PASS	/tmp/hot-wallet-round-default.log sha256=0483bd6c51a75e17bd2068e285ababb646d727ff5e90bc923850f17b67acfd51; combined working tree includes unstaged payout work
+readable_server	PASS	/tmp/hot-wallet-round-server.log sha256=d652e9b2d59c32246013a8f168597fd18dda8b0908b8ff82f5704f93e3be2669; combined working tree includes unstaged payout work
+readable_signer	PASS	/tmp/hot-wallet-round-tls.log sha256=d876b4a87ce2d4b3384b3e8952cbea27714c6e62fda717962e83cf0db3f626a6; combined working tree includes unstaged payout work
+readable_setup	PASS	/tmp/hot-wallet-round-setup.log sha256=d017249a37d5051c7424fe92632e3242a8b13cc6c680382df1e450a417c2e930; combined working tree includes unstaged payout work
+readable_scope	PASS	same Cabal build/test options as refl entries; 223 local checks; five disposable PostgreSQL/process modes; no real-chain activity; test processes stopped
+readable_production	FAIL	Readability refactor only. Payout queue-capacity issue and outstanding production gates remain open.
