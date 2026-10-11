@@ -23,7 +23,7 @@ import Control.Concurrent.Async (withAsync,wait,cancel,poll,mapConcurrently)
 import Control.Concurrent.MVar (newEmptyMVar,putMVar,takeMVar,tryPutMVar)
 import System.Timeout (timeout)
 import qualified Opaleye.Internal.Locking as Locking
-import Bridge.Identity (capabilityHash,payInstruction,digest,publicKey)
+import Bridge.Identity (capabilityHash,payInstruction,digest,publicKey,emptyNativeReceipts,addNativeReceipt,nativeReceiptCommitment)
 import qualified Bridge.Wire as W
 import qualified Data.Aeson.KeyMap as KM
 import Data.Aeson (ToJSON,encode,object,(.=),toJSON,Value(..),eitherDecodeStrict')
@@ -77,11 +77,11 @@ import qualified Bridge.Store.Schema as S
 import qualified Bridge.Store.Projection as Projection
 import Control.Exception
 import Data.Int (Int64)
-import Data.List (sort)
+import Data.List (sort,sortOn)
 import Data.IORef
 import GHC.Stack (HasCallStack,callStack,prettyCallStack)
 import Test.QuickCheck (quickCheckWithResult,stdArgs,maxSuccess,forAll,chooseInteger,ioProperty,isSuccess)
-import Control.Monad (unless,void,when,forM_,filterM)
+import Control.Monad (unless,void,when,forM_,foldM,filterM)
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import qualified Database.PostgreSQL.Simple as PG
@@ -1814,11 +1814,11 @@ ledgerMain = do
       withWriter settings (store policy limits) (const $ pure ()) $ \writer->do
         -- A still-pending first page must not starve later recovery sources.
         previous<-evalRead reader (ReadCheckpoint "Native")
-        let tx=T.replicate 64 "d"
+        let tx=T.replicate 63 "d"<>"9"
             receipt=W.Deposit "" Nothing Native (money 10) "block-page" 0 False 100
             batch deposits=W.ScanBatch "Native" "scan-origin" previous (maybe "scan-origin" id previous) 100 deposits []
             page deposits=evalWrite writer (CommitNativePage $ batch deposits)
-            pendingSources=[receipt {W.depositId="native:"<>T.replicate 64 "d"<>":"<>T.pack(show n),
+            pendingSources=[receipt {W.depositId="native:"<>tx<>":"<>T.pack(show n),
               W.depositOrder=Nothing,W.depositEligible=False,W.depositConfirmations=0} | n<-[1..1101::Int]]
             writePages rows=mapM_ page [take 600 rows,drop 600 rows]
             collectSources after=do
@@ -1841,6 +1841,45 @@ ledgerMain = do
         remaining<-collectSources Nothing
         check (all ((`notElem` remaining).W.depositId) pendingSources)
         evalWrite writer (CommitScan $ batch [])
+        complete<-mapM (evalRead reader . ReadSource . W.depositId) pendingSources
+        digestState<-either (fail . T.unpack) pure $ foldM addNativeReceipt emptyNativeReceipts (sortOn (\d->(T.length $ W.depositId d,W.depositId d)) complete)
+        let commitment=nativeReceiptCommitment digestState
+            proof committed=object ["txid" .= tx,"confirmations" .= (2::Int),"blockhash" .= ("block-page"::T.Text),"receiptCommitment" .= committed]
+            event committed=W.ChainEvent tx "unmatched_incoming" "block-page" (proof committed)
+            publish committed=do
+              evalWrite writer (CommitScan $ (batch []) {W.scanEvents=[event committed]})
+              fixture fixtures RefreshCustody
+            target=W.depositId $ last pendingSources
+            allocate=evalWrite writer (AllocateTreasury 110 target [("float",money 10)] "large receipt proof")
+        baseline<-evalRead reader ReadBalances
+        case commitment of
+          Object fields->forM_ [("count",toJSON(1100::Int)),("sha256",toJSON(T.replicate 64 "0"))] $ \(key,value)->do
+            publish (Object $ KM.insert key value fields)
+            expectStore "verified_treasury_receipt_required" allocate
+            evalRead reader ReadBalances >>= check . (==baseline)
+          _->fail "receipt commitment object required"
+        publish commitment
+        page []
+        fixture fixtures RefreshCustody
+        expectStore "scanners_not_fresh" allocate
+        publish commitment
+        let sibling=head complete
+        evalWrite writer (RefreshPaymentSource sibling (sibling {W.depositConfirmations=3}))
+        fixture fixtures (SourceEligibility (W.depositId sibling) False)
+        fixture fixtures RefreshCustody
+        expectStore "verified_treasury_receipt_required" allocate
+        fixture fixtures (SourceEligibility (W.depositId sibling) True)
+        fixture fixtures (SourceEligibility target False)
+        fixture fixtures RefreshCustody
+        expectStore "receipt_not_available_for_treasury" allocate
+        fixture fixtures (SourceEligibility target True)
+        fixture fixtures RefreshCustody
+        void allocate
+        afterAllocation<-evalRead reader ReadBalances
+        check (M.findWithDefault 0 (Native,Unallocated) afterAllocation==M.findWithDefault 0 (Native,Unallocated) baseline-10
+          && M.findWithDefault 0 (Native,Float) afterAllocation==M.findWithDefault 0 (Native,Float) baseline+10)
+        void allocate
+        evalRead reader ReadBalances >>= check . (==afterAllocation)
       beforeLarge<-evalRead reader ReadBalances
       fixture fixtures LargeBalances
       huge <- evalRead reader ReadBalances

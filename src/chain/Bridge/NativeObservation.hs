@@ -5,13 +5,13 @@ import Bridge.Wire
 import Bridge.Native
 import Bridge.RPC
 import Bridge.Error
-import Bridge.Identity (digest)
-import Control.Monad (forM,forM_,when)
+import Bridge.Identity (digest,emptyNativeReceipts,addNativeReceipt,nativeReceiptCommitment)
+import Control.Monad (forM,forM_,foldM,when)
 import Data.Aeson
 import qualified Data.ByteString.Lazy as LBS
 import Data.Int (Int64)
 import Data.IORef
-import Data.List (nub)
+import Data.List (nub,sortOn)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Text.Read (readMaybe)
@@ -120,10 +120,11 @@ scanNativeWith call history c defaultDepth depth previous now recoveryPage looku
         pure ([receipt],False)
     let deposits=concatMap fst rows
     require (length (nub $ map depositId deposits)==length deposits) "duplicate_native_receipt"
+    commitment<-foldM (\state receipt->either reject pure $ addNativeReceipt state receipt) emptyNativeReceipts (sortOn (\d->(T.length $ depositId d,depositId d)) deposits)
     let sending=or (map snd rows)
         evidence=object ["txid" .= txid,"confirmations" .= confirmations,"blockhash" .= anchor
           ,"walletNetUnits" .= T.pack(show walletUnits),"feeUnits" .= feeAmount
-          ,"receipts" .= [object ["id" .= depositId d,"amount" .= depositAmount d,"order" .= depositOrder d,"eligible" .= depositEligible d] | d<-deposits]
+          ,"receiptCommitment" .= nativeReceiptCommitment commitment
           ,"rpcPayloadHash" .= digest (LBS.toStrict $ encode value)]
         kind | sending = "outgoing"
              | any ((/=Nothing) . depositOrder) deposits = "incoming"

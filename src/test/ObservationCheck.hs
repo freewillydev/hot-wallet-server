@@ -4,6 +4,7 @@ import Bridge.Domain (Amount, Asset(..), Direction(..), amount, units)
 import qualified Bridge.Wire as W
 import Bridge.PaymentSource (verifyPaymentSource,inspectNativeSource)
 import qualified Bridge.SolanaHelper as H
+import Bridge.Identity (emptyNativeReceipts,addNativeReceipt,nativeReceiptCommitment)
 import Bridge.Error
 import Bridge.RPC (fieldValue)
 import Bridge.Native (NativeSettings(..),signetChallenge)
@@ -14,6 +15,8 @@ import Bridge.SolanaObservation (scanSolanaWith,scanSolanaOperatingWith)
 import Bridge.SolanaDeposit
 import Bridge.SolanaMessage (base58)
 import Control.Exception (try)
+import Control.Monad (foldM)
+import qualified Data.ByteString.Lazy as BL
 import Data.Aeson hiding (Result)
 import Data.Aeson.Types (parseEither)
 import qualified Data.Aeson.KeyMap as KM
@@ -387,6 +390,22 @@ nativeChecks=do
         pages<-readIORef emitted
         pure (refused && length pages==1 && all ((==Just origin).W.scanPrevious) pages
           && concatMap W.scanDeposits pages==[deposit])
+    , check "many native receipts keep compact evidence without dropping any receipt" $ once $ ioProperty $ do
+        let indices=[0..199::Int]
+            expanded=replace ["amount"] (Number 0.2) $
+              replace ["decoded","vout"] (toJSON [replace ["n"] (toJSON n) output | n<-indices]) $
+              replace ["details"] (toJSON [replace ["vout"] (toJSON n) detail | n<-indices]) transaction
+        batch<-scan (\method->if method=="gettransaction" then const expanded else id) (Just origin) binding
+        commitment<-either (fail . T.unpack) pure $ foldM addNativeReceipt emptyNativeReceipts $ sortOn (\d->(T.length $ W.depositId d,W.depositId d)) $ W.scanDeposits batch
+        case W.scanEvents batch of
+          [event]->do
+            actual<-fieldValue "receiptCommitment" (W.chainEventEvidence event)
+            count<-fieldValue "count" actual :: IO Int
+            let oldProof=object ["receipts" .= [object ["id" .= W.depositId d,"amount" .= W.depositAmount d,
+                  "order" .= W.depositOrder d,"eligible" .= W.depositEligible d] | d<-W.scanDeposits batch]]
+            pure (count==200 && length(W.scanDeposits batch)==200 && actual==nativeReceiptCommitment commitment
+              && BL.length(encode $ W.chainEventEvidence event)<8192 && BL.length(encode oldProof)>8192)
+          _->pure False
     , check "native eligibility honors saved depth and negative confirmations retain receipt" $ once $ ioProperty $ do
         let changed n method=if method=="gettransaction" then replace ["confirmations"] (Number n) else id
         shallow<-scan (changed 2) (Just origin) binding

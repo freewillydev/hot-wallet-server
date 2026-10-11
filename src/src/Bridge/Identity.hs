@@ -1,7 +1,12 @@
 -- Exact baseline capability hashing; raw tokens never become persisted IDs.
-module Bridge.Identity (digest, capabilityHash, bearerHash,payInstruction,payReference,payURIFor,publicKey) where
+module Bridge.Identity (digest, capabilityHash, bearerHash,payInstruction,payReference,payURIFor,publicKey, NativeReceiptDigest, emptyNativeReceipts, addNativeReceipt, nativeReceiptCommitment) where
 import Bridge.Domain (Amount,renderCoins)
-import Crypto.Hash (Digest,SHA256,hash)
+import Crypto.Hash (Digest,SHA256,Context,hash,hashInit,hashUpdate,hashFinalize)
+import qualified Bridge.Wire as W
+import Bridge.Domain (Asset(Native))
+import Data.Aeson (Value,encode,object,(.=))
+import qualified Data.ByteString.Lazy as BL
+import Text.Read (readMaybe)
 import qualified Data.ByteArray.Encoding as BA
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
@@ -44,3 +49,23 @@ payURIFor owner mint instruction quantity = do
   reference<-maybe (Left "invalid_pay_reference") Right (T.stripPrefix "solana-pay:" instruction)
   mapM_ publicKey [owner,mint,reference]
   pure ("solana:"<>owner<>"?amount="<>renderCoins quantity<>"&spl-token="<>mint<>"&reference="<>reference<>"&label=ECX%20Bridge")
+
+-- Domain-separated receipt commitment, ordered by ID length then ID (canonical
+-- decimal output indices within one transaction). Only immutable binding and
+-- current eligibility participate; allocation/first-seen changes do not.
+data NativeReceiptDigest = NativeReceiptDigest !Integer !Text !(Context SHA256)
+emptyNativeReceipts :: NativeReceiptDigest
+emptyNativeReceipts = NativeReceiptDigest 0 "" (hashUpdate hashInit ("ecx-native-receipts-v1\n" :: ByteString))
+addNativeReceipt :: NativeReceiptDigest -> W.Deposit -> Either Text NativeReceiptDigest
+addNativeReceipt (NativeReceiptDigest count previous context) receipt = do
+  let identifier=W.depositId receipt
+  case T.splitOn ":" identifier of
+    ["native",tx,index] | T.length tx==64,T.all (`elem` ("0123456789abcdef"::String)) tx,
+      Just n<-(readMaybe (T.unpack index)::Maybe Integer),n>=0,n<=4294967295,T.pack(show n)==index,
+      W.depositAsset receipt==Native,(T.length identifier,identifier)>(T.length previous,previous)->pure ()
+    _->Left "invalid_native_receipt_commitment"
+  let bytes=BL.toStrict $ encode (identifier,W.depositAmount receipt,W.depositOrder receipt,W.depositEligible receipt)
+  pure $ NativeReceiptDigest (count+1) identifier (hashUpdate (hashUpdate context bytes) ("\n" :: ByteString))
+nativeReceiptCommitment :: NativeReceiptDigest -> Value
+nativeReceiptCommitment (NativeReceiptDigest count _ context) = object
+  ["version" .= (1::Int),"count" .= count,"sha256" .= TE.decodeUtf8 (BA.convertToBase BA.Base16 (hashFinalize context))]

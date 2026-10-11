@@ -13,7 +13,7 @@ import qualified Bridge.NativePayment as N
 import Bridge.Error
 import Bridge.Fence (withFence)
 import qualified Bridge.Fence as Fence
-import Bridge.Identity (bearerHash,digest,payInstruction,publicKey)
+import Bridge.Identity (bearerHash,digest,payInstruction,publicKey,emptyNativeReceipts,addNativeReceipt,nativeReceiptCommitment)
 import Text.Read (readMaybe)
 import qualified Bridge.Wire as W
 import Bridge.Domain
@@ -32,7 +32,7 @@ import Data.Scientific (Scientific,floatingOrInteger)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Control.Concurrent.MVar
 import Control.Exception
-import Control.Monad (unless,forM,forM_,when,void)
+import Control.Monad (unless,forM,forM_,foldM,when,void)
 import Data.Aeson (Key,FromJSON,ToJSON,Value(Null,Object),object,(.=),toJSON,encode,eitherDecodeStrict',withObject,(.:),(.:?))
 import Data.Aeson.Types (parseEither)
 import qualified Data.Aeson.KeyMap as KM
@@ -3067,14 +3067,30 @@ allocateTreasury c policy now receipt split reason = do
       require (anchor==S.depositAnchor source && (kind=="unmatched_incoming" || currency==Native && kind=="incoming")) "verified_treasury_receipt_required"
       case currency of
         Native->do
-          receipts<-field "receipts" proof :: IO [Value]
-          matching<-forM receipts $ \value->do
-            identifier<-field "id" value
-            n<-field "amount" value :: IO Amount
-            order<-field "order" value :: IO (Maybe Text)
-            eligible<-field "eligible" value
-            pure (identifier==receipt && units n==quantity && order==Nothing && eligible)
-          require (length(filter id matching)==1) "verified_treasury_receipt_required"
+          health<-O.runSelect c $ do
+            (stream,success,failure,_)<-O.selectTable S.scanHealth
+            O.where_ (stream O..== text "Native")
+            pure (success,failure)
+            :: IO [(Maybe Int64,Maybe Text)]
+          require (case health of [(Just _,Nothing)]->True; _->False) "scanners_not_fresh"
+          case proof of
+            Object fields | Just commitment<-KM.lookup "receiptCommitment" fields->do
+              require (not $ KM.member "receipts" fields) "invalid_treasury_evidence"
+              actual<-field "txid" proof
+              block<-field "blockhash" proof :: IO (Maybe Text)
+              require (actual==key && block==Just anchor) "invalid_treasury_evidence"
+              depth<-field "confirmations" proof
+              verifyNativeReceiptCommitment c key anchor depth commitment
+            _->do
+              -- Existing immutable observations remain valid until rescanned.
+              receipts<-field "receipts" proof :: IO [Value]
+              matching<-forM receipts $ \value->do
+                identifier<-field "id" value
+                n<-field "amount" value :: IO Amount
+                order<-field "order" value :: IO (Maybe Text)
+                eligible<-field "eligible" value
+                pure (identifier==receipt && units n==quantity && order==Nothing && eligible)
+              require (length(filter id matching)==1) "verified_treasury_receipt_required"
         _->do
           delta<-field "delta" proof :: IO Text
           require (delta==T.pack(show quantity)) "verified_treasury_receipt_required"
@@ -3091,6 +3107,31 @@ allocateTreasury c policy now receipt split reason = do
       pure sequenceNo
     _->reject "duplicate_treasury_allocation"
  where field key value=either (const $ reject "invalid_treasury_evidence") pure (parseEither (withObject "treasury evidence" (.: key)) value)
+
+-- Compare all durable outpoints with the compact transaction proof. Canonical
+-- decimal indices order by length then digits; no whole-transaction row list.
+verifyNativeReceiptCommitment :: PG.Connection -> Text -> Text -> Int64 -> Value -> IO ()
+verifyNativeReceiptCommitment c tx anchor depth expected = do
+  require (T.length tx==64 && T.all (`elem` ("0123456789abcdef"::String)) tx && depth>=0) "invalid_treasury_evidence"
+  actual<-page "" emptyNativeReceipts
+  require (nativeReceiptCommitment actual==expected) "verified_treasury_receipt_required"
+ where
+  page after commitment=do
+    rows<-O.runSelect c $ O.limit 128 $ O.orderBy (O.asc (O.sqlLength . S.depositId) <> O.asc S.depositId) $ do
+      row<-O.selectTable S.deposits
+      O.where_ (S.depositAsset row O..== O.sqlStrictText "Native"
+        O..&& O.like (S.depositId row) (O.sqlStrictText $ "native:"<>tx<>":%")
+        O..&& (O.sqlLength (S.depositId row) O..> O.sqlInt4 (T.length after)
+          O..|| (O.sqlLength (S.depositId row) O..== O.sqlInt4 (T.length after) O..&& S.depositId row O..> O.sqlStrictText after)))
+      pure row
+    next<-foldM (\state row->do
+      -- Focused source refresh may advance depth without replacing the event.
+      require (S.depositAnchor row==anchor && S.depositDepth row>=depth) "verified_treasury_receipt_required"
+      receipt<-asDeposit row
+      checked (addNativeReceipt state receipt)) commitment rows
+    case reverse rows of
+      []->pure next
+      lastRow:_->page (S.depositId lastRow) next
 
 initialFundingReplay :: PG.Connection -> Text -> Text -> Text -> IO (Maybe Int64)
 initialFundingReplay c receipt key reason = do

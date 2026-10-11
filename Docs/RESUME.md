@@ -1257,3 +1257,28 @@ still have independent caps. Complete their bounded representation and verify
 treasury/source/custody consumers before closing native-history-nonprogress.
 Long-scan freshness, actual node conflict acceptance and the remaining release
 gates are still open. No funds or deployment were changed; public access stays off.
+
+### Compact Native receipt evidence (2026-10-11)
+
+Observer evidence now commits to receipt count and a domain-separated SHA256 of
+canonical IDs, amounts, order bindings and eligibility. Treasury verifies all
+durable outpoints in 128-row Opaleye pages, with matching anchors, non-regressing
+depth and completed scan health. This removes inline receipt-list growth from
+the saved allocation proof; existing immutable inline evidence remains readable.
+No schema, dependency, API or signing authority changes.
+
+Fresh native_receipt_review found exact depth equality broke legitimate sibling
+source refresh. Parent confirmed and corrected it, with a regression using actual
+RefreshPaymentSource. Initial PG fixture reused an existing transaction ID; the
+new fixture now has its own ID. Final session27275 exit0: full Cabal bridge-test
+and default PostgreSQL contract PASS. Checks include 200-output compact evidence,
+1,101-receipt verification, count/hash/sibling-eligibility tampering, partial scans,
+forward confirmations and allocation replay. Retained Codex Security evidence:
+artifacts/native-receipts-reviewed-suite.log, native-receipts-reviewed-pg.log and
+findings/native-receipts-checkpoint.md. No second independent PASS is claimed.
+
+Net +67 production lines in three existing modules, +58 test lines in two files.
+Native-history finding remains open: individual transaction RPC/output limits and
+long-scan freshness still need completion. Test PostgreSQL stopped and removed;
+no funds/deployment/public access changed. Refunds bypass batching, normal swaps
+remain batched, and all existing refund safety checks remain required.
