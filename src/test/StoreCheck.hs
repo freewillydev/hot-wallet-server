@@ -3701,7 +3701,13 @@ serverMain = do
     check (adopted==ExitSuccess)
     adoptedState<-either fail pure (eitherDecodeStrict' $ TE.encodeUtf8 $ T.pack output)
     fieldValue "paused" adoptedState >>= check . (==True)
-    withReader settings {PG.connectUser=role} identity (Config.backupRequired config) $ \reader->do
+    let serverLog=directory</>"server.log"
+        siblingLog=directory<>"server.log"
+        sentinel=directory</>"untouched"
+    BS.writeFile sentinel "untouched"
+    -- A visible sibling in /tmp must never receive the private server log.
+    bracket (Posix.createSymbolicLink sentinel siblingLog) (const $ removeFile siblingLog) $ \()->
+     withReader settings {PG.connectUser=role} identity (Config.backupRequired config) $ \reader->do
       before<-evalRead reader ReadBalances
       archive<-evalBackup reader (ExportLedger directory)
       let runRestore minimumSequence=Process.readCreateProcessWithExitCode
@@ -3730,18 +3736,20 @@ serverMain = do
         (Process.proc binary ["recover-ledger",filename,backupConfig,replicate 64 'a',directory,"0"]) {Process.env=Just childEnv} ""
       check (denied/=ExitSuccess && "https_backup_repository_required" `T.isInfixOf` T.pack message)
       bracket (HTTP.newManager HTTP.defaultManagerSettings {HTTP.managerResponseTimeout=HTTP.responseTimeoutMicro 1000000}) HTTP.closeManager $ \manager->
-        withFile (directory<>"server.log") WriteMode $ \logFile->
+        withFile serverLog WriteMode $ \logFile->
           Process.withCreateProcess (Process.proc binary ["observe",filename])
             {Process.env=Just childEnv,Process.std_out=Process.UseHandle logFile,Process.std_err=Process.UseHandle logFile} $ \_ _ _ process->
             flip finally (Process.terminateProcess process >> void (Process.waitForProcess process)) $ do
               let get path=HTTP.parseRequest ("http://127.0.0.1:"<>show port<>path) >>= \request->HTTP.httpLbs request manager
-                  wait 0=readFile (directory<>"server.log") >>= fail . ("server did not bind: "<>)
+                  wait 0=readFile serverLog >>= fail . ("server did not bind: "<>)
                   wait n=do
                     alive<-Process.getProcessExitCode process
                     check (alive==Nothing)
                     result<-try (get "/api/v1/config") :: IO (Either HTTP.HttpException (HTTP.Response BL.ByteString))
                     case result of Right reply->pure reply; Left _->threadDelay 50000 >> wait (n-1::Int)
               public<-wait 400
+              BS.readFile sentinel >>= check . (=="untouched")
+              Posix.getSymbolicLinkStatus serverLog >>= check . Posix.isRegularFile
               check (statusCode(HTTP.responseStatus public)==200)
               decoded<-either fail pure (eitherDecodeStrict' $ BL.toStrict $ HTTP.responseBody public)
               check (W.pubDeployment decoded==Config.deploymentId config && not(W.pubIntakeEnabled decoded)

@@ -1081,3 +1081,20 @@ checkpoint and duplicate-posting refusal. All14 harness modes returned exit0.
 The disposable PostgreSQL cluster and retained synthetic history backup were
 removed after shutdown; logs remain in the receipt's temporary evidence directory.
 No application change, live funds, public ingress or production gate waiver.
+
+### Security review and private test log (2026-10-11)
+
+Codex Security scan dd391a4d-041c-4fb7-a16e-12378cb8f1ad completed against
+1c8da93 with confirmed Native-history nonprogress (Medium) and temporary test-log
+symlink truncation (Low). This is not a production security pass. Native scanning
+still needs a complete bounded enumeration design; raising limits or advancing
+coverage past unprocessed receipts is not a fix. Spool-race and dependency review
+uncertainties remain open.
+
+Corrected both server test-log references to use the private directory. The
+existing process contract now plants the old sibling symlink and verifies its
+sentinel remains intact and the private log is regular. One-job build and both
+server/server_canonical PostgreSQL contracts PASS (session20803 exit0); fresh
+read-only patch reviewer PASS, static scope only. Disposable PostgreSQL stopped
+and its data removed. No runtime or financial behavior changed. Refunds bypass
+batching; ordinary swaps retain configured thresholds and intervals.
