@@ -1,5 +1,22 @@
 # Dependency review status
 
+## Current applicability review — 2026-10-11
+
+Source checkpoint: `202b4884ce5a68b4045749b16b08fab6746af733`.
+These are scoped static findings, not an independent production PASS.
+
+| Advisory | Evidence established | Remaining release evidence |
+| --- | --- | --- |
+| RUSTSEC-2025-0141 | Informational unmaintained-package notice; no specific exploit claimed. Current direct production bincode calls serialize constructed transactions. | Independent maintenance-risk decision and SDK review; do not change wire codecs merely to suppress the notice. |
+| HSEC-2026-0006 | Inspected pinned Cabal deletion logic and native/browser dependency header generators. The two Configure dependencies generate headers absent from their source archives, in the build directory. | Ubuntu fresh/repeat install: resolved include paths and source preservation. The dependency remains affected, not patched. |
+| HSEC-2023-0007 | Pinned native GHC source and installed JavaScript compiler interfaces confirm ordinary Float/Double Read checks exponent bounds. Generic Numeric.readFloat remains unbounded. | Independent applicability review of combined current input paths and artifact provenance; this is not an exhaustive compiled call graph. |
+
+Evidence is retained in the Codex Security target collection under `findings/`:
+`dependency-triage-d9dd8bd.json`, `cabal-native-browser-header-review-d9dd8bd.md`,
+`native-boot-readfloat-202b488.md`, `browser-readfloat-interface-202b488.md`.
+Do not repeat these inventories without changed inputs; pursue the remaining
+evidence above. Earlier source counts and runtime receipts below are historical.
+
 ## Standalone server refresh — 2026-10-10
 
 Reviewed source baseline: `790f0400840518a2449615e45f696aaaf5eb78ba`.
@@ -29,11 +46,11 @@ strings, optional strings and integral fields, with an 8,192-byte input bound;
 it adds no floating-point `Read` field. The broader `readFloat` reachability
 finding remains open.
 
-Codex Security was installed through the app on 2026-10-11 and its tools became
-available. The current full repository scan is pending; no passing result is claimed.
-The upstream scan receipts do not cover this standalone server. A current
-whole-application review, including the eventual payout fix and installation
-artifact, remains a release gate.
+Standard Codex Security scan `dd391a4d-041c-4fb7-a16e-12378cb8f1ad` completed
+against standalone commit `1c8da93`; it did not pass the production security gate.
+Subsequent fixes and their scoped checks are recorded in `DONE.md`. Final review
+of the current application and installation artifact remains a release gate;
+neither upstream receipts nor this dependency review substitute for it.
 
 ## Earlier dependency evidence
 
