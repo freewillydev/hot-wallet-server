@@ -20,6 +20,7 @@ destination=/etc/ecx-bridge/tunnel
 binary=/usr/local/lib/hot-wallet-server/cloudflared
 support=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 pins=$support/../assets/toolchains.json
+[ ! -f "$support/manifest.sha256" ] || pins=$support/share/toolchains.json
 url=$(jq -er --arg arch "$(uname -m)" '.cloudflared[$arch][0]' "$pins")
 expected=$(jq -er --arg arch "$(uname -m)" '.cloudflared[$arch][1]' "$pins")
 for directory in /etc/ecx-bridge "$destination" /usr/local/lib/hot-wallet-server; do

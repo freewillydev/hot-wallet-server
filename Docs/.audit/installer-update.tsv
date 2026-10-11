@@ -1,0 +1,7 @@
+check	verdict	evidence
+configure	PASS	Cabal bridge-test --configure-only session93985 exit0; /tmp/hot-wallet-config-update-test.log sha256=61c89cc6448e4754eedd4726e6632cfeda5980bb58bfcc8967d9fa22bbecf393
+private_config_signed_update	PASS	Ubuntu24.04 x86_64 isolated fixtures SSM0c5e9c62-c4c3-4010-a9b5-d7a62fb8c8da: root700/file600; repeat preservation; unsafe mode, hardlink, symlink, missing installation and signed-artifact tampering refused
+package_dispatch	PASS	Actual generated header with fixture payload SSMe09893b5-7e5c-4d77-a2ca-1ce6aecd0405: default, update, fresh, recover, upgrade, prepare-upgrade routing
+interrupted_launch	PASS	SSMf121995f-2358-4082-8c83-7f3746a48f88: disposable root paths and stubbed application; first config only, start failure after config directory creation, tunnel failure/retry, changed config refusal
+separate_static_review	PASS	history_projection_verifier: corrected expanded diff; launch sha256=824480480c1a919dba989bac27c50357c95c7abb3db8cc1170ffd0092d67cbf6; prior interrupted-setup finding fixed
+production_acceptance	FAIL	No full service upgrade, reboot, funded flow or production security certification in this scoped verification; fixtures do not establish those gates

@@ -3,10 +3,17 @@
 set -eu
 umask 077
 [ "$(id -u)" = 0 ] || { echo 'Run install.sh as root on the target Ubuntu server.' >&2; exit 1; }
-[ "$#" -eq 1 ] || { echo 'Usage: sudo ./build/install.sh /absolute/private/server.conf' >&2; exit 1; }
-case "$1" in /*) config=$1;; *) echo 'Supply an absolute configuration path.' >&2; exit 1;; esac
+[ "$#" -le 1 ] || { echo 'Usage: sudo ./build/install.sh [/absolute/private/server.conf]' >&2; exit 1; }
 . /etc/os-release
 [ "$ID:$VERSION_ID" = ubuntu:24.04 ] || { echo 'Ubuntu 24.04 is required.' >&2; exit 1; }
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+if [ "$#" = 0 ]; then
+  result=0
+  sh "$root/build/install/config" "$root/example.conf" || result=$?
+  case "$result" in 0) ;; 10) exit 0;; *) exit "$result";; esac
+  set -- /root/hot-wallet/server.conf
+fi
+case "$1" in /*) config=$1;; *) echo 'Supply an absolute configuration path.' >&2; exit 1;; esac
 parent=$(dirname -- "$config")
 [ -d "$parent" ] && [ ! -L "$parent" ] && [ "$(stat -c '%u:%a' "$parent")" = 0:700 ] || {
   echo 'Configuration directory must be root-owned, mode 700, and not a symlink.' >&2; exit 1;
@@ -17,7 +24,6 @@ exec 8<"$config"
 [ -f "/proc/$$/fd/8" ] && [ "$(stat -Lc '%u:%a:%h' "/proc/$$/fd/8")" = 0:600:1 ] || {
   echo 'Configuration must be root-owned, mode 600, with one hard link.' >&2; exit 1;
 }
-root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 state=/var/lib/hot-wallet-server
 if [ -e "$state" ] || [ -L "$state" ]; then
   [ -d "$state" ] && [ ! -L "$state" ] && [ "$(stat -c '%u:%a' "$state")" = 0:700 ] || {
@@ -67,7 +73,7 @@ source="$buildhome/source-$commit"
 archive=$(mktemp "$state/source.XXXXXXXX")
 trap 'rm -f -- "$archive"' EXIT
 trap 'exit 1' HUP INT TERM
-git -c safe.directory="$root" -C "$root" archive --format=tar "$commit" src Docs build LICENSE > "$archive"
+git -c safe.directory="$root" -C "$root" archive --format=tar "$commit" src Docs build LICENSE example.conf > "$archive"
 # Only the build user writes inside its home, including extraction and cleanup.
 runuser -u "$account" -- sh -c '
   set -eu

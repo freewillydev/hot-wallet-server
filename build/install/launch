@@ -5,8 +5,20 @@ umask 077
 [ "$(id -u)" = 0 ] || { echo 'Run this installer with sudo.' >&2; exit 1; }
 . /etc/os-release
 [ "$ID:$VERSION_ID:$(uname -m)" = ubuntu:24.04:x86_64 ] || { echo 'Ubuntu 24.04 x86_64 required.' >&2; exit 1; }
+if [ "$#" != 0 ]; then
+  [ "$#" = 2 ] && [ "$1" = update ] || { echo 'Usage: update ORIGINAL_SETUP_DIRECTORY' >&2; exit 1; }
+  case "$2" in /*) ;; *) echo 'Absolute original setup directory required.' >&2; exit 1;; esac
+  [ -f /etc/ecx-bridge/installed ] && [ -f "$2/setup.json" ] || {
+    echo 'Update requires an installed server and its original setup directory.' >&2; exit 1;
+  }
+fi
 bundle=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 (cd "$bundle" && sha256sum --check --status manifest.sha256)
+if [ "$#" = 0 ] && [ ! -e /etc/ecx-bridge ]; then
+  result=0
+  sh "$bundle/config" "$bundle/share/example.conf" || result=$?
+  case "$result" in 0) ;; 10) exit 0;; *) exit "$result";; esac
+fi
 release=$(sha256sum "$bundle/manifest.sha256" | cut -d' ' -f1)
 base=/opt/ecx-bridge-bootstrap
 [ ! -L "$base" ] || { echo 'Bootstrap directory must not be a symlink.' >&2; exit 1; }
@@ -42,6 +54,35 @@ if [ ! -e "$target" ]; then
   staging=
 fi
 (cd "$target" && sha256sum --check --status manifest.sha256)
+if [ "${1:-}" = update ]; then
+  # start validates private setup and enters Upgrade.withLifecycle. Never call
+  # the low-level install upgrade mode without its verified checkpoint journal.
+  exec "$target/bin/ecx-bridge" start "$2" </dev/null
+fi
+if [ ! -e /etc/ecx-bridge ] || [ -f /var/lib/hot-wallet-server/.ecx-bridge/install.conf ]; then
+  setup=/var/lib/hot-wallet-server
+  if [ ! -e "$setup" ] && [ ! -L "$setup" ]; then
+    install -d -o root -g root -m 0700 "$setup"
+  fi
+  [ -d "$setup" ] && [ ! -L "$setup" ] && [ "$(stat -c '%u:%a' "$setup")" = 0:700 ] || {
+    echo 'Unsafe installation state directory.' >&2; exit 1;
+  }
+  sh "$target/config" "$target/share/example.conf"
+  if [ -f "$setup/.ecx-bridge/install.conf" ]; then
+    cmp -s /root/hot-wallet/server.conf "$setup/.ecx-bridge/install.conf" || {
+      echo 'Configuration differs from saved setup; reviewed reconfiguration required.' >&2; exit 1;
+    }
+  fi
+  if [ -f /etc/ecx-bridge/installed ]; then
+    [ "$(cat /etc/ecx-bridge/installed)" = "$release" ] || {
+      echo 'A different release is installed. Use build/update.sh to update existing custody.' >&2; exit 1;
+    }
+  else
+    "$target/bin/ecx-bridge" configure-file /root/hot-wallet/server.conf "$setup/.ecx-bridge" </dev/null
+  fi
+  "$target/bin/ecx-bridge" start "$setup/.ecx-bridge" </dev/null
+  exec sh "$target/tunnel" "$setup/.ecx-bridge"
+fi
 # Keep one memorable entry command even before the worker is installed.
 if [ -e /usr/local/bin/ecx-bridge ] && [ ! -L /usr/local/bin/ecx-bridge ]; then
   echo 'Existing /usr/local/bin/ecx-bridge is not a managed symlink; refusing to overwrite.' >&2

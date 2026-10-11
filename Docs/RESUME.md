@@ -8,6 +8,18 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Implemented and checked
 
+- 2026-10-11: `build/update.sh` authenticates a signed candidate and routes its
+  `start` through the existing checkpointed upgrade lifecycle. Source and `.run`
+  first setup create `/root/hot-wallet/server.conf` privately (700 directory,
+  600 file); existing records are preserved. Packaged record setup now uses the
+  packaged SDK/restic/tunnel pins. Focused configure Cabal and scoped Ubuntu
+  shell checks pass; full clean-install/upgrade acceptance remains open.
+- User requested the old funded host closed: `i-0c014957ac5fe5f39` is stopped,
+  its volume and separate backup host preserved. Fresh no-ingress host
+  `i-07c78660b1a5734b9` was provisioned from Ubuntu24.04 and public repository;
+  shell fixtures only, no custody imported or funds moved. Do not restart the
+  funded host or treat this as a custody transfer.
+
 - Wrapping-only cleanup: removed standalone mint/burn, metadata, nonce, pool,
   position/liquidity builders and unused token key/offline-signing operations.
   ATA setup retains its closed DSL, exact saved format, validation, locks and

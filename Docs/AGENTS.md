@@ -50,8 +50,9 @@ and GHC JavaScript/Solana FFI setup are in Docs/LOCAL-DEVELOPMENT.md. One job on
 - Focused wallet setup: append `--test-options=--configure-only` to that test command.
   It uses disposable fixture keys, real executable imports and terminal-driven
   startup preparation; it does not contact a chain or provision services.
-- Installer syntax: `sh -n build/install.sh build/install/toolchain build/install/source`.
-- Actual deployment: only `sudo ./build/install.sh /absolute/private/server.conf` on an
+- Installer syntax: `sh -n build/install.sh build/update.sh build/install/config build/install/launch build/install/package build/install/tunnel`.
+- Actual deployment: `sudo ./build/install.sh` creates the protected record on first run;
+  edit it and rerun, or pass an existing absolute private configuration path, on an
   isolated Ubuntu 24.04 host after outstanding installer/config gates are resolved.
   A local build does not prove clean-install or funded acceptance.
 - Durable payout-round checks require the real disposable PostgreSQL contract;

@@ -1,0 +1,34 @@
+#!/bin/sh
+# Create the first editable record privately; never replace existing settings.
+set -eu
+umask 077
+[ "$(id -u)" = 0 ] && [ "$#" = 1 ] || exit 1
+directory=/root/hot-wallet
+file=$directory/server.conf
+[ -d /root ] && [ ! -L /root ] && [ "$(stat -c %u /root)" = 0 ] &&
+  [ "$((0$(stat -c %a /root) & 022))" = 0 ] || exit 1
+if [ ! -e "$directory" ] && [ ! -L "$directory" ]; then
+  install -d -o root -g root -m 0700 "$directory"
+fi
+[ -d "$directory" ] && [ ! -L "$directory" ] &&
+  [ "$(stat -c '%u:%a' "$directory")" = 0:700 ] || {
+    echo 'Unsafe configuration directory; refusing to use it.' >&2; exit 1;
+  }
+if [ -e "$file" ] || [ -L "$file" ]; then
+  [ -f "$file" ] && [ ! -L "$file" ] &&
+    [ "$(stat -c '%u:%a:%h' "$file")" = 0:600:1 ] || {
+      echo 'Unsafe configuration file; refusing to use it.' >&2; exit 1;
+    }
+  exit 0
+fi
+temporary=$(mktemp "$directory/.config.XXXXXXXX")
+trap 'rm -f -- "$temporary"' EXIT
+trap 'exit 1' HUP INT TERM
+cat "$1" > "$temporary"
+# Atomic no-replace publication also protects concurrent first invocations.
+ln "$temporary" "$file"
+rm -f -- "$temporary"
+echo 'Created /root/hot-wallet/server.conf (root-only, mode 600; directory 700).'
+echo 'Edit with: sudo nano /root/hot-wallet/server.conf'
+echo 'Then rerun the same installer. No wallets or services have been created.'
+exit 10

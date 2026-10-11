@@ -72,6 +72,9 @@ cp build/install/node "$staging/node"
 cp build/install/node-rpc-guard "$staging/node-rpc-guard"
 cp build/install/native-backup "$staging/native-backup"
 cp build/install/launch "$staging/launch"
+cp build/install/config "$staging/config"
+cp build/install/tunnel "$staging/tunnel"
+cp example.conf "$staging/share/example.conf"
 cp build/assets/toolchains.json "$staging/share/toolchains.json"
 printf '%s\n' "$arch" > "$staging/architecture"
 if [ "$local_build" = true ]; then
@@ -106,7 +109,11 @@ trap 'exit 1' HUP INT TERM
 line=$(awk '/^__ECX_PAYLOAD__$/ { print NR+1; exit }' "$0")
 [ -n "$line" ]
 tail -n +"$line" "$0" | tar -xz -C "$staging" --no-same-owner
-if [ "$#" = 0 ]; then sh "$staging/launch"; else sh "$staging/install" "$@"; fi
+if [ "$#" = 0 ] || [ "${1:-}" = update ]; then
+  sh "$staging/launch" "$@"
+else
+  sh "$staging/install" "$@"
+fi
 exit
 __ECX_PAYLOAD__
 HEADER

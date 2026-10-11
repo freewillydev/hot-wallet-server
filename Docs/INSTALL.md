@@ -10,7 +10,7 @@ pruned ECX node installer and database provisioning. It is under acceptance test
 **not a certified public release**. Use [RELEASE-REVIEW.md](RELEASE-REVIEW.md) for
 version-specific evidence; results from earlier installers do not certify this one.
 
-## Interactive setup
+## Packaged setup
 
 For a reviewed candidate already downloaded:
 
@@ -18,19 +18,26 @@ For a reviewed candidate already downloaded:
 sudo sh ./ecx-bridge-ubuntu-24.04-x86_64.run
 ```
 
-The launcher installs its verified bundle in a stable private location, collects
-settings and starts setup. After interruption or funding, resume from any directory:
+On a new host this creates `/root/hot-wallet/server.conf` with directory mode 700
+and file mode 600, owned by root, then exits. Edit that record and rerun the same
+installer. It imports the supplied keys and resumes saved setup without prompts.
+It retains the bundle under `/opt/ecx-bridge-bootstrap` before starting services.
+Use [the updater](../README.md#update) for a different release.
+
+The existing interactive console remains available on an installed server:
 
 ```sh
 sudo ecx-bridge
 ```
 
-This resumes the existing setup; it does not silently upgrade an installed runtime.
+This opens the existing setup menu; it does not silently upgrade an installed runtime.
 Use the reviewed upgrade procedure in [OPERATIONS.md](OPERATIONS.md) for upgrades.
 From a built source checkout, the explicit `configure` then `start` commands remain
 available; see [LOCAL-DEVELOPMENT.md](LOCAL-DEVELOPMENT.md) for prerequisites.
 
-The default interactive wizard saves settings during `configure`; `start` then
+### Explicit interactive wizard
+
+The interactive wizard saves settings during `configure`; `start` then
 creates **fresh CanonicalBeta custody with two generated wallets**, requiring a
 terminal and recovery acknowledgement. Configuration-file installation imports
 the supplied ECX phrase and Solana key instead. Missing or invalid keys stop setup;

@@ -120,7 +120,11 @@ configureFile input output=do
     publishSetup password (B8.pack $ I.backupPassword settings)
     forM_ (I.cloudflareTunnelToken settings) $ \token->
       publishSetup (directory</>"tunnel.token") (B8.pack token)
-    root<-canonicalizePath(sdkSourceDirectory</>"../..")
+    bundle<-SetupPaths.bundleRoot
+    root<-maybe (canonicalizePath(sdkSourceDirectory</>"../..")) pure bundle
+    let restic=case bundle of
+          Just path | I.resticExecutable settings=="/usr/local/lib/hot-wallet-server/restic"->path</>"bin/restic"
+          _->I.resticExecutable settings
     let defaults=M.union (M.fromList
           ["profile" .= String "CanonicalBeta","deploymentId" .= String ("ecx-"<>T.take 16 owner)
           ,"nativeWallet" .= String ("ecx-bridge-"<>T.take 16 owner),"backupRequired" .= Bool True
@@ -131,7 +135,7 @@ configureFile input output=do
           ,"maxWithdrawal" .= max nativeThreshold wrappedThreshold
           ,"ownerFeeRecipients" .= C.OwnerFeeRecipients (T.pack $ I.ownerEcxXpub settings) (T.pack $ I.ownerSolPubkey settings)
           ,"solanaHistoryStart" .= String "","solanaOperatingHistoryStart" .= String ""]) template
-        setup=object ["existing" .= False,"method" .= String "source","sourceRoot" .= root,"restic" .= I.resticExecutable settings
+        setup=object ["existing" .= False,"method" .= String (maybe "source" (const "bundle") bundle),"sourceRoot" .= root,"restic" .= restic
           ,"nodeConfig" .= String "/var/lib/ecx-betanet/bitcoin.conf","nodeService" .= String "ecx-betanet.service","managedNode" .= True
           ,"nativeSeedFile" .= phrase,"nativeAdminAuth" .= admin,"nativeRestore" .= False,"nativeRangeEnd" .= (999::Int)
           ,"initialFundingOwnership" .= I.initialFundingOwnership settings,"website" .= website]

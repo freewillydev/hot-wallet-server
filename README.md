@@ -11,18 +11,15 @@ off; see [remaining work](Docs/DONE.md).
 
 ## Configure
 
-On the Ubuntu server, create a root-only copy of [example.conf](example.conf)
-outside Git. Run the copy commands only for first setup; afterward edit the
-existing file to preserve your keys/settings:
+Run the installer once. It creates `/root/hot-wallet/server.conf` from
+[example.conf](example.conf) with root-only permissions, then stops for editing:
 
 ```sh
-sudo install -d -o root -g root -m 700 /root/hot-wallet
-sudo install -o root -g root -m 600 example.conf /root/hot-wallet/server.conf
 sudo nano /root/hot-wallet/server.conf
 ```
 
-Directory mode `700` and file mode `600` restrict access to root. Replace the
-placeholders, keeping **every field**. The file contains one Haskell record:
+No manual `chmod` is needed. Replace the placeholders, keeping **every field**.
+The file contains one Haskell record:
 `InstallConfig { field = value, ... }`.
 
 - Text uses double quotes: `domain = "swap.example.com"`.
@@ -66,11 +63,32 @@ the customer API is unchanged. See [website details](Docs/OPERATIONS.md#custom-w
 From the repository directory:
 
 ```sh
-sudo ./build/install.sh /root/hot-wallet/server.conf
+sudo ./build/install.sh
 ```
 
-Rerun the same command with unchanged configuration to resume. Keep independent
+Alternatively, run the reviewed `.run` installer with `sudo sh ./ecx-bridge-ubuntu-24.04-x86_64.run`;
+it creates the same private configuration file. Edit it, then rerun to install.
+Existing configuration is never overwritten. Once setup has bound the record,
+changing it requires a reviewed reconfiguration; the updater changes code only.
+Rerun the source command with unchanged configuration to resume. Keep independent
 ledger backups: wallet keys alone do not recover pending transfers.
+
+## Update
+
+Rerunning `install.sh` resumes setup; use the separate updater for a new version.
+Download the reviewed, signed release directory (`.run`, `release-index.json`,
+`release-index.sig`) and obtain its trusted public key independently:
+
+```sh
+sudo ./build/update.sh /root/release-public.pem /root/new-release /var/lib/hot-wallet-server/.ecx-bridge
+```
+
+The last path is your **original setup directory** (interactive installs normally
+use `/var/lib/ecx-bridge-setup/.ecx-bridge`). The updater verifies the signature,
+checkpoints custody to backup, updates code and checks readiness before resuming.
+Keys, ledger and settings are retained. A changed schema is refused. After an
+interruption, rerun the same command; never delete the upgrade journal. This flow
+still requires clean-host and interrupted-upgrade acceptance before production use.
 
 [Operations and recovery](Docs/OPERATIONS.md) · [Architecture](Docs/ARCHITECTURE.md) ·
 [Source builds](Docs/LOCAL-DEVELOPMENT.md) · [License](LICENSE)

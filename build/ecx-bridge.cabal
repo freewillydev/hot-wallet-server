@@ -8,7 +8,7 @@ build-type: Simple
 data-dir: ../src
 data-files: test/fixtures/*.json, schema.sql
 extra-source-files: ../src/test/CapabilityCompile.hs, ../src/test/formal/*.tla, ../src/test/formal/*.cfg,
-  install.sh, install/*, scripts/*, ../src/chain/Bridge/bip39-english.txt
+  install.sh, update.sh, install/*, scripts/*, ../src/chain/Bridge/bip39-english.txt
 
 common settings
   default-language: GHC2021
