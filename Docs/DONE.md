@@ -19,18 +19,24 @@ resolve older "unimplemented" notes below.
 | Local build and financial regression | PASS: full Cabal suite9216 and rebuilt default PostgreSQL/process/restic contract45304 on current application; prior payout/TLS modes recorded in RESUME | Rerun affected checks only after relevant changes; fixture RPC is not real-network proof. |
 | Native history and recovery | Projection fix has separate static PASS; 10,001-entry custody fixture556ms; actual daemon conflict capture tested earlier | Integrated current scanner/ledger recovery and sustained real-network load. Requires suitable synchronized node/host. Original history finding remains open. |
 | Current funded customer and owner flows | Local scheduling, signing, replay and accounting contracts pass; upstream funded receipts are historical | Current schema23 Signet/Devnet and betanet/Mainnet acceptance, both directions and owner payouts, with exact on-chain/ledger comparisons and no duplicate sends. |
-| Clean Ubuntu installation | Source/packaged private-config setup and signed updater implemented; scoped Ubuntu x86_64 permission/routing checks pass; AWS login refreshed and fresh host provisioned | Full x86_64 fresh/repeat/interruption/reboot acceptance and dependency source-preservation checks. Isolated orchestration fixtures are not full service acceptance. |
+| Clean Ubuntu installation | Source/packaged private-config setup and signed updater implemented; scoped Ubuntu x86_64 permission/routing checks pass; AWS login refreshed and fresh host provisioned | de00bff actual x86_64 install/repeat/reboot and private-state preservation independently PASS; source-preservation check passed172 tracked files. Abrupt interruption coverage and sustained operational readiness remain separate gates. |
 | Independent backup and restore | Current local real-restic financial restore passes | Current funded restore on an independent host, key/attempt/ledger equality, source fencing and safe resumption. Do not count same-host fixtures as off-host acceptance. |
 | Customer wallet | Connection-free payment instructions and browser fixtures exist | Actual Solana Pay wallet-app signing, payment association, reload/error/refund acceptance. User deferred wallet availability. |
 | External alerts | Existing monitor/diagnostic evidence is scoped | User-selected destination, delivered failure/recovery notifications and independent outage detection. User deferred destination. |
 | Production signing trust | Review source published; no production trust established | Designated key holder, independently published/pinned public key, exact artifact verification and distribution acceptance. User deferred ownership. |
 | Independent security approval and activation | Standard scan and18-file diff complete; subsequent projection patch has scoped static PASS | Close native-history and dependency applicability gates, obtain final current-release verdict, then explicitly verify public-access policy before activation. A partial scan or scoped PASS is insufficient. |
 
-Current deployment check: isolated Ubuntu source installation uses dedicated
-unused keys and a separate backup namespace. The emsdk issue is fixed; retry
-`9dbb9ee` built browser/native binaries but stopped on restic working-directory
-permissions. Scoped fix passed; another rerun is pending. First-run
-config creation passed; complete installation/startup/reboot remain unverified.
+Current deployment check: isolated Ubuntu source installation at `de00bff`
+passed native/browser/restic builds, both Mainnet history providers, independent
+backup initialization and pinned ECX snapshot synchronization. Private config
+creation and unchanged retry passed. One finalized 0.01 SOL deposit is confirmed
+by both providers; installer exited0, services started, website HTTP200 and saved
+ATA attempt bytes stayed identical. Worker later paused on RPC rate limits;
+readiness recovered. Actual reboot and repeat installer passed with unchanged
+configuration/key/attempt hashes and HTTP200. Independent verifier PASS for installation/repeat/reboot; FAIL current runtime
+readiness because OnFinality verifier returns HTTP429/-32029 (Alchemy HTTP200).
+Sustained load and funded customer acceptance remain open.
+See RESUME for exact command IDs.
 The prior funded deployment is stopped and preserved. Do not overwrite its ledger,
 reuse retired custody or treat old schema tests as current. Details,
 source hashes and test scope are in [RESUME.md](RESUME.md) and the records below.

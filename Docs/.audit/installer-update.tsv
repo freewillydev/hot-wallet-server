@@ -14,3 +14,14 @@ source_install_9dbb9ee	FAIL	Real Ubuntu retry546b2512-af26-41b2-9bdb-e4e8877bd93
 restic_working_directory	PASS	Actual runuser hws-build from /root changed to own mktemp directory then go env GOMOD succeeded; fix uses existing absolute scratch path before go mod download
 restic_separate_review	PASS	history_projection_verifier; restic helper sha256=7908fd75c8609c0ef558cf2a201bd6159c23570b33d860d7f0f57f359e6833f2; full install remains pending
 funding_readme	PASS	history_projection_verifier read-only scoped review against Bootstrap.hs170-198; README sha256=f21955c58840519cc2d1beb3811a4efa5da1dfe296ce3856a4d61348f310f569; no deployment certification
+real_source_build	PASS	de00bff Ubuntu24.04 x86_64 native/GHC-JS/reviewed-restic built; emsdk/restic cwd fixes retained
+real_native_snapshot	PASS	Pinned snapshot verified/extracted; node main height972828 headers972828 verificationprogress1 initialblockdownload=false; configured confirmations6
+initial_sol_deposit	PASS	Both independent RPCs finalized 10000000lamports; signature3dMuhzp9yRLdmUqTAAy8JNA5iRFfjpvJaotDoUAKkHP9koGw5xvocYSHEKKMJuGgFxTx99ULPwYLQrzZxHM42QVW
+ata_creation_resume	PASS	Both RPCs finalized signature3osTamRPXizbbsQaCTwt71pVYBQoULa5ZQPoVr9j7J3SMcCY8195bhPCoX3gTKvWSddKZx8yxwiK1s2yyqEb5Rff; saved attempt hash unchanged through retry/reboot; no replacement transaction
+installer_end_to_end	PASS	SSM9f971ae2-e8a5-48a8-9ab0-fb8062036294 exit0; database/signer/worker and website installed; independent backupSequence2 equals criticalSequence2
+reboot_preservation	PASS	SSMd3ebe9a7-42bb-4e97-a8ad-7e2f55eacdef changed boot ID; node/worker/signer active; HTTP200; config/key/attempt hashes identical
+post_reboot_repeat	PASS	SSMd4954b9c-e431-411c-b50f-0d23b047b42b installer exit0; verificationb8712846-6508-4f07-81f7-ba0ae8509063 HTTPavailability=true unchanged hashes
+installed_monitor	PASS	SSMccd9e566-be02-4c6f-b1f6-b376c3370a47 healthy=true issues=[] paused=false backupSequence=criticalSequence=2
+production_scope	FAIL	No current customer round trip: ECX/wrapped inventory zero; sustained load, actual-wallet acceptance, independent funded restore and full security approval still required; no public ingress
+independent_installation_review	PASS	history_projection_verifier; AWS installer/repeat Success exit0; boot ID changed; private state checksum unchanged; services active; evidence579fa1ad-5444-4165-b67d-98a4a064db19,9f74d97a-1e10-4883-b3ca-edbc8d74485c
+current_operational_readiness	FAIL	Independent verifier 2026-10-11T21:45:58Z paused rpc_rate_limited:SolanaOperating and21:46:26Z intake_paused; direct reads AlchemyHTTP200 vs OnFinalityHTTP429/-32029; require independent RPC capacity, not more SOL

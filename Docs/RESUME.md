@@ -8,23 +8,45 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Implemented and checked
 
-- Current end-to-end installer attempt: clean Ubuntu host `i-07c78660b1a5734b9`,
-  commit `930b54729eb121ae3bad3663e6018d5351a0b723`, SSM command
-  `aa02a163-cd7e-403c-9d87-a1338acb3388`. Original source installer exited127 at emsdk environment setup;
-  private log `/root/hot-wallet/install.log`, status `install.exit`. Scoped dash fix
-  passed on the real host; resume with the corrected commit is next.
-  First invocation created root700 directory/root600 config and no services.
-  Dedicated unused custody/config was prepared separately and encrypted in transit;
-  backup namespace `/worker/installer-930b547/` is separate from funded backups.
-  Retained private inputs are outside this repo under aws-ecx/private/installer-930b547.
-  Public ingress remains disabled; old funded host remains stopped. Do not start
-  duplicate installer jobs or reuse those keys as another fresh installation.
-  Corrected retry `9dbb9ee` finished as SSM command
-  `546b2512-af26-41b2-9bdb-e4e8877bd93c`; original exit127/log retained with
-  `install-930b547` names. GHC native/JavaScript setup and browser compilation
-  passed and native executable linked; restic build then failed on inherited root-only
-  cwd (exit1). Single-line scratch-directory fix tested; next rerun pending.
-  No service/funded acceptance yet.
+- Current end-to-end installer: isolated Ubuntu host `i-07c78660b1a5734b9`,
+  source commit `de00bffa2d780c57ebd00bf52e302baab4f27930`.
+  Native/browser builds, reviewed restic, both Mainnet history checks and a new
+  independent HTTPS backup repository passed. Pinned ECX snapshot loaded; node
+  fully synced at height972828, initialblockdownload=false; ECX confirmations=6.
+  Initial emsdk/dash and restic/cwd failures were fixed and separately reviewed.
+  Corrected test inputs: 12-word mnemonic and current backup credentials; prior
+  rejected private inputs are preserved on the host. No financial ledger reset.
+  Startup command `32a1ff25-fa8d-4cbd-89f7-46c49a91a482` stopped safely at
+  `fund_solana_owner_then_rerun_start`; configuration stayed identical, root600.
+  Both providers now confirm one finalized 0.01 SOL deposit at
+  `J9YrfMYK2uzydt2RYTLe5QmALnpKTXEfK59frTr79G2z`, signature
+  `3dMuhzp9yRLdmUqTAAy8JNA5iRFfjpvJaotDoUAKkHP9koGw5xvocYSHEKKMJuGgFxTx99ULPwYLQrzZxHM42QVW`.
+  Resume `34d9b330-1933-44e3-a7b8-d380565e0729` saved/submitted ATA creation;
+  both RPCs finalized signature
+  `3osTamRPXizbbsQaCTwt71pVYBQoULa5ZQPoVr9j7J3SMcCY8195bhPCoX3gTKvWSddKZx8yxwiK1s2yyqEb5Rff`.
+  Next resume `9f971ae2-e8a5-48a8-9ab0-fb8062036294` EXIT0: database, signer,
+  worker and web installed. Saved ATA attempt hash unchanged; website HTTP200.
+  A transient RPC rate-limit pause occurred; readiness recovered. Reboot check
+  `d3ebe9a7-42bb-4e97-a8ad-7e2f55eacdef` confirmed changed boot ID, active
+  node/worker/signer, HTTP200 and exact config/key/ATA-attempt hash preservation.
+  Post-reboot installer repeat `d4954b9c-e431-411c-b50f-0d23b047b42b` EXIT0.
+  Verification `b8712846-6508-4f07-81f7-ba0ae8509063`: HTTP availability=true,
+  current custody report, SOL reserve8506560, zero Native/Wrapped inventory;
+  unchanged private state. Operator paused=false, all three scanners healthy,
+  backupSequence=criticalSequence=2. This is installation acceptance, not a swap.
+  Public implementationReady stays hardcoded false (Config.hs); broader release
+  approval is not granted by successful installation. Independent verifier PASS
+  for install/repeat/reboot, FAIL current runtime readiness: rate limits recurred.
+  Alchemy Mainnet responds HTTP200; OnFinality verifier HTTP429/-32029.
+  Latest independent snapshots 21:45:58Z and21:46:26Z report paused/unavailable.
+  This needs adequate independent-provider quota; do not weaken verification,
+  resend funding, clear saved attempts or treat a momentary ready state as stable.
+  Next: resolve independent RPC capacity, then sustained readiness. Funded
+  customer acceptance needs ECX and canonical wrapped inventory, not another SOL
+  deposit. Remaining release gates in DONE.md stay open. Do not resend ATA creation.
+  Public ingress remains disabled; old funded host remains stopped/preserved.
+  Private inputs stay outside Git under aws-ecx/private/installer-930b547;
+  current remote config has the corrected backup authentication.
 
 - Updater now takes no arguments. Installed `update-settings` safely reads the
   protected Haskell record and returns only the three update paths; wallet process
