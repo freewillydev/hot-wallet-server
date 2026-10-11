@@ -1400,3 +1400,23 @@ Read-only review: no new tests, services, funds or custody changes. Earlier test
 receipts remain scoped evidence. Refunds bypass batching; normal swaps remain
 batched. Remaining real-network/load, Ubuntu install, manual-wallet, alerts,
 production signing trust and dependency review gates are unchanged.
+
+### History-entry projection (2026-10-11)
+
+History now reuses the existing projection parser to retain only txid,
+confirmations and blockhash, the complete field set read by both consumers.
+Ignored fields are still syntax-checked before any callback. This removes the
+identified per-entry conflict-array allocation without adding a parser or cap;
+it does not bound daemon response generation, scalar strings or scan duration.
+
+Complete Cabal bridge-test PASS (session9216 exit0), including 111,112 conflicts
+in both ordinary/removed rows, exact retained fields, duplicate txid rejection
+and malformed skipped content with zero callbacks. Fresh separate
+history_projection_verifier scoped static PASS; reviewed production SHA256
+5ea2780292e7224d8fede58f5b20b146cdcecf14f700fa7726b245f698af9834.
+Test log: /tmp/ecx-history-projection-test.log, SHA256
+070fa5c1558e1a14579270cf05fc408b77083215fc20abea3661d856a70bf0f8.
+Net production +1 comment line,
+one expression replaced; tests net +21 lines. No new dependencies, schema,
+services or fund moves. Full production gate and original Native-history finding
+remain open for integrated real-network/load and broader release acceptance.

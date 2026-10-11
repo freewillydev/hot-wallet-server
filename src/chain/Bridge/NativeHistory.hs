@@ -97,8 +97,9 @@ withCapture url (username,password) methodName params validate consume =
       -- Never retry a consumer: it may already have inspected some entries.
       consume capture anchor
 
--- Token traversal retains one entry, not the aggregate history. Aeson owns JSON
--- syntax/UTF-8/number parsing. Duplicate envelope/history keys are ambiguous.
+-- Retain only the fields used by observation and custody. In particular, wallet
+-- conflict arrays grow with history, not transaction size; traverse but omit them.
+-- Aeson owns JSON syntax/UTF-8/number parsing.
 history :: (Value -> IO ()) -> L.ByteString -> IO Text
 history emit input=case lbsToTokens input of
   TkRecordOpen fields->envelope S.empty Nothing Nothing fields
@@ -145,7 +146,7 @@ history emit input=case lbsToTokens input of
   entries (TkArrayOpen items)=loop items
   entries _=reject "unexpected_rpc_schema"
   loop (TkItem tokens)=do
-    (value,rest)<-scalar tokens
+    (value,rest)<-project (Fields [("txid",Scalar),("confirmations",Scalar),("blockhash",Scalar)]) tokens
     emit value
     loop rest
   loop (TkArrayEnd rest)=pure rest

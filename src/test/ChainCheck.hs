@@ -99,9 +99,30 @@ checks = (\deployment native solana identity observation administration common->
               readIORef requests
         count<-newIORef (0::Int)
         requests<-run status200 good $ \scan->do
-          saved<-scan (\captured _->unless (captured==anchor) (fail "wrong replay anchor") >> modifyIORef' count (+1))
+          saved<-scan (\captured row->do
+            unless (captured==anchor && row==object ["txid" .= anchor,"confirmations" .= (6::Int)])
+              (fail "wrong replay anchor or projected fields")
+            modifyIORef' count (+1))
           unless (saved==anchor) (fail "history anchor changed")
         total<-readIORef count
+        -- An individual entry can contain unbounded wallet conflict history.
+        -- Both ordinary and removed rows must expose only custody's three fields.
+        let projected=object ["txid" .= anchor,"confirmations" .= (-1::Int),"blockhash" .= anchor]
+            bulky=object ["txid" .= anchor,"confirmations" .= (-1::Int),"blockhash" .= anchor
+              ,"walletconflicts" .= replicate 111112 anchor,"mempoolconflicts" .= [anchor]]
+            wrap value=encode $ object ["id" .= (1::Int),"result" .= value]
+        _<-run status200 (wrap $ object ["lastblock" .= anchor,"transactions" .= [bulky],"removed" .= [bulky]]) $ \scan->do
+          rows<-newIORef []
+          _<-scan (\_ row->modifyIORef' rows (row:))
+          readIORef rows >>= \actual->unless (actual==[projected,projected]) (fail "history projection retained metadata or lost authority")
+        let entryPrefix="{\"id\":1,\"result\":{\"lastblock\":\""<>BL.fromStrict (TE.encodeUtf8 anchor)<>
+              "\",\"removed\":[],\"transactions\":[{\"txid\":\""<>BL.fromStrict (TE.encodeUtf8 anchor)<>"\""
+        forM_ [(entryPrefix<>",\"txid\":\"other\"}]}}","rpc_duplicate_field")
+              ,(entryPrefix<>",\"walletconflicts\":[false,]}]}}","rpc_invalid_json")] $ \(bytes,reason)->do
+          writeIORef count 0
+          _<-run status200 bytes $ \scan->rejects reason (scan $ \_ _->modifyIORef' count (+1)) >>= \ok->
+            unless ok (fail "history projection accepted ambiguous or malformed entry")
+          readIORef count >>= \n->unless (n==0) (fail "invalid projected history emitted")
         forM_ variants $ \(label,status,bytes,reason)->do
           writeIORef count 0
           _<-run status bytes $ \scan->rejects reason (scan $ \_ _->modifyIORef' count (+1)) >>= \ok->

@@ -390,7 +390,9 @@ Recovering native receipts are reread beyond the incremental
 cursor so their deposit state and matching evidence are committed together.
 
 Native history uses a fully validated temporary RPC capture, replayed one entry at
-a time. Each `CommitNativePage` atomically saves classified receipts/evidence and
+a time with only transaction ID, confirmations and block hash retained. Other
+fields, including unbounded wallet conflict arrays, are traversed for valid JSON
+without building aggregate Values. Each `CommitNativePage` atomically saves classified receipts/evidence and
 unhealthy scan status while retaining the original checkpoint. This status blocks
 readiness without changing the operator's pause state; genuine scanner failures
 and chain reviews still pause. Only after replay and the complete recovery-source
