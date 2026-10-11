@@ -1040,3 +1040,25 @@ PASS (session48729 exit0); temporary PostgreSQL cleaned. Devnet still uses manua
 reservation. This closes the scheduler fee-cap fixture gap above, not active-Native
 work scheduling or funded acceptance. No production code changed. Refunds continue
 to bypass batching; ordinary swaps retain their configured thresholds and interval.
+
+### Active Native cross-chain worker acceptance (2026-10-11)
+
+The focused TLS/PG case now seeds an already-backed-up Native broadcast through
+the normal ledger operations. Synthetic RPC evidence consistently describes a
+100-unit input, three-unit payment, 96-unit change and one-unit fee still in the
+mempool. Custody is 2096 against the initial 2100 plus the pending debit of four.
+The actual worker recovers, observes, reconciles and reuses its queue without
+resending, then reserves exactly one Wrapped owner payout. Native balances and
+the full saved broadcast attempt remain unchanged; the ledger stays unpaused.
+No native preview, locking, signing or send occurs. No fixture
+freshness/backup writes occur during worker execution; no signer is listening.
+
+Build and focused PG process contract PASS (session28761 exit0), independently
+reviewed. This closes the healthy active-Native scheduling fixture gap, not funded
+transfers, real backup creation or repeated fairness. Test-only change: 58 lines
+added and six removed in the existing test file; no production files or entry
+points added. The active-only selector exits before the existing HTTPS signer
+phase, which must still be run separately with both profiles.
+
+Both full Canonical/Devnet PG+HTTPS contracts also PASS on this source
+(session40286 exit0). Temporary PostgreSQL and process-test services cleaned.

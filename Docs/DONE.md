@@ -1,6 +1,6 @@
 Done means: hot-wallet-server repository with requested layout, typed record configuration, unattended install.sh, durable configurable customer payout rounds, accurate README and verified standalone checks plus independent PASS.
 
-Latest source checkpoint: b14cec4c94f0fb6cf6da1e7f07e68ea92f227ba6 published
+Historical source checkpoint: b14cec4c94f0fb6cf6da1e7f07e68ea92f227ba6 published
 on origin/main. Full committed-source bridge-test PASS (session8673). Separate
 read-only verifier PASS for test receipt and classification of all six findings
 in both the current-directory and 27-commit Gitleaks scans: only public hashes,

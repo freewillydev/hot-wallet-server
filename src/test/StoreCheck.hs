@@ -4361,6 +4361,8 @@ treasuryContract fixtures reader writer=do
 tlsMain :: IO ()
 tlsMain=do
   canonical<-(==Just "1") <$> lookupEnv "ECX_REBUILD_CANONICAL"
+  activeNative<-(==Just "1") <$> lookupEnv "ECX_REBUILD_ACTIVE_NATIVE_ONLY"
+  when (activeNative && not canonical) (fail "active Native worker contract requires canonical profile")
   database<-getEnv "ECX_REBUILD_CONTRACT_DATABASE"
   unless ("ecx_rebuild_contract_" `T.isPrefixOf` T.pack database) (fail "disposable database required")
   user<-getEnv "USER"; role<-getEnv "ECX_REBUILD_CONTRACT_READER"; sdk<-getEnv "ECX_REBUILD_TEST_SDK"
@@ -4400,6 +4402,21 @@ tlsMain=do
         "vin" .= [object ["txid" .= previewInput,"vout" .= (0::Int),"sequence" .= (4294967294::Integer)]],
         "vout" .= [object ["n" .= index,"value" .= N.nativeNumber (money n),"scriptPubKey" .= object ["hex" .= script]]
           | (index,(n,script))<-zip [0::Int ..] [(3,ownerScript),(95,changeScript)]]]
+      activeKey=T.replicate 64 "e"
+      activePlan=NP.NativePlan profile "fixture-owner" ownerScript "fixture-change" changeScript (money 3) 1 (money 1)
+      activePoint=NP.Outpoint previewInput 0
+      activeTx=NP.NativeTx activeKey 2 499999999 [NP.NativeInput activePoint 4294967294]
+        [NP.NativeOutput ownerScript (money 3),NP.NativeOutput changeScript (money 96)]
+      activePrevious=[NP.NativePrevout activePoint (money 100) changeScript 100 False]
+      activeSigned=NP.NativeSigned "00" activeTx activePlan activePrevious (money 1)
+      activeDecoded=object ["txid" .= activeKey,"version" .= (2::Int),"locktime" .= (499999999::Int),
+        "vin" .= [object ["txid" .= previewInput,"vout" .= (0::Int),"sequence" .= (4294967294::Integer)]],
+        "vout" .= [object ["n" .= index,"value" .= N.nativeNumber (money n),"scriptPubKey" .= object ["hex" .= script]]
+          | (index,(n,script))<-zip [0::Int ..] [(3,ownerScript),(96,changeScript)]]]
+      activeWallet=object ["txid" .= activeKey,"hex" .= ("00"::T.Text),"decoded" .= activeDecoded,
+        "amount" .= Number (-0.00000003),"fee" .= Number (-0.00000001),
+        "confirmations" .= (0::Int),"lastprocessedblock" .= nativeHead,
+        "details" .= [object ["category" .= ("send"::T.Text)]]]
       tokenBalance=object ["accountIndex" .= (1::Int),"mint" .= mint,"owner" .= owner,
         "uiTokenAmount" .= object ["amount" .= ("1010"::T.Text),"decimals" .= (8::Int)]]
       referenceTransaction=object ["slot" .= (100::Int),"transaction" .= object
@@ -4423,14 +4440,14 @@ tlsMain=do
         modifyIORef' calls (<>[method])
         result<-case method of
           "getblockchaininfo"->pure $ object $ ["chain" .= (if canonical then "main" else "signet"::T.Text),"initialblockdownload" .= False
-            ,"blocks" .= N.nativeCheckpointHeight native] <> if canonical then [] else ["signet_challenge" .= N.signetChallenge]
+            ,"blocks" .= N.nativeCheckpointHeight native,"bestblockhash" .= N.nativeCheckpointHash native] <> if canonical then [] else ["signet_challenge" .= N.signetChallenge]
           "getblockhash"->pure $ String (N.nativeCheckpointHash native)
           "getconnectioncount"->pure $ Number 1
           "getwalletinfo"->pure $ object ["walletname" .= N.nativeWallet native,"descriptors" .= True
             ,"scanning" .= False,"private_keys_enabled" .= True,"external_signer" .= False,"lastprocessedblock" .= nativeHead]
           "listlockunspent"->pure $ toJSON ([]::[Value])
-          "listsinceblock"->pure $ object ["transactions" .= ([]::[Value]),"removed" .= ([]::[Value]),"lastblock" .= N.nativeCheckpointHash native]
-          "getbalances"->pure $ object ["mine" .= object ["trusted" .= N.nativeNumber (money 2100),
+          "listsinceblock"->pure $ object ["transactions" .= [activeWallet | activeNative],"removed" .= ([]::[Value]),"lastblock" .= N.nativeCheckpointHash native]
+          "getbalances"->pure $ object ["mine" .= object ["trusted" .= N.nativeNumber (money $ if activeNative then 2096 else 2100),
             "immature" .= (0::Int),"untrusted_pending" .= (0::Int)],"lastprocessedblock" .= nativeHead]
           "getdescriptorinfo"->case params of
             [String requested]->pure $ object ["descriptor" .= (requested<>"#fixture"),"hasprivatekeys" .= False,"isrange" .= False,"issolvable" .= True]
@@ -4443,6 +4460,10 @@ tlsMain=do
             "confirmations" .= (100::Int),"address" .= ("fixture-change"::T.Text)]]
           "walletcreatefundedpsbt"->pure $ object ["psbt" .= ("fixture-owner-preview"::T.Text),"fee" .= N.nativeNumber (money 2),"changepos" .= (1::Int)]
           "decodepsbt"->pure $ object ["tx" .= previewTx,"fee" .= N.nativeNumber (money 2)]
+          "decoderawtransaction" | activeNative->pure activeDecoded
+          "gettransaction" | activeNative->pure activeWallet
+          "gettxspendingprevout" | activeNative->pure $ toJSON [object ["txid" .= previewInput,"vout" .= (0::Int),"spendingtxid" .= activeKey]]
+          "getmempoolentry" | activeNative->pure $ object ["vsize" .= (100::Int)]
           "gettxout"->pure $ object ["value" .= N.nativeNumber (money 100),"confirmations" .= (100::Int),"coinbase" .= False,
             "scriptPubKey" .= object ["hex" .= changeScript,"address" .= ("fixture-change"::T.Text)]]
           "getSignaturesForAddress"->pure $ toJSON [object ["signature" .= headSignature,"slot" .= (100::Int),"err" .= Null,"confirmationStatus" .= ("finalized"::T.Text)]]
@@ -4467,6 +4488,30 @@ tlsMain=do
     withReader settings {PG.connectUser=role} identity True $ \reader->
       withWriter settings store (const $ pure ()) $ \writer->do
         fixture fixtures ReadyIntake
+        initialNative<-if not activeNative then pure Nothing else do
+          -- Synthetic signed bytes are served by the explicit decoder fixture.
+          -- The real ledger/recovery/worker paths still validate their bindings.
+          now<-floor <$> getPOSIXTime
+          evalWrite writer (Pause "active Native worker fixture")
+          fixture fixtures RefreshCustody
+          fixture fixtures (FreshAt now)
+          void $ evalWrite writer (ReserveFees now activeKey Native (money 3) "fixture-owner" "active Native worker fixture")
+          fixture fixtures ReadyIntake
+          fixture fixtures (FreshAt now)
+          evalWrite writer (AdmitPayoutRounds now)
+          prepared<-evalWrite writer (PreparePayment now ("fee:"<>activeKey) (money 1) $ encoded activePlan)
+          evalWrite writer (SaveDraft ("fee:"<>activeKey) 0 $ encoded $ NP.NativeDraft "fixture-active" activeTx activePrevious (money 1))
+          finalPrepared<-evalRead reader (ReadPreparation $ "fee:"<>activeKey)
+          check (preparedGeneration prepared==preparedGeneration finalPrepared)
+          void $ evalWrite writer (RecordAttempt finalPrepared $ SignedAttempt activeKey "00" (encoded activeSigned) (Just $ previewInput<>":0"))
+          fixture fixtures CoverBackup
+          fixture fixtures ReadyIntake
+          fixture fixtures (FreshAt now)
+          void $ evalWrite writer (MarkBroadcast now activeKey)
+          fixture fixtures CoverBackup
+          covered<-evalRead reader ReadState
+          check (ledgerBackup covered>=ledgerSequence covered)
+          Just <$> evalRead reader (ReadAttempt activeKey)
         withdrawal<-if not canonical then
           evalWrite writer (ReserveAutomaticFees 100 Wrapped recipient)
             >>= maybe (fail "automatic owner reservation missing") pure
@@ -4480,7 +4525,7 @@ tlsMain=do
                   "xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz" recipient
                 saved=do
                   roots<-fixture fixtures PaymentRoots
-                  pure [key | root<-roots,Just key<-[S.rootWithdrawal root]]
+                  pure [key | root<-roots,S.rootChain root=="Solana",Just key<-[S.rootWithdrawal root]]
             writeFile cookie "fixture:fixture"; setFileMode cookie 0o600
             endpoint<-signingEndpoint directory
             fixture fixtures (WorkerHeads (N.nativeCheckpointHash native) headSignature)
@@ -4503,9 +4548,16 @@ tlsMain=do
             check (prepared==Nothing && null attempts)
             after<-evalRead reader ReadBalances
             check (M.filterWithKey (\(asset,_) _->asset==Native) before==M.filterWithKey (\(asset,_) _->asset==Native) after)
-            evalRead reader PendingAttempts >>= check . null
+            evalRead reader PendingAttempts >>= check . (==[activeKey | activeNative])
             methods<-readIORef calls
-            check (all (`elem` methods) ["walletcreatefundedpsbt","decodepsbt","gettxout"]
+            if activeNative then do
+              current<-evalRead reader (ReadAttempt activeKey)
+              check (Just current==initialNative && recordedState current=="broadcast_intent")
+              check (all (`elem` methods) ["decoderawtransaction","gettransaction","gettxspendingprevout","getmempoolentry"]
+                && all (`notElem` methods) ["walletcreatefundedpsbt","decodepsbt","walletprocesspsbt","sendTransaction","sendrawtransaction","lockunspent"])
+              putStrLn "PASS: actual worker preserves backed-up pending Native attempt without resend and reserves Wrapped owner payout; chain RPC and signed bytes are fixtures"
+              exitSuccess
+            else check (all (`elem` methods) ["walletcreatefundedpsbt","decodepsbt","gettxout"]
               && all (`notElem` methods) ["getnewaddress","getrawchangeaddress","lockunspent","walletprocesspsbt","sendTransaction","sendrawtransaction"])
             writeIORef calls []
             putStrLn "PASS: actual worker scans, reconciles and reserves Wrapped owner payout after Native preview exceeds its saved fee cap"

@@ -56,6 +56,10 @@ and GHC JavaScript/Solana FFI setup are in Docs/LOCAL-DEVELOPMENT.md. One job on
   A local build does not prove clean-install or funded acceptance.
 - Durable payout-round checks require the real disposable PostgreSQL contract;
   use ECX_REBUILD_PAYOUT_ONLY=1. Never substitute fixture success for financial acceptance.
+- Active Native cross-chain scheduling uses ECX_REBUILD_TLS_ONLY=1,
+  ECX_REBUILD_CANONICAL=1 and ECX_REBUILD_ACTIVE_NATIVE_ONLY=1 on a fresh
+  disposable contract database. Clear the active-only selector for the full TLS
+  Canonical/Devnet contracts; the focused case exits before their signer checks.
 - Layout/provenance: compare src/ to upstream server commit 6af7e73818c041669c5a5c1819f4c5c0be405d37,
   inspect staged files for private inputs, and confirm the original checkout is unchanged.
 - Publication: verify GitHub privacy and remote HEAD against the separately reviewed
