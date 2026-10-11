@@ -408,6 +408,14 @@ pinned ECX stripped-transaction weight rule; they are not customer size policy.
 Individual strings are still materialized by Aeson, and local wallet metadata has
 no established scalar bound. This is not a constant-memory decoder for every input.
 
+Custody validates history in batches of at most 128 parsed entries through the
+closed `CheckNativeCustodyHistory` Opaleye read. Each snapshot checks every entry
+in history order, including duplicates; missing, reviewed and changed evidence
+remain distinct failures. Pending entries are checked before reporting a later
+parse/cursor failure. Final revision fences reject changes between snapshots.
+Expired scans refuse intake without adding or clearing an operator pause; they
+must be refreshed. Original scan timestamps and the 60-second limit remain.
+
 Receipt writes split into at most 1,000 deposits per page; only the final page
 publishes that transaction's complete receipt commitment. Every partial page keeps
 scan health unavailable. Treasury verifies the commitment against paged durable

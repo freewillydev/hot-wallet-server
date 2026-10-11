@@ -1352,3 +1352,19 @@ Codex Security findings/native-daemon-conflict-checkpoint.md and its listed logs
 helpers and public captures. This is actual-daemon RPC compatibility, not public
 Signet/Betanet or integrated scanner/ledger recovery acceptance; those gates and
 the large-history deadline finding remain OPEN.
+
+### Bounded native custody reads (2026-10-11)
+
+Replaced two read snapshots per distinct transaction with closed
+CheckNativeCustodyHistory: one Opaleye snapshot per128 history entries, bounded
+buffer, original-order checks including duplicates, final revision fences intact.
+257 distinct transactions measured2355ms before and40ms after on local PostgreSQL.
+Fresh reviewer found that buffered reads could let a later parse error override an
+earlier missing entry; parent confirmed and fixed by flushing before later errors.
+Regression checks plus full PG/process/backup session47006 and complete bridge-test
+session19723 exit0. No second independent PASS claimed. Evidence is in Codex
+Security findings/native-custody-batch-checkpoint.md and its referenced logs.
+Net+23 production lines/two existing files,+46 tests/one; no dependency/schema/API
+changes. Temporary PG removed; no live funds/deployment/public ingress changes.
+This supersedes the adjacent-only custody cache. Original finding remains OPEN
+for integrated real-network/load acceptance; all DONE production gates remain.

@@ -3264,6 +3264,52 @@ custodyContract database store fixtures reader = do
       inspectAppeared action confirmations=inspect (pure 100) (pure ()) (appeared action confirmations) good Nothing settings
   expectStore "custody_native_history_advanced" (inspectAppeared (pure ()) 0)
   seed 0
+  let distinctIds=[T.justifyRight 64 '0' (T.pack $ show n) | n<-[3000..3256::Int]]
+      distinctHistory identifiers wallet method params=if method=="listsinceblock" then pure $ object
+        ["lastblock" .= ("fixture-anchor"::T.Text)
+        ,"transactions" .= [object ["txid" .= key,"confirmations" .= (0::Int)] | key<-identifiers]
+        ,"removed" .= ([]::[Value])]
+       else nativeCall wallet method params
+  forM_ distinctIds $ \key->fixture fixtures $ SeedTreasuryEvidence "Native" key "unconfirmed" "reference" 0 proof
+  started<-getMonotonicTimeNSec
+  (_,_,distinctMatches,_)<-inspect (pure 100) (pure ()) (distinctHistory distinctIds) good Nothing settings
+  unless distinctMatches (fail "distinct custody history changed balances")
+  finished<-getMonotonicTimeNSec
+  putStrLn $ "Native custody 257 distinct transactions: "<>show ((finished-started) `div` 1000000)<>" ms"
+  forM_ [0,1,127,128,129] $ \count->do
+    (_,_,matches,_)<-inspect (pure 100) (pure ()) (distinctHistory $ take count distinctIds) good Nothing settings
+    unless matches (fail "custody batch boundary changed balances")
+  let checkHistory=evalRead reader . CheckNativeCustodyHistory
+      first=head distinctIds; lastKey=last distinctIds; missing=T.replicate 64 "f"
+      entry key=(key,0,Nothing)
+  checkHistory []
+  checkHistory (map entry $ take 128 distinctIds)
+  expectStore "invalid_custody_history_batch" (checkHistory $ map entry $ take 129 distinctIds)
+  expectStore "custody_native_history_changed" (checkHistory [(first,0,Just "changed")])
+  fixture fixtures (SeedTreasuryEvidence "Native" lastKey "unconfirmed" "reference" 1 proof)
+  (do
+    expectStore "custody_native_history_advanced" (checkHistory [entry missing,entry lastKey])
+    expectStore "custody_history_not_current" (checkHistory [entry lastKey,entry missing])
+    expectStore "custody_native_history_changed" (checkHistory [(first,1,Nothing),entry lastKey]))
+    `finally` fixture fixtures (SeedTreasuryEvidence "Native" lastKey "unconfirmed" "reference" 0 proof)
+  let changedBetweenBatches cursor _ consume=do
+        forM_ (zip [1..] distinctIds) $ \(index,key)->do
+          consume cursor (object ["txid" .= key,"confirmations" .= (0::Int)])
+          when (index==(128::Int)) (fixture fixtures $ CustodyHeadReview 0)
+        pure cursor
+  expectStore "custody_ledger_changed" $ inspectCustodyWith (pure 100) (pure ()) nativeCall
+    changedBetweenBatches good Nothing settings config reader False
+  let malformedAfter key depth cursor _ consume=do
+        consume cursor (object ["txid" .= key,"confirmations" .= (depth::Int)])
+        consume cursor (object ["txid" .= newTx])
+        pure cursor
+      inspectHistory history=inspectCustodyWith (pure 100) (pure ()) nativeCall history good Nothing settings config reader False
+  expectStore "custody_native_history_advanced" (inspectHistory $ malformedAfter missing 0)
+  expectStore "custody_native_history_changed" (inspectHistory $ malformedAfter first 1)
+  expectStore "unexpected_rpc_schema" (inspectHistory $ malformedAfter first 0)
+  expectStore "custody_native_history_changed" $ inspectHistory $ \cursor _ consume->do
+    consume cursor (object ["txid" .= first,"confirmations" .= (1::Int)])
+    pure "advanced"
   let advancedChanged wallet method params=if method=="listsinceblock" then pure $ object
         ["lastblock" .= ("advanced"::T.Text)
         ,"transactions" .= [object ["txid" .= newTx,"confirmations" .= (1::Int)]]

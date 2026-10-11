@@ -15,7 +15,7 @@ import Bridge.RPC (fieldValue,parseValue,rpc)
 import Bridge.Wire (Profile(..))
 import Control.Exception (IOException,catch,try)
 import Control.Concurrent.Async (concurrently)
-import Control.Monad (forM_)
+import Control.Monad (forM_,unless,when)
 import Data.Aeson hiding (decode)
 import Data.Int (Int64)
 import Data.IORef (newIORef,readIORef,writeIORef)
@@ -86,26 +86,25 @@ inspectCustodyWith clock identity native history solana verifier settings config
       pure (slot,w,supply)
   cursor<-headFor view "Native"
   depth<-evalRead reader (MaximumNativeDepth $ defaultNativeDepth settings)
-  -- Adjacent outputs share transaction evidence. Keep only one proof; every
-  -- output is checked, and the final revision fence rejects concurrent changes.
-  lastProof<-newIORef Nothing
+  -- Bound both memory and database round trips. Every history entry is checked;
+  -- the final revision fence rejects changes between batch snapshots.
+  pendingHistory<-newIORef []
+  let flush=do
+        entries<-readIORef pendingHistory
+        unless (null entries) (evalRead reader $ CheckNativeCustodyHistory $ reverse entries)
+        writeIORef pendingHistory []
   next<-history cursor depth $ \captured entry->do
-    -- An advanced checkpoint requests a new scan, before inspecting old depths.
-    require (captured==cursor) "custody_native_history_advanced"
-    txid<-fieldValue "txid" entry
-    confirmations<-fieldValue "confirmations" entry :: IO Int
-    anchor<-parseValue (withObject "transaction" (.:? "blockhash")) entry
-    cached<-readIORef lastProof
-    (savedAnchor,old)<-case cached of
-      Just (previous,anchor,depth) | previous==txid->pure (anchor,depth)
-      _->do
-        known<-evalRead reader (HasCustodyEvent "Native" txid)
-        require known "custody_native_history_advanced"
-        (_,anchor,proof)<-evalRead reader (ReadCustodyEvent "Native" txid)
-        depth<-fieldValue "confirmations" proof
-        writeIORef lastProof (Just (txid,anchor,depth))
-        pure (anchor,depth)
-    require (old==confirmations && savedAnchor==maybe "unconfirmed" id anchor) "custody_native_history_changed"
+    observation<-(do
+      require (captured==cursor) "custody_native_history_advanced"
+      txid<-fieldValue "txid" entry
+      confirmations<-fieldValue "confirmations" entry :: IO Int
+      anchor<-parseValue (withObject "transaction" (.:? "blockhash")) entry
+      pure (txid,confirmations,anchor)) `catch` (\(BridgeError code)->flush >> reject code)
+    entries<-(observation:) <$> readIORef pendingHistory
+    writeIORef pendingHistory entries
+    when (length entries==128) flush
+  -- Earlier evidence failures precede a later malformed entry or final cursor.
+  flush
   require (next==cursor) "custody_native_history_advanced"
   after<-nativeBalance native
   require (before==after) "custody_native_view_changed"

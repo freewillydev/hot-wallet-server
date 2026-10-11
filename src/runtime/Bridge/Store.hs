@@ -200,6 +200,7 @@ data StoreRead a where
   ReadCustodyRevision :: StoreRead Int64
   ReadCustodySnapshot :: Int64 -> [(Text,Text)] -> Bool -> StoreRead CustodySnapshot
   ReadCustodyEvent :: Text -> Text -> StoreRead (Text,Text,Value)
+  CheckNativeCustodyHistory :: [(Text,Int,Maybe Text)] -> StoreRead ()
   HasCustodyEvent :: Text -> Text -> StoreRead Bool
   PendingAttempts :: StoreRead [Text]
   PaymentCandidates :: StoreRead [Text]
@@ -346,6 +347,7 @@ evalRead (Reader settings identity remote) operation = bracket connect PG.close 
       ReadPublicReport now -> publicReport c now
       ReadCustodySnapshot now origins losses -> custodySnapshot c now origins losses
       ReadCustodyEvent chain identifier -> custodyEvent c chain identifier
+      CheckNativeCustodyHistory entries -> checkNativeCustodyHistory c entries
       HasCustodyEvent chain identifier -> do
         rows<-O.runSelect c $ O.limit 1 $ do
           event<-O.selectTable S.chainEvents
@@ -2418,6 +2420,28 @@ readCustodyRevision :: PG.Connection -> IO Int64
 readCustodyRevision c = do
   rows<-O.runSelect c $ fmap (\(_,revision,_,_,_)->revision) (O.selectTable S.custody)
   case rows of [revision]->pure revision; _->reject "custody_check_missing"
+
+-- One bounded snapshot, with failures checked in history order. Reviewed rows
+-- must remain distinguishable from missing rows: only the latter requests a scan.
+checkNativeCustodyHistory :: PG.Connection -> [(Text,Int,Maybe Text)] -> IO ()
+checkNativeCustodyHistory c entries = do
+  require (length entries<=128) "invalid_custody_history_batch"
+  rows<-O.runSelect c $ do
+    event<-O.selectTable S.chainEvents
+    (hash,_,_,proof)<-O.selectTable S.observationEvidence
+    O.where_ (S.eventChain event O..== O.sqlStrictText "Native"
+      O..&& O.in_ [O.sqlStrictText key | (key,_,_)<-entries] (S.eventId event)
+      O..&& S.eventHash event O..== hash)
+    pure (S.eventId event,(S.eventReview event,S.eventAnchor event,proof))
+    :: IO [(Text,(Int64,Text,Text))]
+  let saved=M.fromList rows
+  forM_ entries $ \(key,confirmations,anchor)->do
+    (review,oldAnchor,encoded)<-maybe (reject "custody_native_history_advanced") pure (M.lookup key saved)
+    require (review==0) "custody_history_not_current"
+    proof<-decodeSaved encoded >>= field "proof"
+    oldDepth<-field "confirmations" proof
+    require (oldDepth==confirmations && oldAnchor==maybe "unconfirmed" id anchor) "custody_native_history_changed"
+ where field key value=either (const $ reject "invalid_reconciliation_evidence") pure (parseEither (withObject "evidence" (.: key)) value)
 
 custodyEvent :: PG.Connection -> Text -> Text -> IO (Text,Text,Value)
 custodyEvent c chain identifier = do
