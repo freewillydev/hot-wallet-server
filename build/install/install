@@ -99,7 +99,7 @@ if [ "$mode" = fresh ] || [ "$mode" = recover ]; then
   fi
 else
   [ -f "$config/installed" ] && [ -L "$prefix/current" ] || fail 'no completed installation'
-  cmp "$bundle/migrations.sha256" "$prefix/current/migrations.sha256" >/dev/null || fail 'schema change requires reviewed offline migration before upgrade'
+  cmp "$bundle/schema.sha256" "$prefix/current/schema.sha256" >/dev/null || fail 'unsupported schema change; automatic database conversion is not supported'
   if [ "$mode" = upgrade ]; then
     lifecycle=/var/lib/ecx-bridge-upgrade
     [ -d "$lifecycle" ] && [ ! -L "$lifecycle" ] && [ "$(stat -c '%u:%a' "$lifecycle")" = 0:700 ] || fail 'run the candidate ecx-bridge entry command for a checkpointed upgrade'
@@ -232,7 +232,7 @@ if [ ! -e "$target" ]; then
   cp -R "$bundle/." "$staging/"
   chown -R root:root "$staging"
   chmod -R go-w "$staging"
-  chmod 0755 "$staging" "$staging/bin" "$staging/lib" "$staging/share" "$staging/share/web" "$staging/share/web/dist" "$staging/share/migrations"
+  chmod 0755 "$staging" "$staging/bin" "$staging/lib" "$staging/share" "$staging/share/web" "$staging/share/web/dist"
   chmod 0755 "$staging/bin/"* "$staging/lib/"*
   find "$staging/share" -type f -exec chmod 0644 '{}' +
   (cd "$staging" && sha256sum -c manifest.sha256 >/dev/null)

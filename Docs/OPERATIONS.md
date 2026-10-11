@@ -12,7 +12,7 @@ For the installed package, use its matching data directory instead of Cabal:
 bridge() { env ecx_bridge_datadir=/opt/ecx-bridge/current/share /opt/ecx-bridge/current/bin/ecx-bridge "$@"; }
 ```
 
-Initialization and schema-21 restoration read migrations from that directory.
+Fresh database provisioning reads `schema.sql` from that directory.
 Installed systemd services already set it; direct maintenance commands must too.
 
 `CONFIG`, `SIGNER_CONFIG`, `KEYFILE`, `BACKUP_CONFIG` and staging paths refer to
@@ -335,8 +335,8 @@ then run normal reconciliation/resume before serving payments.
 
 Separately funded account creation can use ordinary treasury allocation. Retain
 complete token and SOL history in either case; never skip history or invent an
-opening balance. Existing custody with financial history requires migration or
-recovery, not this initial-funding operation.
+opening balance. Existing custody with financial history requires verified current-schema recovery,
+not this initial-funding operation.
 
 Earned withdrawal uses a fresh 64-lowercase-hex `id`, asset `Native` or `Wrapped`,
 amount and external recipient. Its reservations, preparation, signing and settlement
@@ -458,10 +458,9 @@ replace service accounts, overwrite a native wallet or drop a database.
 4. Restore the ledger and native wallet without overwriting existing destinations.
    Configure restored Solana/unlock material with separate signer permissions and
    fresh transport/RPC credentials. Retain financial identity while changing only
-   reviewed operational paths. Current ledger restoration automatically converts
-   schema 21 to 22 in the new private database and invalidates custody readiness.
-   Older baselines first require their missing reviewed 001–008 migrations on an
-   offline copy. Never run the 009 staging/activation files directly.
+   reviewed operational paths. Only schema-22 archives can be restored. Restoration creates a new private
+   database and invalidates custody readiness. Unsupported schemas are refused;
+   retain their original ledger and backups for a separately reviewed procedure.
 5. Point the destination at the verified staged database, adopt the minimum sequence
    without lowering the fence and start in observation mode. Reconcile both real
    chains, full custody and all saved in-flight attempts. Resolve discrepancies.
@@ -500,10 +499,10 @@ after resume can safely stop/restart and reconcile the advanced ledger; it never
 restores the pre-upgrade database. The fixed `check-fence CONFIG` command reads a
 stopped worker's validated, nonretired fence under its lock without modifying it.
 
-This path currently accepts identical migration inventories only. A schema change
-still requires the reviewed offline conversion/recovery procedure; automatic
-schema-21 to schema-22 integration and full interrupted-upgrade acceptance remain
-release gates. Earlier installer evidence does not prove this new workflow.
+This path accepts identical `schema.sha256` files only. A changed schema or an
+earlier migration-based bundle is refused; there is no automatic schema conversion.
+Full interrupted-upgrade acceptance remains a release gate. Earlier installer
+evidence does not prove this new workflow.
 
 
 ### Managed native backup handoff

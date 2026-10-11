@@ -62,15 +62,14 @@ checks root admin=bracket(PG.connect admin) PG.close $ \c->do
   ddl "CREATE DATABASE ecx_bridge"
   refused "foreign_installation_database" run
   ddl "DROP DATABASE ecx_bridge"
-  createDirectory(root</>"bad"); createDirectory(root</>"bad/migrations")
-  forM_ [1..8::Int] $ \n->do
-    let name="migrations/00"<>show n<>".sql"
-    bytes<-getDataFileName name >>= B.readFile
-    B.writeFile(root</>"bad"</>name) $ if n==8 then B.unlines(concatMap(\line->if line=="COMMIT;" then ["CREATE TABLE deliberately_invalid(;",line] else [line])(B.lines bytes)) else bytes
+  createDirectory(root</>"bad")
+  original<-getDataFileName "schema.sql" >>= B.readFile
+  B.writeFile(root</>"bad/schema.sql") $ B.unlines $ concatMap
+    (\line->if line=="COMMIT;" then ["CREATE TABLE deliberately_invalid(;",line] else [line]) (B.lines original)
   prior<-lookupEnv "ecx_bridge_datadir"
   bracket_ (setEnv "ecx_bridge_datadir" (root</>"bad"))
     (maybe(unsetEnv "ecx_bridge_datadir")(setEnv "ecx_bridge_datadir") prior) $
-      (run >> fail "invalid migration accepted") `catch` \(_::PG.SqlError)->pure ()
+      (run >> fail "invalid schema accepted") `catch` \(_::PG.SqlError)->pure ()
   -- Roles and DB survive; the entire schema+receipt transaction rolls back.
   bracket(PG.connect target) PG.close $ \db->do
     rows<-O.runSelect db $ do
@@ -80,10 +79,10 @@ checks root admin=bracket(PG.connect admin) PG.close $ \c->do
       :: IO [T.Text]
     check(null rows)
   refused "foreign_installation_roles" (evalSetup admin $ ProvisionDatabase "fedcba9876543210fedcba9876543210")
-  -- Hold a DDL name collision until the child reaches the final migration, then
+  -- Hold a DDL name collision until the child reaches the final schema statement, then
   -- kill the actual OS process (no Haskell exception cleanup can run there).
-  original<-getDataFileName "migrations/008.sql" >>= B.readFile
-  B.writeFile(root</>"bad/migrations/008.sql") $ B.unlines $ concatMap
+  -- Match the query prefix: pg_stat_activity may truncate the final DDL barrier.
+  B.writeFile(root</>"bad/schema.sql") $ B.unlines $ concatMap
     (\line->if line=="COMMIT;" then ["CREATE TABLE public.provision_kill_barrier(id integer);",line] else [line]) (B.lines original)
   bracket(PG.connect target) PG.close $ \blocker->do
     PG.begin blocker
@@ -98,7 +97,7 @@ checks root admin=bracket(PG.connect admin) PG.close $ \c->do
                 rows<-O.runSelect c $ do
                   (db,event,query)<-O.selectTable activity
                   O.where_ (db O..== O.sqlStrictText "ecx_bridge" O..&& O.fromNullable (O.sqlStrictText "") event O..== O.sqlStrictText "Lock"
-                    O..&& O.like query (O.sqlStrictText "%replacement_schema_mismatch%"))
+                    O..&& O.like query (O.sqlStrictText "%CREATE FUNCTION bridge_json_valid%"))
                   pure query
                   :: IO [T.Text]
                 if null rows then threadDelay 20000 >> blocked else pure ()
@@ -106,7 +105,7 @@ checks root admin=bracket(PG.connect admin) PG.close $ \c->do
           pid<-getPid process >>= maybe(fail "child exited before interruption") pure
           signalProcess sigKILL pid
           status<-waitForProcess process
-          unless(reached==Just ())(fail "child never reached migration008 lock")
+          unless(reached==Just ())(fail "child never reached schema install lock")
           unless(status/=ExitSuccess)(fail "child unexpectedly succeeded before SIGKILL")
     PG.rollback blocker
   -- Wait for the disconnected backend to finish rollback and release its lock.
@@ -130,7 +129,7 @@ checks root admin=bracket(PG.connect admin) PG.close $ \c->do
   forM_ ["ecxbridger","ecxbridges"] $ \role->
     bracket(PG.connect target {PG.connectUser=role}) PG.close $ \db->verifyReadRole db >>= check
   -- Real provisioning creates ecx_install.receipt, deliberately inaccessible to
-  -- the runtime reader. Back up that exact layout, not a migration-only fixture.
+  -- the runtime reader. Back up that exact layout, not an artificial fixture.
   let identity=T.replicate 64 "a"
       readerSettings=target {PG.connectUser="ecxbridger"}
       receiptNames :: PG.Connection -> IO [T.Text]
@@ -197,7 +196,7 @@ checks root admin=bracket(PG.connect admin) PG.close $ \c->do
     same "source deployment and observation rows unchanged" before original
   bracket(PG.connect readerSettings) PG.close $ \db->verifyReadRole db >>= same "reader privileges after restore" True
   putStrLn "PASS: provisioned restricted-reader backup, installer receipt excluded, all public tables/sequences/functions/constraints/triggers/indexes restored, ledger and observation data preserved, paused isolated restore, reader remains restricted"
-  putStrLn "PASS: foreign role/database refusal, migration rollback, SIGKILL during migration008 and successful retry, changed-migration refusal, read-only roles and initialized ledger/observation preservation"
+  putStrLn "PASS: foreign role/database refusal, schema rollback, SIGKILL during installation and successful retry, changed-schema refusal, read-only roles and initialized ledger/observation preservation"
  where
   same :: (Eq a,Show a) => String -> a -> a -> IO ()
   same label expected actual=unless(expected==actual)(fail $ label<>" expected="<>show expected<>" actual="<>show actual)

@@ -47,8 +47,8 @@ Do not modify/deploy original runtime or touch live custody during extraction.
    next round. Use immutable net obligations, keep retries admitted, preserve
    active-per-chain ordering. Gate preparation and signer decision independently;
    never delay observation, settlement or signed-attempt recovery. Use only closed
-   Opaleye DSL operations. Schema22 needs an explicit versioned migration and
-   pending-work backfill/verified backup; never reset an existing ledger.
+   Opaleye DSL operations. Only the current schema is supported at the user’s request; schema changes
+   require an explicit deployment decision. Never reset an existing ledger.
 2. Wire record policy through Config/StorePolicy and public timing presentation.
    Currently payout, Cloudflare and owner fields are only validated, NOT applied.
    Do not leave silently ignored configuration in a finished installer. Owner
@@ -61,7 +61,7 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 4. Complete configuration validation (backup URLs, meaningful owner xpub), tests
    and fresh Ubuntu install/repeat/reboot acceptance. Keep one build job, no idle
    VMs. Linux installation has NOT been run for this new repository.
-5. Real disposable PostgreSQL scheduling/migration/recovery contracts, full source
+5. Real disposable PostgreSQL scheduling/setup/recovery contracts, full source
    checks, independent final extraction/install verdict and only then completion.
    Production security/manual-wallet/alerts/release-trust/public-access gates
    remain separate and FAIL; no inherited receipt certifies new changes.
@@ -136,3 +136,19 @@ for staged tree b8091c3fb943b134642664e8c519f9c55295e42a. Only verdict metadata
 was appended afterward.
 No custom-site Ubuntu deployment or live operation was performed. After this
 scoped feature, the next substantive task remains durable payout rounds above.
+
+## Current-schema cleanup
+
+Only schema 22 is supported. `src/schema.sql` replaces all historical SQL files;
+Store.Migration and old-only fixtures are removed. Initialization lives in
+Store.Provision; existing matching ledgers are preserved, old ones refused.
+Current-schema backup/restore and payment invariants pass actual isolated PostgreSQL
+contracts; all local build/test logs are in `.audit/current-schema.tsv`.
+Config examples are deleted; example.conf remains. No live data changed.
+
+Latest user request: integrate Safe/Critical indexing into operation-capabilities
+and use its existential directly instead of the bridge's Pending wrapper. The
+bridge currently pins library main1c93d57; indexed-pipeline branch2d7bb4a is separate
+unmerged work and must not be overwritten. Preserve caller/result nominal types,
+closed command families, payload eqT in the Operation instance, pure preparation
+and one critical evaluator entry. Finish the schema commit before changing this.

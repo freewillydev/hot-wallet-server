@@ -113,7 +113,7 @@ sudo env "PATH=$PATH" ecx-bridge configure
 
 ## Running
 
-With reviewed private configuration, migrated ledger, host fence and database
+With reviewed private configuration, initialized current-schema ledger, host fence and database
 roles in place:
 
 ```sh
@@ -131,7 +131,7 @@ independent custody, lower a fence, alter saved terms or erase signed work.
 `bridge-test` is the server Cabal QuickCheck/protocol suite.
 The bridge suite includes actual HTTP/TLS boundaries, protected credentials,
 protocol vectors and the pinned SDK's tests. `ecx-store-check` exercises closed
-Opaleye fixtures against an explicitly disposable migrated PostgreSQL database and
+Opaleye fixtures against an explicitly disposable current-schema PostgreSQL database and
 SELECT-only role. Its existing `ECX_REBUILD_*` environment names remain stable;
 they identify test modes, not another application.
 
@@ -168,10 +168,7 @@ export ECX_REBUILD_TEST_SDK="$(find "$PWD/build/dist-newstyle" -name libecx_sola
 for mode in initial_funding initial_customer default fence setup setup_residue server server_canonical tls tls_canonical cache history history_progress; do
   export ECX_REBUILD_CONTRACT_DATABASE="ecx_rebuild_contract_${mode}"
   createdb "$ECX_REBUILD_CONTRACT_DATABASE"
-  for migration in 001 002 003 004 005 006 007 008; do
-    psql -X -v ON_ERROR_STOP=1 -d "$ECX_REBUILD_CONTRACT_DATABASE" \
-      -f "src/migrations/$migration.sql"
-  done
+  psql -X -v ON_ERROR_STOP=1 -d "$ECX_REBUILD_CONTRACT_DATABASE" -f src/schema.sql
   psql -X -v ON_ERROR_STOP=1 -d "$ECX_REBUILD_CONTRACT_DATABASE" <<'SQL'
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO ecx_contract_reader;
@@ -182,7 +179,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON SEQUENCES TO ecx_contr
 SQL
   (
     unset ECX_INITIAL_FUNDING_ONLY ECX_INITIAL_FUNDING_CASE
-    unset ECX_REBUILD_MIGRATION_ONLY ECX_REBUILD_PAYMENT_ROOTS_ONLY ECX_REBUILD_LIVE_OBSERVER_CONFIG
+    unset ECX_REBUILD_LIVE_OBSERVER_CONFIG
     unset ECX_REBUILD_SETUP_ONLY ECX_REBUILD_SETUP_RESIDUE ECX_REBUILD_SERVER_ONLY ECX_REBUILD_TLS_ONLY
     unset ECX_REBUILD_CANONICAL ECX_REBUILD_FENCE_ONLY ECX_REBUILD_NATIVE_RECOVERY_ONLY
     unset ECX_REBUILD_ENCRYPTED_NATIVE_ONLY ECX_REBUILD_CUSTODY_ONLY ECX_REPORT_CACHE_ONLY
@@ -208,15 +205,15 @@ done
 printf 'Retained evidence and databases: %s\n' "$contract_root"
 ```
 
-Expected: eleven named PASS lines, all commands exit zero, stopped isolated cluster
+Expected: thirteen named PASS lines, all commands exit zero, stopped isolated cluster
 on shell exit. On failure retain its log/database; do not label omitted modes PASS.
 No database or directory is deleted by this recipe. The owner may arrange cleanup
 with Luke; never remove a socket directory owned by another run. This recipe is
 source-derived; its execution against the final candidate is still required.
 
-Migration and real-node recovery modes below need their stated historical fixtures
-or disposable real node and are additional gates when their components change.
-They are not covered by the eleven-mode matrix or by core QuickCheck. Never substitute
+Real-node recovery modes below need their stated disposable real node
+and are additional gates when their components change.
+They are not covered by the thirteen-mode matrix or by core QuickCheck. Never substitute
 a funded ledger. Use `cabal --project-dir=build run ecx-store-check` for packaged fixture data; direct
 binary invocation needs `ecx_bridge_datadir` pointing to the server package.
 
@@ -225,8 +222,6 @@ binary invocation needs `ecx_bridge_datadir` pointing to the server package.
 | `ECX_REBUILD_HISTORY_ONLY=1` | Durable Solana progress, writer restart, stale CAS, rollback, checkpoint/receipt atomicity, no duplicate posting and old-binary/re-upgrade compatibility. |
 | Default | Ledger, concurrency, recovery and local encrypted restic contracts |
 | `ECX_REBUILD_HISTORY_COUNT=1001` | Default mode with 1,001 sequential offline refund/settlement/replay histories on one order; measures actual customer reads at increasing sizes and across the 1,000-row page boundary. Accepts 2–2,000; ordinary runs retain two refunds. No RPC or funds. |
-| `ECX_REBUILD_PAYMENT_ROOTS_ONLY=1` | Populated schema-21 fixture from baseline `e684f9b`; converts through the closed Opaleye operation, compares retained records, customer views, queues and all work hashes, checks migration refusal/kill/rollback/constraints, then tests ordinary legacy-archive restoration. Ends paused on schema 22. The `child` value is private test-process plumbing. |
-| `ECX_REBUILD_MIGRATION_ONLY=1` | Populated offline schema-18 copy with baseline DDL 001–005; applies 006–008 and the closed schema-22 conversion; optional `ECX_REBUILD_MIGRATION_RECOVERY_CONFIG` for read-only real-chain reconciliation |
 | `ECX_REBUILD_SETUP_ONLY=1` | `ECX_REBUILD_EXECUTABLE`; optional `ECX_REBUILD_SETUP_RESIDUE=1` |
 | `ECX_REBUILD_SERVER_ONLY=1` | `ECX_REBUILD_EXECUTABLE`; process, HTTP and private control |
 | `ECX_REBUILD_TLS_ONLY=1` | `ECX_REBUILD_TEST_SDK`; actual HTTPS saved-decision signing |
@@ -237,20 +232,11 @@ binary invocation needs `ecx_bridge_datadir` pointing to the server package.
 | `ECX_REBUILD_CUSTODY_ONLY=1` | With native/encrypted recovery mode and disposable DB; complete custody bundle |
 | `ECX_REBUILD_LIVE_OBSERVER_CONFIG=CONFIG` | Observation-only real-chain checks with restricted native credentials |
 
-Fresh default/setup/server/TLS/fence contracts receive 001–008; their closed
-initializer installs schema 22. Do not apply 009 manually. The preserved migration
-fixture on this development host is `ecx_rebuild_contract_g_legacy_roots_20261006`;
-run the destructive migration test on a clone, not that baseline. It contains only
-offline fixture histories, no live keys or paying services.
-
-To reproduce that baseline, build `ecx-store-check` at `e684f9b` in an isolated
-checkout and run its payment-roots mode on a fresh 001–008 disposable database.
-Before the run, install a test-only deployment trigger which raises SQLSTATE
-`P2221` when `NEW.schema_version=22`; this deliberately stops before committing
-conversion after the old runtime has generated the histories. Drop that trigger
-and function after the controlled failure, then clone the database for the current
-contract. This is fixture capture, not a passing test. Keep the original untouched;
-the current runtime intentionally cannot generate new payments on schema 21.
+All fresh contracts install `src/schema.sql` and initialize version 22 directly.
+Older or unknown schemas and backup manifests are rejected; there are no conversion
+test modes. `ECX_PROVISION_TEST=1 cabal --project-dir=build run ecx-store-check`
+owns a temporary private PostgreSQL cluster and tests provisioning, interruption,
+retry, restricted roles and a current-schema restore; it cleans up on exit.
 
 For the bounded formal check, run from `src/test/formal`:
 

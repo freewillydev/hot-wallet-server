@@ -67,3 +67,6 @@ ledger backups: wallet keys alone do not recover pending transfers.
 [Source builds](Docs/LOCAL-DEVELOPMENT.md) · [License](LICENSE)
 
 [Agent instructions](Docs/AGENTS.md) · [Development status](Docs/DONE.md) · [Resume](Docs/RESUME.md)
+
+Only the current database schema is supported. Upgrades with a different schema
+are refused; keep the existing ledger and backups.

@@ -1,0 +1,14 @@
+check	status	evidence
+baseline	PASS	15a17a7f97014196de5f1999d686d4e2f04c009d
+schema_equivalence	PASS	PostgreSQL schema-only dumps identical; temporary empty reference runs historical final DDL; no live database used
+schema_dump_reference	PASS	46ce9054c83a33f06a168ca1b36c4fc3cc7718dccf2c740dd04e1e916188454b
+schema_dump_direct	PASS	46ce9054c83a33f06a168ca1b36c4fc3cc7718dccf2c740dd04e1e916188454b
+build	PASS	/tmp/hot-wallet-schema-build.log sha256=fdad2823df96d2cab8848803de0818d8e0df230ab5d2af6cc89607dcf461b6f7
+provision	PASS	/tmp/hot-wallet-schema-provision.log sha256=650ef8f735fad16c027f4081e908290513fb193b333f7c3d1c76bfc5528f7e4b
+test	PASS	/tmp/hot-wallet-schema-test.log sha256=6f235e68292dba50ecd9c9788e0ffe6a321b52d5963b40e31251644f4bfdf9c4
+default	PASS	/tmp/hot-wallet-schema-default.log sha256=7f3ebcbd6168166881f48f3e36e3acb1bfdcbe105af624885c5e8e7c94d15310
+setup	PASS	/tmp/hot-wallet-schema-setup.log sha256=d017249a37d5051c7424fe92632e3242a8b13cc6c680382df1e450a417c2e930
+setup_residue	PASS	/tmp/hot-wallet-schema-setup_residue.log sha256=d017249a37d5051c7424fe92632e3242a8b13cc6c680382df1e450a417c2e930
+shell_syntax	PASS	sh -n build/install/install build/install/package
+production	FAIL	Scoped schema cleanup; Ubuntu installer, payout-round and existing release gates remain open
+independent_review	PASS	current_schema_verifier reviewed staged diff SHA256 07fcc04827636d27f34f97f02cd2006a2cdf0a62dd07e74063e7447e667769c2; only verdict metadata appended

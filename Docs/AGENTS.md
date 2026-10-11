@@ -19,7 +19,11 @@ Keep required licenses and dependency locks.
 Database access: use Opaleye for all application reads/writes, diagnostics, role
 checks and database test fixtures/assertions. No raw SQL query/execute escape path
 for those operations and no alternative database backend. Underlying libpq
-connections/transaction control and schema-migration DDL are separate infrastructure.
+connections/transaction control and fixed schema DDL are separate infrastructure.
+
+Only schema 22 is supported. Fresh setup uses src/schema.sql; no migration folder,
+old-schema conversion or automatic reset is permitted. example.conf is the only
+operator configuration example. Reject unsupported ledgers and backup manifests.
 
 Opaleye queries belong only to implementations of specific closed DSL operations.
 Do not expose connection/query callbacks or generic RunQuery/RunSQL operations to

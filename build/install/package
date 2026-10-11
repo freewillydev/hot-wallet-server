@@ -60,13 +60,13 @@ mkdir -m 0700 "$output"
 staging=$(mktemp -d "$output/.bundle-XXXXXXXX")
 trap 'rm -rf -- "$staging"' EXIT
 trap 'exit 1' HUP INT TERM
-mkdir -p "$staging/bin" "$staging/lib" "$staging/share/web" "$staging/share/migrations" "$staging/share/notices"
+mkdir -p "$staging/bin" "$staging/lib" "$staging/share/web" "$staging/share/notices"
 cp "$binary" "$staging/bin/ecx-bridge"
 cp "$restic" "$staging/bin/restic"
 cp build/install/monitor "$staging/monitor"
 cp "$sdk" "$staging/lib/libecx_solana_sdk.so"
 cp -R "$web/." "$staging/share/web/"
-cp src/migrations/*.sql "$staging/share/migrations/"
+cp src/schema.sql "$staging/share/schema.sql"
 cp build/install/install "$staging/install"
 cp build/install/node "$staging/node"
 cp build/install/native-backup "$staging/native-backup"
@@ -90,7 +90,7 @@ cp LICENSE "$staging/share/notices/LICENSE"
 cp Docs/THIRD-PARTY.md "$staging/share/notices/"
 # Keep collected notices at their repository paths (including license subtrees).
 cp -R Docs/third-party "$staging/share/notices/"
-(cd "$staging/share" && sha256sum migrations/*.sql) > "$staging/migrations.sha256"
+(cd "$staging/share" && sha256sum schema.sql) > "$staging/schema.sha256"
 (cd "$staging" && find . -type f ! -path ./manifest.sha256 -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > "$staging/manifest.sha256"
 name=ecx-bridge-ubuntu-24.04-$arch.run
 cat > "$output/$name" <<'HEADER'

@@ -21,7 +21,6 @@ import Bridge.Lifecycle
 import Bridge.Wire (PaymentTerms(..),PolicySnapshot(..),CostLimits(..),SignedAttempt(..))
 import qualified Bridge.Store.Schema as S
 import qualified Bridge.Store.Projection as P
-import qualified Bridge.Store.Migration as Migration
 import qualified Bridge.Store.Provision as Provision
 import Bridge.Store.Catalog (claimWorker,verifyReadRole,exportSnapshot)
 import Bridge.Store.Backup (LedgerArchive(..),archiveLedger,BackupReceipt(..),loadRemoteBackup,uploadRemoteArchive,loadLedgerArchive,restoreLedger,discardRestore,downloadRemoteArchive,CustodyArchive(..),loadCustodyArchive,uploadRemoteCustody,downloadRemoteCustody)
@@ -65,20 +64,16 @@ data CustodySnapshot = CustodySnapshot
   { custodyRevision :: Int64, custodyTotals :: M.Map Asset Integer
   , custodyHeads :: [(Text,Text)], custodySlot :: Int64, custodyPending :: [RecordedAttempt] } deriving (Eq,Show)
 
--- Closed offline setup: initialization cannot replace recovery, and conversion
--- requires a paused source and verified archive. Neither operation adopts a fence.
+-- Closed offline setup accepts only the current schema and never adopts a fence.
 data StoreSetup a where
   ProvisionDatabase :: Text -> StoreSetup ()
   ProvisionRestoredDatabase :: Text -> Int64 -> StoreSetup ()
   InitializeLedger :: Text -> StoreSetup ()
-  MigratePaymentRoots :: Text -> Int64 -> FilePath -> StoreSetup (Int64,Int)
 
 evalSetup :: PG.ConnectInfo -> StoreSetup a -> IO a
 evalSetup settings (ProvisionRestoredDatabase identity sequenceNo) = Provision.provisionRestoredDatabase settings identity sequenceNo
 evalSetup settings (ProvisionDatabase token) = Provision.provisionDatabase settings token
-evalSetup settings (MigratePaymentRoots identity minimumSequence manifest) =
-  Migration.migratePaymentRoots settings identity minimumSequence manifest
-evalSetup settings (InitializeLedger identity) = Migration.initializeLedger settings identity
+evalSetup settings (InitializeLedger identity) = Provision.initializeLedger settings identity
 
 -- Restoration needs database-creation authority; fence changes claim the paused
 -- ledger exclusively. No online handler receives these maintenance operations.
@@ -110,19 +105,6 @@ evalRestore settings (RecoverLedger configuration snapshot directory identity mi
 evalRestore settings (RestoreLedger manifest identity minimumSequence) = do
   archive<-loadLedgerArchive identity minimumSequence manifest
   bracketOnError (restoreLedger settings archive) discardRestore $ \target->do
-   -- Legacy archives are upgraded only in the newly created, private restore
-   -- database. There is no signer, adopted fence or automatic resumption here.
-   when (archiveSchema archive==21) $ do
-    bracket (PG.connect target) PG.close $ \c->Tx.withTransaction c $ do
-      claimWorker c >>= flip require "worker_already_running"
-      rows<-O.runSelect c (O.selectTable S.deployment) :: IO [S.Deployment]
-      require (case rows of
-        [r]->S.singleton r==1 && S.schemaVersion r==21 && S.fingerprint r==identity && S.criticalSequence r==archiveSequence archive
-        _->False) "restored_schema_or_sequence_mismatch"
-      void $ O.runUpdate c O.Update {O.uTable=S.deployment,
-        O.uUpdateWith= \r->r {S.paused=O.sqlInt8 1,S.pauseReason=O.sqlStrictText "restored_requires_migration"},
-        O.uWhere= \r->S.singleton r O..== O.sqlInt8 1,O.uReturning=O.rCount}
-    void $ evalSetup target (MigratePaymentRoots identity minimumSequence manifest)
    bracket (PG.connect target) PG.close $ \c->Tx.withTransaction c $ do
     claimWorker c >>= flip require "worker_already_running"
     row<-metadata c identity

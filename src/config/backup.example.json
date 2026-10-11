@@ -1,5 +1,0 @@
-{
-  "restic": "/usr/bin/restic",
-  "repositoryFile": "/etc/ecx-bridge/backup.repository",
-  "passwordFile": "/etc/ecx-bridge/backup.password"
-}

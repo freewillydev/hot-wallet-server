@@ -163,7 +163,7 @@ running the closed checkpoint command as the worker identity. It never queries t
 database or constructs a signer client. After publication it stops any previously
 resumed worker again, validates a nondecreasing fence and uses ordinary startup and
 checked resume against current chain state. Immutable phase records remain after
-completion. Same-schema upgrades reuse the database; unknown migrations refuse.
+completion. Same-schema upgrades reuse the database; schema changes refuse.
 For older installed signers, the same-schema candidate is staged as a temporary
 systemd executable override before checkpointing. The worker stays persistently
 blocked; signer exit is verified before changing the override. The journal binds
@@ -234,7 +234,7 @@ cached descriptor addresses while locked; keypool exhaustion remains a node refu
 
 Every application row read/write, diagnostic, privilege check and test fixture
 uses Opaleye in a specific closed operation. Connections, transaction control and
-reviewed migration DDL are infrastructure. No handler gets a connection or generic
+fixed schema DDL are infrastructure. No handler gets a connection or generic
 query evaluator. Safe evaluation and the signer use distinct SELECT-only roles,
 including SELECT on sequences without USAGE/UPDATE. Startup checks inherited and
 catalog privileges, schema creation and elevated role flags.
@@ -245,11 +245,11 @@ row before reading decision facts; safe/signing reads use READ ONLY / REPEATABLE
 READ snapshots. The fence advances before commit;
 stale/wrong-identity/retired state is refused. Unexpected database failures fence the
 connection; policy failures permit reuse only after successful rollback. Startup
-pauses intake. Runtime reads/writes accept only schema 22. Schema-18 migration retains
-exact history through 006–008 to schema 21; the closed offline converter then builds
-payment roots. Fresh initialization expects 001–008, refuses residual financial
-rows and atomically installs 009 as the database owner. Worker privileges stay DML
-only. Legacy archive restoration performs conversion only in its new private database.
+pauses intake. Runtime reads/writes and backup/restore accept only schema 22.
+Fresh setup installs `src/schema.sql` in one transaction with its installation
+receipt. The closed initializer refuses residual financial rows and records the
+identity with intake paused. Existing matching schema-22 ledgers are preserved;
+older or unknown versions are rejected. Worker privileges remain DML only.
 
 Amounts are canonical base-unit decimal strings. Both conversion assets have eight
 decimals; arithmetic uses Integer with bounded persisted values. New fee is
@@ -520,7 +520,7 @@ before/after backup and checks source bytes/state. Keep passphrase administratio
 quiescent. Offline inspection checks integrity without unlocking; restoration must
 point `nativeUnlockFile` at the recovered private file.
 
-Restore into new staging, verify identity/schema/minimum sequence, migrate forward,
+Restore into new staging, verify the current schema/identity/minimum sequence,
 adopt a nondecreasing fence and reconcile both chains before explicit resume. A
 local retirement marker does not revoke copied keys elsewhere. Never replace a
 missing ledger with a new empty ledger for existing custody. See
@@ -529,8 +529,7 @@ missing ledger with a new empty ledger for existing custody. See
 ## Entry points and compatibility contracts
 
 These are the current external contracts retained across the schema-22 refactor.
-Names below are source constructors/commands; historical schema fields appear only
-in the fact-ownership and offline-migration tables.
+Names below are source constructors/commands. No older-schema conversion is supported.
 
 ### Customer, worker and signer
 
@@ -681,7 +680,7 @@ Solana reference and original conversion payout-link precedence.
 Retain strict configuration fields/fingerprint (`Config.hs`), private setup
 source-file references (`Configure.hs`). Preserve saved `PaymentTerms`, `SignedAttempt`,
 native/Solana draft/message bytes, ATA attempt/parent formats, custody archive
-formats 1/2 and schema-21/22 backup manifests. Exact keys, decoder bounds and rejected
+formats 1/2 and schema-22 backup manifests. Exact keys, decoder bounds and rejected
 unknown fields remain owned by their existing codecs; no new compatibility codec.
 
 Policy/conflict (`*_conflict`, `*_invalid`, `*_required`) means no successful
@@ -817,96 +816,38 @@ while signing and requires the second read to refuse. Deliberate negative mutati
 prove these tests detect representative weakened checks; they do not prove every
 schedule or chain history. The old comparison writer is absent from production.
 
-### Schema-22 dependency and conversion contract (G71–84)
+### Current schema and restore contract
 
-This inventory was checked against migrations 001–008 and Store at `2f35af4`.
-Schema 22 is the only accepted runtime schema. Old table projections live only in
-the private migration module and its tests, with no dual-paying implementation.
-The closed `StoreSetup.MigratePaymentRoots` operation converts a paused offline
-copy to schema 22. It owns both fixed DDL stages and Opaleye backfill/verification
-in one transaction. The installer explicitly runs 001–008; 009 staging/activation
-must run only through closed conversion or fresh initialization, never as standalone
-scripts. `restore-ledger` accepts a verified schema-21 archive, restores a private
-copy and converts it before exposing schema-22 inspection. It does not adopt a
-fence, restore readiness or start a signer. Schema/manifest disagreement refuses.
+`src/schema.sql` is the sole schema definition. It creates 40 tables, 5 views,
+13 indexes, 91 functions and 95 triggers directly. There is no migration directory,
+staging version, historical table projection or conversion operation.
 
-| Existing dependency | Required replacement / invariant |
-| --- | --- |
-| `intents.resolved` CHECK and `one_unresolved_chain_intent` | Four valid phase/nullable-column combinations; partial unique active-chain index. Ready roots must not occupy the active-chain slot. |
-| `obligations.status` CHECK and `one_active_deposit_allocation` | Derive execution from the root and restrictions. Add immutable root `deposit_id`, a composite FK to obligation identity/receipt and a partial unique noncancelled-receipt index. Earned roots have no receipt. No cross-table uniqueness trigger or duplicate cancellation flag. |
-| `orders.status`, `orders.payout_tx` | Narrow admission field; customer execution/link projection. Admission/expiry, queue limits, promotion candidates, instruction exposure and legacy-policy resume checks must stop treating admission as payment progress. |
-| `trg_cancelled_preparation_attempt` (001) | Require root `active` and exact `active_generation`, unretired/noncancelled preparation and no cleanup request. |
-| `trg_source_approval_binding` (004) | Replace obligation status with a current unresolved source restriction; retain latest restoration/loss ordering, eligible-restored or exact covered-loss alternatives, source-cover identity and sequence. |
-| `trg_native_replacement_member_binding` (001) | Require active root/exact generation; retain parent/child identity, states, fee, draft membership and cancellation exclusion. |
-| `trg_native_replacement_draft_binding` (008) | Require active root and no source restriction; retain paused authority, full fee hold, exact eligible or covered/approved source, earned-funding branch and single open draft. |
-| `trg_native_winner_change_binding` (003) | Require settled root pointing to previous winner; retain family/generation/allowance, queued proof and immutable prior observation. Preserve original settlement event. |
-| `trg_fee_withdrawal_cancellation_binding` (007) | A ready root with no preparation is now normal. Otherwise require wholly unsigned completed cleanup, released fee hold and paused authority; preserve request/decision sequencing. |
-| `trg_payment_funding_binding` (006) | Preserve exactly-one immutable funding identity and asset/chain binding; allow an already cancelled withdrawal's root only in its proved cancelled phase, including migration. |
-| `one_active_preparation`, `one_settled_payment_per_intent`, attempt/preparation immutable triggers | Retain. Deferred root/attempt/preparation checks bind their final transaction state, including winner swaps. A failed retained preparation is not permission to create another. |
-| Root settlement fields | Composite belonging checks for active generation and winner; original event FK/unique/immutability and exact `settlement:<original-attempt>` binding. Changing winner must not alter that event. |
-| Funding/root completeness | Obligation and withdrawal creation commit with exactly one corresponding root. Deferred checks validate both insertion orders without permitting orphan funding after commit. |
-| Source/native recovery views and immutable journals | No view directly references the removed fields. Retain latest-state/winner cutoff semantics, all evidence FKs and append-only/custody-invalidation triggers. |
-| `workIntents` and `workHash` | Preserve the old approval hash preimage: omit a new ready/cancelled root with no preparation (old representation had no intent), otherwise derive `resolved` as phase other than active. Preserve all ordering/common-input/history bytes. This is a hash encoding, not stored compatibility state. |
-| Initialization, manifests, table inventories and permissions | Refuse occupied/staged/unknown ledgers; allow schema-21 inspection only through migration/recovery; activate 22 atomically. Extend full-record comparisons and SELECT-only checks; retain sequence/fence/backup boundaries. |
+Payment roots retain immutable funding and chain identity, four constrained phases,
+unique active payments per chain and unique live receipt ownership. Composite
+foreign keys bind each generation and winner to its payment. Six deferred triggers
+validate the final atomic payment state, including the original principal event;
+settled payments cannot be reopened and obligations cannot be rewritten or deleted.
+The SQL guards remain in addition to the closed Haskell decisions.
 
-The six status/resolved-dependent trigger bodies are listed above; funding binding
-also needs changed cancellation timing. No trigger or constraint is dropped merely
-because the corresponding Haskell decision exists. A root's deferred final-state
-checks must tolerate the established within-transaction ordering but not a committed
-orphan, active-generation mismatch, unbound winner or duplicate principal event.
+Provisioning reads the fixed DDL and hashes it into a private installation receipt;
+schema creation and receipt publication commit together. A foreign or nonempty
+unrecognized database is refused. Repeated initialization of a matching current
+ledger preserves it; otherwise it refuses without resetting financial data.
 
-Conversion maps existing records as follows. Rows not named for removal retain all
-fields and identities; no transaction, approval, event or financial posting is regenerated.
+Backup manifests must name schema 22 before archive reads or restore database
+creation. Restore creates a new private database, checks the restored identity and
+sequence, pauses intake and invalidates custody readiness. It neither converts an
+old schema nor adopts a fence or starts signing. Current-schema signed bytes,
+accounting and recovery history are preserved.
 
-| Source facts | Target / required evidence |
-| --- | --- |
-| Ready customer obligation / earned request without intent | New root with same payment/funding ID, correct destination chain, ready phase, no work/winner/event. No new posting. |
-| Active unresolved intent, including source review or pending cleanup | Active root with its uniquely belonging current generation. Keep its review/cleanup restriction separate; do not turn review into ready or discard signed work. |
-| Successful payment, including changed native winners | Settled root with current uniquely settled attempt and the unique original principal event proved through retained attempts/postings/winner history. Current winner need not be that original event's transaction. |
-| Finalized failed attempt | Ready economic phase with failed-attempt restriction; preserve failed cost, attempt and unreleased liability. No new retry capability. |
-| Verified Solana expiry | Ready phase; preserve retired preparation/bytes/expiry. Retry eligibility still requires the separate saved approval and normal gates. |
-| Completed unsigned preparation cancellation | Ready phase; preserve complete cleanup, history and any retained fee reservation for a later retry. Source review/generation limit remain restrictions. Pending cleanup stays active. Cancelling funding itself releases the hold. |
-| Cancelled earned withdrawal | Cancelled phase proved by its immutable cancellation; no attempts, and any preparation history must have completed unsigned cleanup. |
-| Cancelled conversion superseded by refund | Cancelled phase bound to the retained refund for the same receipt, with no unresolved work or original principal settlement. The refund gets its own root; receipt uniqueness ignores only the proved cancelled conversion. |
-| Historical order display fields | Admission/expiry/review and payment-derived display must match the old facts. Unknown or ambiguous mapping refuses; do not quietly drop a sticky review or select an arbitrary refund. |
-| Missing executable legacy cost policy | Keep the known economic history and explicit restriction; do not fabricate new limits. If phase or original settlement cannot be proved, refuse migration. |
-| Terms/capabilities/deadlines/receipts/allocations/holds/budgets | Unchanged immutable bytes and financial meaning, compared before activation. Released holds are not removed or recreated. |
-| Scans/evidence/source covers/returns/replacements/approvals | Unchanged identities, exact bytes, order and sequence. Check old/new work hashes on every migrated subject, including ready source-review work. |
-| Deployment identity/critical sequence/backup/host fence | Same identity and nondecreasing boundary; migration never resumes or creates a covered new send. Restore/migrate in isolation, then reconcile before explicit activation. |
+Release bundles include `schema.sha256`; upgrade requires an exact match. Earlier
+migration-based bundles and changed schemas refuse automatic upgrade. An encrypted
+backup is recovery evidence, not permission to wipe or recreate an existing ledger.
 
-Migration first takes the existing exclusive worker lock and verifies paused
-identity/sequence under the deployment-row lock. A bounded transaction can stage
-columns, convert rows through a closed Opaleye operation, compare complete financial
-state, install final constraints and activate version 22 together. Failure rolls
-back schema and data; no serve/signer accepts staging. A committed staging/resume
-scheme is justified only if measured ledger size makes this transaction unsuitable.
-Old worker and signer must be quiescent and the encrypted snapshot retained; the
-database lock is not proof that another host no longer has signing keys.
-
-The converter loads and verifies the protected schema-21 archive before taking the
-transaction, then requires its exact sequence, identity and paused metadata. It
-uses version 2200 only within the uncommitted transaction. Pages of 1,000 funding/
-order rows preserve IDs, terms and work; incompatible economic state or unexplained
-review refuses conversion. Target phase constraints, composite belonging FKs,
-receipt/active-chain uniqueness and deferred payment-consistency triggers replace
-the removed status dependencies. With progress removed, obligation funding columns
-are immutable; a recorded native common input and original settlement event cannot
-change. New trigger installation does not validate earlier writes automatically,
-so the closed Opaleye converter explicitly invokes the fixed consistency check for
-every mapped root before forcing deferred constraints and recording version 22.
-
-The disposable PostgreSQL migration contract preserves 16 roots, 12 attempts and 83
-postings, with failed/expired work, bounded unsigned cancellation, native winner
-history, source review and ordered refunds. It checks all retained table projections,
-old/new payment states and queues, unexplained-review refusal, worker exclusion,
-actual migration-process death during DDL and rollback after final-DDL failure.
-New runtime reads preserve all source/replacement work hashes, queues and customer
-status/link projections. Legacy restoration preserves exact financial records while
-invalidating custody readiness. Fresh initialization, ordinary Servant startup,
-restricted signer reads, HTTPS signing for both real network profiles (offline
-RPC fixtures), restart recovery, fences and encrypted schema-22 ledger restoration
-pass their local contracts. No funded deployment is converted or resumed by these
-tests; real-chain and independent-host acceptance remain release gates.
+Local contracts cover direct schema installation, rollback/SIGKILL/retry, restricted
+roles, current-schema restoration and financial constraint rejection. Historical
+conversion fixtures are removed; real-chain and independent-host acceptance remain
+separate release gates.
 
 ## Audit path
 
@@ -920,7 +861,7 @@ tests; real-chain and independent-host acceptance remain release gates.
 | Admission, orders and payment validation | `workflow/Bridge/{Admission,Order,Payment}.hs` |
 | Observation and custody reconciliation | `workflow/Bridge/{Observer,Reconciliation}.hs` |
 | Closed Opaleye operations and transactions | `runtime/Bridge/Store.hs`, `Store/{Schema,Catalog,Projection}.hs` |
-| Offline schema conversion with preserved history | `runtime/Bridge/Store/Migration.hs`, `migrations/009-*.sql` |
+| Current schema, private provisioning and initialization | `schema.sql`, `runtime/Bridge/Store/Provision.hs` |
 | Native/Solana adapters and protocol codecs | `chain/Bridge/` |
 | Signer HTTPS transport and protected credentials | `workflow/Bridge/{Signer,Credentials}.hs` |
 | Local operator control and custody recovery | `workflow/Bridge/{Control,Recovery}.hs` |

@@ -105,3 +105,22 @@ against baseline `ec068ad`. No blocking findings. Log hashes are in
 `.audit/wrap-only.tsv`.
 No new funded, PostgreSQL, Ubuntu installation or overall production acceptance
 is claimed; all broader open gates above remain PENDING/FAIL.
+
+## Current schema only (2026-10-10)
+
+PASS: one `src/schema.sql` replaces ten migration files (1,008 -> 756 lines).
+Historical schema projections and conversion operations are removed. Provisioning
+and initialization are one module (495 -> 187 lines); unsupported backup schemas
+are rejected before archive access or database creation. Current restore preserves
+exact attempts and financial records and stays paused. The four optional config
+examples (78 lines) are removed; `example.conf` is the only operator example.
+
+Actual PostgreSQL schema-only dumps match exactly. Build-all, full bridge-test,
+provisioning rollback/SIGKILL/retry and isolated current-schema restore, the default
+financial contract, fresh initialization and residual-history refusal all PASS.
+The temporary databases/processes were stopped and removed. No live funds moved.
+Evidence: `.audit/current-schema.tsv`. Independent `current_schema_verifier` PASS
+for staged diff SHA256 `07fcc04827636d27f34f97f02cd2006a2cdf0a62dd07e74063e7447e667769c2`;
+only this verdict metadata was added afterward. Overall production/payout/Ubuntu
+installation gates remain FAIL. Old migration-based
+bundles and changed schema hashes refuse automatic upgrade.

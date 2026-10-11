@@ -221,7 +221,7 @@ If database/services are missing, it asks whether to provision them, then offers
   key path and signed candidate directory. Signature verification remains mandatory;
   failure never falls back to source installation. Older setup files retain this mode.
 
-Both modes provision PostgreSQL, restricted roles, migrations and a paused ledger.
+Both modes provision PostgreSQL, restricted roles, the current schema and a paused ledger.
 Choosing no leaves provisioning to the operator; it never substitutes an empty
 ledger for missing existing services. An arbitrary existing PostgreSQL installation
 alone is not an initialized bridge deployment.
@@ -253,7 +253,7 @@ build/install/package /absolute/new-candidate /absolute/restic-0.19.1
 ```
 
 This invokes the existing Cabal build, packages its executable, SDK, GHC-JavaScript
-assets, all migrations, retained notices and the supplied restic 0.19.1 client.
+assets, schema.sql, retained notices and the supplied restic 0.19.1 client.
 It accepts only the reviewed restic hash for that architecture, checked before
 compilation. The earlier upstream Go 1.26.4 binary has open advisory findings and
 is refused. It creates a self-contained `.run` artifact and checksum. Artifact authentication
@@ -354,7 +354,7 @@ sudo build/scripts/release-auth install /trusted/release-public.pem /reviewed/ca
 Use `aarch64` only with a separately built and reviewed ARM64 artifact. Installation provisions PostgreSQL 16, separate
 non-login worker/signer users with explicit SSH denial, restricted database roles,
 signer TLS/authentication,
-baseline migrations 001–008, closed schema-22 initialization, a fresh paused ledger/fence and systemd units. It leaves
+the current schema.sql, closed schema-22 initialization, a fresh paused ledger/fence and systemd units. It leaves
 services stopped, enabled for boot; every worker startup requires checked resume.
 It does not create chain assets, provision the native daemon, initialize remote
 storage or provision public certificates. These are real deployment prerequisites, not
@@ -454,7 +454,7 @@ cabal --project-dir=build list-bin ecx-bridge:exe:ecx-bridge
 ```
 
 Cabal hooks build the native SDK library and GHC-JavaScript browser. A deployed
-bundle must carry the resulting SDK/assets, configuration templates, all migrations
+bundle must carry the resulting SDK/assets, configuration templates, schema.sql
 and applicable dependency notices. `build/assets/toolchains.json` retains toolchain pins;
 that file is not an installation command or release certificate.
 
@@ -502,43 +502,30 @@ appropriate native credentials. Review `workflow/Bridge/Config.hs` for the exact
 fingerprint and accepted fields. Do not copy old `customerSocket`, `adminSocket`,
 helper-subprocess or Python-uploader settings into current configuration.
 
-## Database setup and migration
+## Database setup
 
-Apply reviewed `migrations/001.sql` through `008.sql` in order to a fresh private
-database. Migrations 001–005 retain the baseline DDL; 006–008 advance schema 18 to
-21 while preserving financial history. Existing databases require their actual
-installed DDL to be checked before applying only missing migrations: version 18
-alone does not prove that every baseline correction is present. Stop the paying
-worker, preserve a consistent backup and verify financial records before/after.
-Do not rerun non-idempotent schema files blindly.
-
-For a genuinely new empty deployment, with local **database-owner** credentials
-configured (the worker must not own the schema):
+Fresh setup installs `src/schema.sql` once into an empty private database, then
+initializes schema 22. The database owner performs setup; worker privileges are
+limited to data operations. For advanced manual setup after installing the schema:
 
 ```sh
 cabal --project-dir=build run exe:ecx-bridge -- initialize-ledger /absolute/private/config.json
 cabal --project-dir=build run exe:ecx-bridge -- adopt-ledger /absolute/private/config.json 0
 ```
 
-Initialization expects 001–008 already installed, creates deployment/custody/clock
-state and installs the schema-22 constraints in the same transaction. It refuses
-residual financial data and starts paused. The installer passes only the validated
-public fingerprint using `initialize-ledger --fingerprint ID` to the database owner;
-that owner need not read the service configuration or secrets. The worker's
-existing DML-only privileges are sufficient after initialization.
-It does not create keys, fund custody, restore history or authorize payments.
-Existing custody must follow recovery/migration, never this empty-ledger procedure.
+Initialization atomically records deployment/custody/clock state, refuses residual
+financial data and starts paused. The installer passes the validated public
+fingerprint with `initialize-ledger --fingerprint ID`; the database owner does not
+need custody secrets. Repeated setup validates the bound installation receipt and
+retains existing data. It does not generate keys, fund custody or authorize payment.
 
-Current serve/signer processes accept only schema 22. For schema-21 custody, quiesce
-both old processes and preserve the verified final archive. The ordinary
-`restore-ledger CONFIG MANIFEST MINIMUM_SEQUENCE` command converts only its new
-private restore database, preserves exact financial history and leaves custody
-unreconciled and paused. Inspect that copy before fence adoption and chain
-reconciliation. Do not execute `009-stage.sql` or `009-activate.sql` directly,
-or replace a ledger with a fresh initialization to satisfy the new version check.
+Only the current schema is supported. Restore accepts schema-22 archives into a
+new private database, preserves financial history and requires reconciliation and
+explicit fence adoption. Older/unknown versions and schema-changing upgrades are
+refused. Preserve their ledgers and backups; never erase or initialize over them.
 
-[OPERATIONS.md](OPERATIONS.md) covers process startup, funding, operator commands
-and restore. Deleting or reinstalling a server is not itself a recovery procedure.
+[OPERATIONS.md](OPERATIONS.md) covers startup, funding, operator commands and restore.
+Deleting or reinstalling a server is not itself a recovery procedure.
 
 ### Guided console and provider preflight
 

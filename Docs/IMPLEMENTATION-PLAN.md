@@ -6,6 +6,11 @@ and test requirements below do not apply to this server extraction. Only ATA set
 is retained here. Current acceptance is tracked in [DONE.md](DONE.md), with the
 active work order in [RESUME.md](RESUME.md).
 
+The user has since required **one current schema only** (2026-10-10). Historical
+schema conversion/backfill and migration tests below are superseded. Fresh setup
+uses `src/schema.sql`; only schema 22 may run or be restored. Never reset an old
+ledger to make setup pass. `example.conf` is the sole configuration example.
+
 Status: **117/120 steps verified (A–I, J105–111, J113–117, J120)**. Implementation and
 available acceptance are complete; external gates J112, J118 and J119 remain open.
 The source-size reduction target was not met; see the measured J117 results. This replaces the

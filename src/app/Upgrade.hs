@@ -203,9 +203,9 @@ checkFence binary receipt exact=do
 
 compatible :: FilePath -> IO ()
 compatible bundle=do
-  old<-B.readFile(current</>"migrations.sha256")
-  new<-B.readFile(bundle</>"migrations.sha256")
-  require (old==new) "schema_change_requires_reviewed_offline_migration"
+  old<-B.readFile(current</>"schema.sha256")
+  new<-B.readFile(bundle</>"schema.sha256")
+  require (old==new) "unsupported_schema_change"
 
 configurationHash :: IO T.Text
 configurationHash=digest . B.concat <$> mapM B.readFile

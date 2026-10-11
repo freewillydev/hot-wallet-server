@@ -1,12 +1,14 @@
 -- Closed offline installer operation. Never adopts, resumes or replaces a ledger.
-module Bridge.Store.Provision (provisionDatabase,provisionRestoredDatabase) where
+module Bridge.Store.Provision (provisionDatabase,provisionRestoredDatabase,initializeLedger) where
 import Bridge.Error
 import qualified Bridge.Store.Schema as S
 import Bridge.Store.Catalog (claimWorker,verifyReadRole)
 import Data.Int (Int64)
 import Bridge.Identity (digest)
 import Control.Exception (bracket)
-import Control.Monad (forM,forM_,void)
+import Control.Monad (forM_,void)
+import Data.Time.Clock.POSIX (getPOSIXTime)
+import qualified Opaleye.Exists as Exists
 import qualified Data.ByteString.Char8 as B
 import Data.Profunctor.Product (p2,p3,p8)
 import Data.Text (Text)
@@ -25,13 +27,12 @@ provisionDatabase :: PG.ConnectInfo -> Text -> IO ()
 provisionDatabase settings token=do
   require (T.length token==32 && T.all (`elem` ("0123456789abcdef"::String)) token) "invalid_installation_token"
   require (PG.connectDatabase settings=="postgres" && PG.connectUser settings=="postgres") "provision_requires_postgres_admin"
-  scripts<-forM [1..8::Int] $ \n->do
-    bytes<-getDataFileName ("migrations/00"<>show n<>".sql") >>= B.readFile
-    let lines'=B.lines bytes
-    require (length(filter(=="BEGIN;") lines')==1 && length(filter(=="COMMIT;") lines')==1
-      && last(filter(not.B.null) lines')=="COMMIT;") "unexpected_installation_migration_structure"
-    pure (bytes,B.unlines $ filter(\line->line/="BEGIN;" && line/="COMMIT;") lines')
-  let checksum=digest(B.concat $ map fst scripts)
+  bytes<-getDataFileName "schema.sql" >>= B.readFile
+  let lines'=B.lines bytes
+  require (length(filter(=="BEGIN;") lines')==1 && length(filter(=="COMMIT;") lines')==1
+    && last(filter(not.B.null) lines')=="COMMIT;") "unexpected_installation_schema_structure"
+  let sql=B.unlines $ filter(\line->line/="BEGIN;" && line/="COMMIT;") lines'
+      checksum=digest bytes
       owner="ecx_setup_"<>token
       names=["ecxbridgew","ecxbridger","ecxbridges",owner]
       label="ecx-install:"<>token
@@ -80,13 +81,48 @@ provisionDatabase settings token=do
           :: IO [Text]
         require (null existing) "unrecognized_installation_schema"
         void $ PG.execute_ target "CREATE SCHEMA ecx_install AUTHORIZATION postgres; REVOKE ALL ON SCHEMA ecx_install FROM PUBLIC; CREATE TABLE ecx_install.receipt(token text PRIMARY KEY, migration_hash text NOT NULL); REVOKE ALL ON ecx_install.receipt FROM PUBLIC"
-        forM_ scripts $ \(_,sql)->void $ PG.execute_ target (Query sql)
+        void $ PG.execute_ target (Query sql)
         count<-O.runInsert target O.Insert {O.iTable=receipt,O.iRows=[(O.sqlStrictText token,O.sqlStrictText checksum)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
         require (count==1) "installation_receipt_failed"
       else do
         saved<-O.runSelect target (O.selectTable receipt) :: IO [(Text,Text)]
         require (saved==[(token,checksum)]) "installation_receipt_mismatch"
       void $ PG.execute_ target "REVOKE ALL ON SCHEMA public FROM PUBLIC; REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC; REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC; GRANT CONNECT ON DATABASE ecx_bridge TO ecxbridgew,ecxbridger,ecxbridges; GRANT USAGE ON SCHEMA public TO ecxbridgew,ecxbridger,ecxbridges; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO ecxbridgew; GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO ecxbridgew; GRANT SELECT ON ALL TABLES IN SCHEMA public TO ecxbridger,ecxbridges; GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO ecxbridger,ecxbridges"
+
+initializeLedger :: PG.ConnectInfo -> Text -> IO ()
+initializeLedger settings identity = do
+  require (T.length identity==64 && T.all (`elem` ("0123456789abcdef"::String)) identity) "invalid_deployment_identity"
+  bracket (PG.connect settings) PG.close $ \c->PG.withTransaction c $ do
+    claimWorker c >>= flip require "worker_already_running"
+    existing<-O.runSelect c (O.selectTable S.deployment) :: IO [S.Deployment]
+    case existing of
+      []->do
+        let exists table=Exists.exists (O.selectTable table >> pure ())
+        occupied<-O.runSelect c $ foldr (O..||) (O.sqlBool False) <$> sequence
+          [exists S.withdrawals, exists S.cancellations, exists S.events
+          ,exists S.postings, exists S.audit, exists S.custody
+          ,exists S.intentIds, exists S.orders, exists S.deposits
+          ,exists S.obligations, exists S.reservations, exists S.orderCosts
+          ,exists S.operatingReservations, exists S.operatingClock, exists S.operatingCosts
+          ,exists S.scanHealth, exists S.checkpoints, exists S.nativeAllocations
+          ,exists S.sourceChecks, exists S.sourceReturns, exists S.sourceLossCovers
+          ,exists S.observationEvidence, exists S.treasuryAllocations, exists S.treasurySpends
+          ,exists S.scanOrigins, exists S.chainEvents, exists S.preparations
+          ,exists S.feeHolds, exists S.attempts, exists S.sourceRecoveryDecisions
+          ,exists S.preparationCancellations, exists S.solanaExpiries, exists S.solanaRetryApprovals
+          ,exists S.replacementDecisions, exists S.replacementCancellationRows, exists S.replacementMemberRows
+          ,exists S.nativeRecoveryRows, exists S.nativeWinnerChanges, exists S.legacyHints]
+        require (occupied==[False]) "initialization_requires_empty_ledger"
+        now<-floor <$> getPOSIXTime
+        _<-O.runInsert c O.Insert {O.iTable=S.deployment,
+          O.iRows=[S.Deployment (O.sqlInt8 1) (O.sqlInt8 22) (O.sqlStrictText identity) (O.sqlInt8 0) (O.sqlInt8 0) (O.sqlInt8 1) (O.sqlStrictText "installation_requires_reconciliation")],
+          O.iReturning=O.rCount,O.iOnConflict=Nothing}
+        _<-O.runInsert c O.Insert {O.iTable=S.custody,O.iRows=[(O.sqlInt8 1,O.sqlInt8 0,O.null,O.null,O.null)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+        void $ O.runInsert c O.Insert {O.iTable=S.operatingClock,O.iRows=[(O.sqlInt8 1,O.sqlInt8 now)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+      [r] | S.singleton r==1 && S.schemaVersion r==22 && S.fingerprint r==identity
+        && S.criticalSequence r>=0 && S.backupSequence r>=0 && S.backupSequence r<=S.criticalSequence r
+        && S.paused r `elem` [0,1]->pure ()
+      _->reject "ledger_profile_or_schema_mismatch"
 
 -- Closed recovery setup: grant service roles on an already restored paused ledger.
 -- No initialization, database rename or financial-row mutation is permitted.
