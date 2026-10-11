@@ -46,14 +46,14 @@ inspectCustody losses manager settings config reader = do
   let native=nativeSettings settings; solana=solanaSettings settings
       verifier=fmap (\url->rpc manager url Nothing) (S.solanaVerifierRpc solana)
       identity=N.nativeIdentity manager native >> S.solanaGenesisWith (S.solanaCall manager solana) verifier solana
-  inspectCustodyWith (floor <$> getPOSIXTime) identity (N.nativeCall manager native) (S.solanaCall manager solana)
+  inspectCustodyWith (floor <$> getPOSIXTime) identity (N.nativeCall manager native) (N.withNativeHistory native) (S.solanaCall manager solana)
     verifier settings config reader losses
 
 -- Explicit read-only transports allow protocol contracts without invented chains.
 -- No transaction spans RPC; the revision is checked again before certification.
-inspectCustodyWith :: IO Int64 -> IO () -> NativeRPC -> SolanaRPC -> Maybe SolanaRPC
+inspectCustodyWith :: IO Int64 -> IO () -> NativeRPC -> (Text -> Int -> (Text -> Value -> IO ()) -> IO Text) -> SolanaRPC -> Maybe SolanaRPC
   -> ObserverSettings -> H.SolanaPolicy -> Reader -> Bool -> IO (Int64,Int64,Bool,Value)
-inspectCustodyWith clock identity native solana verifier settings config reader inspectLosses = do
+inspectCustodyWith clock identity native history solana verifier settings config reader inspectLosses = do
   at<-clock
   let n=nativeSettings settings; s=solanaSettings settings
       origins=[("Native",N.nativeCheckpointHash n),("Solana",tokenOrigin settings),("SolanaOperating",operatingOrigin settings)]
@@ -85,14 +85,9 @@ inspectCustodyWith clock identity native solana verifier settings config reader 
       pure (slot,w,supply)
   cursor<-headFor view "Native"
   depth<-evalRead reader (MaximumNativeDepth $ defaultNativeDepth settings)
-  history<-native True "listsinceblock" [toJSON cursor,toJSON depth,Bool False,Bool True]
-  next<-fieldValue "lastblock" history
-  require (next==cursor) "custody_native_history_advanced"
-  current<-fieldValue "transactions" history
-  removed<-fieldValue "removed" history
-  let entries=current<>removed :: [Value]
-  require (length entries<=1000) "native_history_batch_too_large"
-  forM_ entries $ \entry->do
+  next<-history cursor depth $ \captured entry->do
+    -- An advanced checkpoint requests a new scan, before inspecting old depths.
+    require (captured==cursor) "custody_native_history_advanced"
     txid<-fieldValue "txid" entry
     confirmations<-fieldValue "confirmations" entry :: IO Int
     anchor<-parseValue (withObject "transaction" (.:? "blockhash")) entry
@@ -101,6 +96,7 @@ inspectCustodyWith clock identity native solana verifier settings config reader 
     (_,savedAnchor,proof)<-evalRead reader (ReadCustodyEvent "Native" txid)
     old<-fieldValue "confirmations" proof
     require (old==confirmations && savedAnchor==maybe "unconfirmed" id anchor) "custody_native_history_changed"
+  require (next==cursor) "custody_native_history_advanced"
   after<-nativeBalance native
   require (before==after) "custody_native_view_changed"
   let (nativeUnits,pendingUnits,block,height)=after

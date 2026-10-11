@@ -3,10 +3,11 @@ module Bridge.Native
   ( NativeSettings(..), validateNativeSettings, nativeCall, nativeIdentity, nativeIdentityWith
   , verifyNativeBoundaryWith, validateNativeRecipientWith, nativeWalletInfoWith, nativeWalletKeysWith, nativeWalletReadyWith
   , NativeRecovery(..), evalNativeRecoveryWith
-  , ownerAddressWith, recoverNativeAddressWith, nativeHistory, nativeAmount, nativeNumber, signetChallenge ) where
+  , ownerAddressWith, recoverNativeAddressWith, nativeHistory, withNativeHistory, nativeAmount, nativeNumber, signetChallenge ) where
 
 import qualified Bridge.AdminKey as Private
 import qualified Bridge.NativeBackup as BackupTransfer
+import qualified Bridge.NativeHistory as History
 import Bridge.Identity (digest)
 import Bridge.NativeKey (validNetworkXpub)
 import Crypto.Random (getRandomBytes)
@@ -61,13 +62,26 @@ validateNativeSettings c = do
 
 nativeCall :: Manager -> NativeSettings -> Bool -> Text -> [Value] -> IO Value
 nativeCall manager c wallet methodName params = do
+  (url,auth)<-nativeConnection c wallet
+  rpc manager url (Just auth) methodName params
+
+nativeConnection :: NativeSettings -> Bool -> IO (String,(BS.ByteString,BS.ByteString))
+nativeConnection c wallet = do
   validateNativeSettings c
   cookie <- withBinaryFile (nativeCookie c) ReadMode (`BS.hGet` 4097)
   require (BS.length cookie <= 4096) "invalid_rpc_cookie"
   let (username,rest) = BC.break (==':') (BC.takeWhile (/='\n') cookie)
   require (not (BS.null username) && BS.length rest>1) "invalid_rpc_cookie"
   let url = reverse(dropWhile (=='/') $ reverse $ nativeRpc c) <> if wallet then "/wallet/" <> T.unpack (nativeWallet c) else ""
-  rpc manager url (Just (username,BS.drop 1 rest)) methodName params
+  pure (url,(username,BS.drop 1 rest))
+
+-- Complete validated capture before replay; this fixed read has no wallet
+-- mutation or signing access. All ordinary native RPC calls retain their bound.
+withNativeHistory :: NativeSettings -> Text -> Int -> (Text -> Value -> IO ()) -> IO Text
+withNativeHistory c cursor depth consume = do
+  require (depth>0 && T.length cursor==64 && T.all (`elem` ("0123456789abcdef"::String)) cursor) "invalid_native_scan_policy"
+  (url,auth)<-nativeConnection c True
+  History.readHistory url auth cursor depth consume
 nativeIdentity :: Manager -> NativeSettings -> IO Value
 nativeIdentity manager c = nativeIdentityWith (nativeCall manager c) c
 nativeIdentityWith :: (Bool -> Text -> [Value] -> IO Value) -> NativeSettings -> IO Value

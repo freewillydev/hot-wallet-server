@@ -3043,6 +3043,15 @@ fixture c OrderWorkflowFunds = PG.withTransaction c $ do
   fixture c RefreshCustody
 
 -- Offline RPC contracts over an actual PostgreSQL snapshot. No live-chain claim.
+fixtureHistory :: NP.NativeRPC -> T.Text -> Int -> (T.Text -> Value -> IO ()) -> IO T.Text
+fixtureHistory call cursor depth consume = do
+  response<-call True "listsinceblock" [toJSON cursor,toJSON depth,Bool False,Bool True]
+  current<-fieldValue "transactions" response
+  removed<-fieldValue "removed" response
+  anchor<-fieldValue "lastblock" response
+  mapM_ (consume anchor) (current<>removed :: [Value])
+  pure anchor
+
 custodyContract :: PG.ConnectInfo -> StorePolicy -> PG.Connection -> Reader -> IO ()
 custodyContract database store fixtures reader = do
   let key=T.replicate 32 "1"; ata=T.replicate 31 "1"<>"2"; signature=T.replicate 64 "1"; block=T.replicate 64 "a"
@@ -3080,7 +3089,7 @@ custodyContract database store fixtures reader = do
           unless (address `elem` [ata,key] && limit==1 && minimumSlot==42 && commitment=="finalized") (fail "incorrect custody history request")
           pure $ toJSON [object ["signature" .= headSignature,"slot" .= (42::Int),"err" .= Null,"confirmationStatus" .= ("finalized"::T.Text)]]
         _->fail "unexpected custody Solana RPC"
-      inspect clock identity ncall scall verifier cfg=inspectCustodyWith clock identity ncall scall verifier cfg config reader False
+      inspect clock identity ncall scall verifier cfg=inspectCustodyWith clock identity ncall (fixtureHistory ncall) scall verifier cfg config reader False
       good=solCall 1000 signature
   identities<-newIORef (0::Int)
   (_,at,matches,_)<-inspect (pure 100) (modifyIORef' identities (+1)) nativeCall good Nothing settings
@@ -3135,7 +3144,7 @@ custodyContract database store fixtures reader = do
       expectStore "rpc_error_-32019" (if swap then dual failing waiting else dual waiting failing)
       takeMVar stopped
     unless (completed==Just ()) (fail "custody provider failure left a running inspection")
-  let advanced wallet method params=if method=="listsinceblock" then pure $ object ["lastblock" .= ("advanced"::T.Text)] else nativeCall wallet method params
+  let advanced wallet method params=if method=="listsinceblock" then pure $ object ["lastblock" .= ("advanced"::T.Text),"transactions" .= ([]::[Value]),"removed" .= ([]::[Value])] else nativeCall wallet method params
   expectStore "custody_native_history_advanced" (inspect (pure 100) (pure ()) advanced good Nothing settings)
   -- A new mempool receipt can appear after scanning without advancing the tip.
   -- Absence defers custody; an existing reviewed or changed event stays strict.
@@ -3151,6 +3160,21 @@ custodyContract database store fixtures reader = do
       inspectAppeared action confirmations=inspect (pure 100) (pure ()) (appeared action confirmations) good Nothing settings
   expectStore "custody_native_history_advanced" (inspectAppeared (pure ()) 0)
   seed 0
+  let advancedChanged wallet method params=if method=="listsinceblock" then pure $ object
+        ["lastblock" .= ("advanced"::T.Text)
+        ,"transactions" .= [object ["txid" .= newTx,"confirmations" .= (1::Int)]]
+        ,"removed" .= ([]::[Value])]
+       else nativeCall wallet method params
+  expectStore "custody_native_history_advanced" (inspect (pure 100) (pure ()) advancedChanged good Nothing settings)
+  let largeHistory lastDepth wallet method params=if method=="listsinceblock" then pure $ object
+        ["lastblock" .= ("fixture-anchor"::T.Text)
+        ,"transactions" .= (replicate 2000 (object ["txid" .= newTx,"confirmations" .= (0::Int)])
+          <> [object ["txid" .= newTx,"confirmations" .= (lastDepth::Int)]])
+        ,"removed" .= ([]::[Value])]
+       else nativeCall wallet method params
+  (_,_,largeMatches,_)<-inspect (pure 100) (pure ()) (largeHistory 0) good Nothing settings
+  unless largeMatches (fail "large custody history changed balances")
+  expectStore "custody_native_history_changed" (inspect (pure 100) (pure ()) (largeHistory 1) good Nothing settings)
   expectStore "custody_native_history_changed" (inspectAppeared (pure ()) 1)
   expectStore "custody_history_not_current" (inspectAppeared (seed 1) 0) `finally` seed 0
   samples<-newIORef (0::Int)
@@ -3280,7 +3304,7 @@ nativeCustodyFamilies fixtures reader writer settings config base solana=do
           ["ismine" .= True,"scriptPubKey" .= NP.planChangeScript plan]
         (False,"getmempoolentry",[String identifier]) | active==Just identifier->pure $ object ["vsize" .= (100::Int)]
         _->base wallet method params
-      inspect native=inspectCustodyWith (pure 100) (pure ()) native solana Nothing settings config reader False
+      inspect native=inspectCustodyWith (pure 100) (pure ()) native (fixtureHistory native) solana Nothing settings config reader False
       assertReport members retained abandoned active raw pending excluded delta matches=do
         (_,_,actual,report)<-inspect $ call members retained abandoned active raw pending
         reported<-fieldValue "nativeWalletReported" report

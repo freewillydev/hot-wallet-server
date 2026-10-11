@@ -21,6 +21,8 @@ import System.Timeout (timeout)
 import System.FilePath ((</>))
 import System.IO (openTempFile,hClose)
 import qualified ObservationCheck
+import qualified Network.Wai as Wai
+import qualified Network.Wai.Handler.Warp as Warp
 import qualified SolanaPaymentCheck
 import qualified NativePaymentCheck
 import Bridge.Domain
@@ -35,7 +37,7 @@ import Control.Exception (try,bracket,SomeException,throwIO,fromException,AsyncE
 import Control.Concurrent (forkFinally,killThread)
 import Control.Concurrent.Async (mapConcurrently)
 import Control.Concurrent.MVar
-import Control.Monad (unless)
+import Control.Monad (unless,forM_)
 import Data.Aeson hiding (Result)
 import Data.Aeson.Types (parseEither)
 import qualified Data.Aeson.KeyMap as KM
@@ -52,7 +54,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Client.Internal as HTTPInternal
-import Network.HTTP.Types (Status,ResponseHeaders,status200,status429,http11)
+import Network.HTTP.Types (Status,ResponseHeaders,status200,status429,status500,http11)
 import Data.Time.Clock (getCurrentTime,addUTCTime)
 import Data.Time.Format (formatTime,defaultTimeLocale)
 import Test.QuickCheck hiding (label)
@@ -60,6 +62,68 @@ import Test.QuickCheck hiding (label)
 checks :: IO [Result]
 checks = (\deployment native solana identity observation administration common->deployment<>native<>solana<>identity<>observation<>administration<>common) <$> deploymentChecks <*> NativePaymentCheck.checks <*> SolanaPaymentCheck.checks <*> ((<>) <$> solanaIdentityChecks <*> solanaPairChecks) <*> ObservationCheck.checks <*> administrationChecks <*> sequence
   [ check "durable bounded Solana observation catch-up preserves anchored order and strict absence proofs" $ once $ ioProperty historyCatchupContract
+  , check "native history validates full HTTP capture before replay and exceeds aggregate RPC bound" $ once $ ioProperty $
+      withPrivateDirectory $ \directory->do
+        let anchor=T.replicate 64 "a"; cookie=directory</>"cookie"
+            entry=object ["txid" .= anchor,"confirmations" .= (6::Int),"label" .= T.replicate 2400 "x"]
+            result rows=object ["lastblock" .= anchor,"transactions" .= rows,"removed" .= ([]::[Value])]
+            good=encode $ object ["id" .= (1::Int),"result" .= result (replicate 2001 entry)]
+            prefix="{\"id\":1,\"result\":"<>encode(result [entry])
+            variants=[("late",status200,prefix<>",\"error\":{\"code\":-1}}","rpc_error_-1")
+              ,("null result",status200,"{\"result\":null,\"error\":{\"code\":-1},\"id\":1}","rpc_error_-1")
+              ,("HTTP RPC error",status500,"{\"result\":null,\"error\":{\"code\":-1},\"id\":1}","rpc_error_-1")
+              ,("wrong error id",status200,"{\"error\":{\"code\":429},\"id\":2}","rpc_id_mismatch")
+              ,("null success",status200,"{\"result\":null,\"error\":null,\"id\":1}","unexpected_rpc_schema")
+              ,("duplicate",status200,prefix<>",\"id\":1}","rpc_duplicate_field")
+              ,("trailing",status200,good<>"{}","rpc_invalid_json")
+              ,("truncated",status200,BL.take (BL.length good-1) good,"rpc_invalid_json")
+              ,("status",status500,good,"rpc_http_status")]
+        BS.writeFile cookie "test:secret"
+        let run status bytes=runResponses [(status,bytes)]
+            runResponses responses action=do
+              requests<-newIORef (0::Int)
+              let app request respond=do
+                    n<-atomicModifyIORef' requests (\count->(count+1,count))
+                    body<-Wai.strictRequestBody request
+                    let expected=encode $ object ["jsonrpc" .= ("2.0"::Text),"id" .= (1::Int)
+                          ,"method" .= ("listsinceblock"::Text),"params" .= [toJSON anchor,Number 6,Bool False,Bool True]]
+                    unless (body==expected && Wai.requestMethod request=="POST" && Wai.rawPathInfo request=="/wallet/test"
+                      && lookup "Authorization" (Wai.requestHeaders request)==Just "Basic dGVzdDpzZWNyZXQ=")
+                      (fail "incorrect history transport")
+                    let (status,bytes)=responses!!min n (length responses-1)
+                    respond $ Wai.responseLBS status [("Retry-After","1")] bytes
+              Warp.testWithApplication (pure app) $ \port->do
+                let settings=NativeSettings L2LSignetDevnet ("http://127.0.0.1:"<>show port) cookie "test" 1 anchor
+                action (withNativeHistory settings anchor 6)
+              readIORef requests
+        count<-newIORef (0::Int)
+        requests<-run status200 good $ \scan->do
+          saved<-scan (\captured _->unless (captured==anchor) (fail "wrong replay anchor") >> modifyIORef' count (+1))
+          unless (saved==anchor) (fail "history anchor changed")
+        total<-readIORef count
+        forM_ variants $ \(label,status,bytes,reason)->do
+          writeIORef count 0
+          _<-run status bytes $ \scan->rejects reason (scan $ \_ _->modifyIORef' count (+1)) >>= \ok->
+            unless ok (fail $ "history accepted "<>label)
+          emitted<-readIORef count
+          unless (emitted==0) (fail "unvalidated history emitted")
+        forM_ ["{\"result\":null,\"error\":{\"code\":429},\"id\":1}",
+               "{\"error\":{\"code\":429},\"id\":1,\"result\":null}"] $ \limited->do
+          writeIORef count 0
+          retries<-runResponses [(status200,limited),(status200,good)] $ \scan->do
+            _<-scan (\_ _->modifyIORef' count (+1))
+            pure ()
+          emitted<-readIORef count
+          unless (retries==2 && emitted==2001) (fail "RPC error field order changed retry/replay")
+        -- Consumer failures must not cause a second replay, even when they look
+        -- like a retryable transport error.
+        writeIORef count 0
+        replayRequests<-run status200 good $ \scan->do
+          outcome<-try $ scan $ \_ _->modifyIORef' count (+1) >>
+            throwIO (HTTP.HttpExceptionRequest HTTP.defaultRequest HTTP.NoResponseDataReceived)
+          case outcome of Left (_::HTTP.HttpException)->pure (); Right _->fail "consumer failure swallowed"
+        emitted<-readIORef count
+        pure (total==2001 && requests==1 && emitted==1 && replayRequests==1 && BL.length good>4*1024*1024)
   , check "owner descriptor resolution is public-only, fixed-path and refuses custody destinations" $ \(private::Bool) (ranged::Bool) (solvable::Bool) (owned::Bool)->
       forAll (elements [0,1,2::Int]) $ \count->ioProperty $ do
         let key="xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz"

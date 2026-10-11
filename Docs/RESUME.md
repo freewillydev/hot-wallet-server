@@ -1194,3 +1194,31 @@ Integration remains open: large individual transaction parsing, per-receipt proo
 binding/treasury verification, atomic partial-page commits, keyset source recovery,
 and streamed custody overlap with its existing60s deadline. No production code,
 schema, funds or public access changed. Native-history finding remains open.
+
+### Streamed Native custody history integrated (2026-10-11)
+
+Custody reconciliation now uses the fixed listsinceblock streaming reader rather
+than ordinary bounded RPC and its 1,000-entry list. NativeHistory privately
+captures to an immediately unlinked file, validates the complete response, then
+replays from the same descriptor. Its local-only manager avoids the general
+HTTPS response-buffer hook. Existing Native endpoint/cookie validation is shared;
+ordinary RPC limits and signing/DSL authority are unchanged. Consumers are never
+retried. Each entry receives the validated capture anchor before inspection.
+
+Fresh native_stream_patch_review identified two candidate regressions: advanced
+anchors lost refusal precedence, and result:null hid following RPC errors. Both
+were corrected with explicit regressions. Final Cabal bridge-test and default
+PostgreSQL contract PASS (session73835 exit0), including >4MiB transport, 2,001
+custody entries, a final-entry mismatch, advanced-anchor precedence, null-result
+errors in both field orders, error retries without duplicate consumption, and
+existing balance/revision/60s freshness checks. Review was not a whole-finding
+PASS; the final corrections were verified by parent source review and tests.
+
+One private 130-line module; net +140 production Haskell lines and +88 test lines.
+No new runtime dependency, schema or configuration field. Final logs retained via
+Codex Security: artifacts/native-stream-reviewed-suite.log and
+native-stream-reviewed-pg.log. PostgreSQL stopped and disposable data removed.
+Remaining: observer capture/page commits, large individual transactions and
+receipt evidence, source recovery paging, full live-chain/security acceptance.
+Disk capacity and per-entry size still bound feasible captures; this is not an
+arbitrary-history liveness guarantee. Public access remains off.
