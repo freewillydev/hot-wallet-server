@@ -24,6 +24,7 @@ GOTOOLCHAIN=$(jq -er '."restic-reviewed".go' "$pins")
 export GOTOOLCHAIN
 export GOMAXPROCS=1 GOMEMLIMIT=512MiB CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" GOFLAGS= GOWORK=off
 export GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org GONOSUMDB= GONOPROXY=
+cd "$temporary"
 go mod download -json "$(jq -er '."restic-reviewed".source' "$pins")" > "$temporary/module.json"
 [ "$(jq -er .Sum "$temporary/module.json")" = "$(jq -er '."restic-reviewed".sourceSum' "$pins")" ] || exit 1
 mkdir "$temporary/source"

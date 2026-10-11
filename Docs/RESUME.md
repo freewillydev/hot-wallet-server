@@ -19,6 +19,12 @@ Do not modify/deploy original runtime or touch live custody during extraction.
   Retained private inputs are outside this repo under aws-ecx/private/installer-930b547.
   Public ingress remains disabled; old funded host remains stopped. Do not start
   duplicate installer jobs or reuse those keys as another fresh installation.
+  Corrected retry `9dbb9ee` finished as SSM command
+  `546b2512-af26-41b2-9bdb-e4e8877bd93c`; original exit127/log retained with
+  `install-930b547` names. GHC native/JavaScript setup and browser compilation
+  passed and native executable linked; restic build then failed on inherited root-only
+  cwd (exit1). Single-line scratch-directory fix tested; next rerun pending.
+  No service/funded acceptance yet.
 
 - Updater now takes no arguments. Installed `update-settings` safely reads the
   protected Haskell record and returns only the three update paths; wallet process

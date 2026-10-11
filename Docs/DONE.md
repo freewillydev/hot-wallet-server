@@ -26,9 +26,10 @@ resolve older "unimplemented" notes below.
 | Production signing trust | Review source published; no production trust established | Designated key holder, independently published/pinned public key, exact artifact verification and distribution acceptance. User deferred ownership. |
 | Independent security approval and activation | Standard scan and18-file diff complete; subsequent projection patch has scoped static PASS | Close native-history and dependency applicability gates, obtain final current-release verdict, then explicitly verify public-access policy before activation. A partial scan or scoped PASS is insufficient. |
 
-Current deployment check: isolated Ubuntu source installation from `930b547` is
-using dedicated unused keys and a separate backup namespace stopped at emsdk
-environment setup (exit127). The scoped dash fix passed; rerun is pending. First-run
+Current deployment check: isolated Ubuntu source installation uses dedicated
+unused keys and a separate backup namespace. The emsdk issue is fixed; retry
+`9dbb9ee` built browser/native binaries but stopped on restic working-directory
+permissions. Scoped fix passed; another rerun is pending. First-run
 config creation passed; complete installation/startup/reboot remain unverified.
 The prior funded deployment is stopped and preserved. Do not overwrite its ledger,
 reuse retired custody or treat old schema tests as current. Details,
