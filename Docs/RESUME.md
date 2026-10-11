@@ -1420,3 +1420,14 @@ Net production +1 comment line,
 one expression replaced; tests net +21 lines. No new dependencies, schema,
 services or fund moves. Full production gate and original Native-history finding
 remain open for integrated real-network/load and broader release acceptance.
+
+Current-source PostgreSQL acceptance also PASS (session45304 exit0): rebuilt
+ecx-store-check for 240b974, full default ledger/process/backup contract, actual
+restic restore and financial comparisons; 10,001-entry custody check556ms.
+Disposable cluster stopped and removed. Log /tmp/ecx-history-projection-pg.log,
+SHA2560dda36ddfbc15f92a33feeed65a1cdb96ac3562a95cd6b7c842ee7807b3fbaaf.
+RPC fixtures do not close real-network acceptance. Environment recheck: no bridge
+VM, saved local pilot node endpoint unavailable, AWS ecx-dev credentials expired.
+Internal disk16GiB, external drives32MiB/1.4GiB available: insufficient for the
+27GiB snapshot. AWS login approval remains pending. No live custody, user node
+or public ingress changes.
