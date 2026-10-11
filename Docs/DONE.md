@@ -170,3 +170,13 @@ Build, 223 local checks and five disposable PostgreSQL/process modes pass on the
 combined working tree, which also contains unstaged payout work. Only this
 readability refactor is published here; this is not a production acceptance claim.
 Evidence: `.audit/severity.tsv`. Temporary test services stopped; no funds moved.
+
+## Installation URL validation (2026-10-10)
+
+Scoped PASS: record setup validates printable-ASCII HTTPS URLs and backup URI
+structure before private publication, rejects backup fragments and redacts parser
+exceptions. Six malformed backup inputs join real configure-file refusal/replay
+checks. The targeted configure contract PASSes; no chain or services were used.
+Separate single_schema_callgraph PASS for source diff SHA256
+`d7605419c9d508443d53404892225b3d9077a52f5afb137ee729f5b71294ecbe`.
+Evidence: `.audit/layout.tsv`. Payout and production gates remain open.

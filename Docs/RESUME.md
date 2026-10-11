@@ -189,3 +189,8 @@ below the aggregate threshold can fill maximumQueued and prevent progress. Do no
 waive the configured threshold or treat a larger finite cap as a complete fix.
 Update current schema documentation and obtain a fresh final review afterward.
 No live ledger, custody or deployment changed; production gates remain FAIL.
+
+Installation URL validation is independently reviewed and tested; see DONE.md and
+.audit/layout.tsv. Unpublished payout work still fails liveness review for pending
+quote/round timing, shared fees and extreme thresholds. User policy choice is
+pending; do not treat its passing fixture suite as release acceptance.

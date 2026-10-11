@@ -224,6 +224,12 @@ importContract parent executable key=do
     ,replace "solKeyB58" (show $ T.unpack $ base58 $ B.take 32 key<>B.replicate 32 0)
     ,replace "solKeyB58" (show $ map (\c->toEnum(fromEnum c+256)::Char) $ T.unpack $ base58 key)
     ,filter ((/="solKeyB58").fst) fields
+    ,replace "backupRepositoryUrl" (show ("rest:https://"::String))
+    ,replace "backupRepositoryUrl" (show ("rest:http://backup.example.invalid/repository"::String))
+    ,replace "backupRepositoryUrl" (show ("rest:https://backup.example.invalid/repository\nother"::String))
+    ,replace "backupRepositoryUrl" (show ("rest:https://backup.example.invalid/repository#fragment"::String))
+    ,replace "backupRepositoryUrl" (show ("rest:https://backup.example.invalid:invalid/repository"::String))
+    ,replace "backupRepositoryUrl" (show ("rest:https://backup.example.invalid/\x100"::String))
     ,replace "websiteDirectory" ("Just "<>show ("relative/site"::String))
     ,replace "websiteDirectory" ("Just "<>show (parent</>"missing-site"))]) $ \(n,values)->do
       let file=parent</>("invalid-"<>show n<>".conf"); dest=parent</>("invalid-"<>show n)

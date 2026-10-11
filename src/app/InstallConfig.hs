@@ -10,7 +10,8 @@ import Bridge.RPC (independentHttps)
 import Bridge.Wallet (nativeDescriptors)
 import Control.Exception (catch)
 import Control.Monad (forM_)
-import Data.List (isPrefixOf)
+import Data.List (isPrefixOf,stripPrefix)
+import Data.Maybe (fromMaybe)
 import Crypto.Error (CryptoFailable(..))
 import qualified Crypto.PubKey.Ed25519 as Ed
 import qualified Data.ByteArray as BA
@@ -19,7 +20,7 @@ import qualified Data.ByteString.Base58 as B58
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Network.HTTP.Client (parseRequest,HttpException)
+import Network.HTTP.Client (parseRequest,HttpException,secure,host)
 import System.FilePath (isAbsolute,normalise)
 import Text.Read (readEither)
 
@@ -66,13 +67,12 @@ validateInstallConfig c=do
     amount<-either reject pure (parseCoins $ T.pack value)
     require (units amount>0) "positive_payout_threshold_required"
   require (minimumPayoutIntervalHours c>=0 && minimumPayoutIntervalHours c<=8760) "payout_interval_hours_out_of_range"
-  forM_ [solanaRpcUrl c,solanaVerifierRpcUrl c,externalLinkSolscan c,externalLinkOrca c] $ \url->do
-    require (take 8 url=="https://" && not(any (`elem` ['\n','\r',' ','\0']) url)) "https_url_required"
-    _<-parseRequest url `catch` (\(_::HttpException)->reject "invalid_https_url")
-    pure ()
+  forM_ [solanaRpcUrl c,solanaVerifierRpcUrl c,externalLinkSolscan c,externalLinkOrca c] validateHttps
   independentHttps (solanaRpcUrl c) (solanaVerifierRpcUrl c)
     `catch` (\(_::HttpException)->reject "invalid_rpc_endpoints")
-  require ("rest:https://" `isPrefixOf` backupRepositoryUrl c || "https://" `isPrefixOf` backupRepositoryUrl c) "https_backup_repository_required"
+  let backup=fromMaybe (backupRepositoryUrl c) (stripPrefix "rest:" $ backupRepositoryUrl c)
+  validateHttps backup
+  require ('#' `notElem` backup) "backup_repository_fragment_not_allowed"
   require (length(backupPassword c)>=16 && not(any (`elem` ['\n','\r','\0']) (backupPassword c))) "backup_password_minimum_16_characters"
   require (isAbsolute $ resticExecutable c) "absolute_reviewed_restic_path_required"
   _<-either reject pure (publicKey $ T.pack $ ownerSolPubkey c)
@@ -83,3 +83,11 @@ validateInstallConfig c=do
   forM_ (websiteDirectory c) $ \path->require (isAbsolute path && normalise path==path && length path<=4096
     && all (\character->character>=' ' && character/='\DEL') path) "absolute_website_directory_required"
   pure key
+
+-- Configuration publication uses ASCII URI bytes. Require percent-encoding for
+-- non-ASCII input, and never include credential-bearing parser errors in output.
+validateHttps :: String -> IO ()
+validateHttps url=do
+  require ("https://" `isPrefixOf` url && all (\c->c>' ' && c<='~') url) "https_url_required"
+  request<-parseRequest url `catch` (\(_::HttpException)->reject "invalid_https_url")
+  require (secure request && not(B.null $ host request)) "invalid_https_url"
