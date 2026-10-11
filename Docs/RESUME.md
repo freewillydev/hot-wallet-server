@@ -1380,3 +1380,23 @@ changes. Evidence: Codex Security artifacts/native-custody-10001-pg.log, SHA256
 Temporary PG stopped/removed. No independent verdict or live-RPC acceptance is
 claimed. Ubuntu capacity rechecked: no Lima instance, AWS ecx-dev session expired;
 login approval requested. Full-install and other production gates remain open.
+
+### Independent change review (2026-10-11)
+
+Codex Security diff scan 243ed26d-0a00-416f-88aa-abdb4ce9e8b9 completed and sealed
+for 1c8da93..c942b3b. All 18 changed files reviewed, including delegated capture,
+ledger and observation reviews. No new confirmed vulnerability; one candidate
+remains deferred, so coverage is partial and the production security gate is FAIL.
+
+NativeHistory still materializes each complete history entry, including conflict
+arrays. Pinned Core confirms chain-influenced lifetime conflict growth, but builds
+an approximately quadratic aggregate history before delivery. Practical bridge
+failure before upstream limits is unproved; baseline already refused large history.
+Do not call this an independently confirmed new exploit or close the original
+Native-history finding. Candidate candidate-bc902bf7bb188ca7 retains the source
+trace, counterevidence and exact runtime proof gap in the sealed scan.
+
+Read-only review: no new tests, services, funds or custody changes. Earlier test
+receipts remain scoped evidence. Refunds bypass batching; normal swaps remain
+batched. Remaining real-network/load, Ubuntu install, manual-wallet, alerts,
+production signing trust and dependency review gates are unchanged.

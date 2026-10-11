@@ -698,3 +698,10 @@ intake without adding an operator pause; adjacent-output custody checks reuse on
 proof with per-output checks and revision fences intact. This does not close the
 native-history finding or certify unbounded runtime. See RESUME.md for evidence;
 real-node acceptance and all broader production gates remain required.
+
+Current change review: Codex Security diff scan
+243ed26d-0a00-416f-88aa-abdb4ce9e8b9 sealed for 1c8da93..c942b3b, covering all
+18 changed files. No new confirmed finding; history-entry conflict-array resource
+impact remains deferred (partial coverage). Original Native-history finding and
+production security gate remain OPEN/FAIL. This is not fresh-install, live-network
+or whole-application certification. Details and next proof gap are in RESUME.md.
