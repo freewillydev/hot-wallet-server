@@ -51,48 +51,20 @@ Read it before changing the operation boundary. The production grammar corrects
 its permissive/incomplete sketch types while retaining its constrained design:
 
 ```haskell
--- The library supplies severity and the indexed existential directly.
--- Signer handlers use this partially applied carrier:
--- SomeOperationAt Program 'Signer 'Critical
-
--- One closed payload type fixes caller, severity and result together.
-data Command caller severity a where
-  CustomerQuery  :: CustomerRead a -> Command 'Customer 'Safe a
-  CustomerChange :: CustomerWrite a -> Command 'Customer 'Critical a
-  WorkerAction :: WorkerOperations (WorkerCommand 'Critical a)
-               => (forall value. WorkerOperations value
-               => value -> Program 'Worker 'Critical a)
-               -> Command 'Worker 'Critical a
-  -- Operator writes select OperatorWrite methods; signer leaves remain explicit.
-
-type ExecutionContext caller severity a =
-  (Typeable a, Execution caller severity (Command caller))
-
-instance (ExecutionContext caller severity a,
-          caps ~ PreparationCaps caller severity a, UniqueCapabilities caps)
-    => Operation (Command caller severity a) caps where
-  type Context (Command caller severity a) =
-    (CompileOperation caller severity a (Command caller severity a), ExecutionContext caller severity a)
-  type Outcome (Command caller severity a) = Program caller severity a
-  data DSL (Command caller severity a) where
-    Compile :: Context (Command caller severity a) => DSL (Command caller severity a)
-  interpret (SomeOperation (value :: actual)) Compile =
-    case eqT @actual @(Command caller severity a) of
-      Just Refl -> Just $ case value of
-        CustomerQuery op -> ReadCustomer op
-        CustomerChange op -> WriteCustomer op
-        OperatorQuery op -> ReadOperator op
-        OperatorChange select -> select value
-        WorkerAction select -> select value
-        SignerAction op -> SigningDSL op
-      Nothing -> Nothing
+-- A selector sees only its named capability, even though the hidden command's
+-- canonical dictionary contains all capabilities for its caller.
+operator @'[OperatorService] (\cap -> pauseService cap "review")
+workerRequest @'[WorkerSigning] (\cap -> signPreparedPayment cap payment)
 ```
 
-`Control.Operation` is imported unqualified. Its argument-free `Compile` selector
-carries the combined compilation and execution constraints. Payload arguments occur
-once in the hidden `Command`; only after proving its full type does interpretation
-branch into the six programs. Operator/worker constructors also carry their specific
-domain dictionary, so their branches invoke the selected capability method directly.
+`Command caller severity result` is the closed payload GADT. The argument-free
+`Compile` selector carries combined compilation and execution constraints.
+`Operation.interpret` proves the complete payload type with `eqT`/`Refl`, then
+branches into the six programs. Operator and worker branches run the library's
+`Restrict` pipeline followed by `withCapabilities`: the rank-n selector receives
+only its explicitly selected capability dictionaries. Its selected list must be a
+subset of that caller's closed `DomainCaps`, so operator requests cannot select
+worker capabilities. Customer and signer leaves retain their small explicit GADTs.
 `eqT` compares payload types, including caller, severity and result; it does not
 compare dictionary values or authorize effects.
 
@@ -101,7 +73,7 @@ compare dictionary values or authorize effects.
 indices prevent coercing a customer into a signer, a safe operation into a critical
 one, or changing its program/result. The bridge has no `Pending`/request wrapper.
 `PreparationCaps` still contains `CompileOperation` and the applicable worker or
-operator capability. Their class methods select allowed programs without IO,
+operator capability list. Their class methods select allowed programs without IO,
 keys or database connections.
 
 `pending` passes `operationDSL` directly to the library's `prepareOperation`.
@@ -136,38 +108,55 @@ are a reader and public configuration. Critical resources are either worker
 resources or signer resources, which contain no writer. IO is fixed; polymorphism
 in the result preserves the result selected by the operation's GADT or method.
 
-`OperatorWrite` and `WorkerOperations` replace the former 31 leaf constructors
-and their matching dispatch branches. Each method returns a typed `Program`.
-Their `Action` data-family instances are private to `Critical.hs`: only that module
-can construct an IO action, attach its observation-mode permission and supply its
-resource environment. The operator/worker `Execution` instances inspect that
-permission and run the saved action. The seven recovery/observation worker methods
-and operator pause retain their previous observation-only access. Customer and
-signer leaves remain small explicit GADTs; signer result constructors remain unique.
-Class implementations are checked with `-Werror=missing-methods`.
+The former broad `OperatorWrite` and `WorkerOperations` classes are split into
+these independently selectable capabilities:
+
+| Caller | Capability groups |
+| --- | --- |
+| Operator | `OperatorService`, `OperatorRepair`, `OperatorNative`, `OperatorSource`, `OperatorTreasury` |
+| Worker | `WorkerBackup`, `WorkerObservation`, `WorkerRecovery`, `WorkerPreparation`, `WorkerSigning`, `WorkerQueue`, `WorkerBroadcast`, `WorkerCycle` |
+
+Each method returns a typed `Program`. Their `Action` data-family instances remain
+private to `Critical.hs`: only that module constructs the concrete IO actions,
+attaches observation-mode permission and supplies the resource environment. The
+operator/worker `Execution` instances inspect that permission and run the saved
+action. Existing recovery/observation worker access and operator pause permissions
+are unchanged. `-Werror=missing-methods` checks the concrete capability instances.
+Independent operator commands use narrow selectors; they are not artificially
+chained into a workflow. Only genuinely ordered work uses Flow.
 
 The worker's bounded payout sequence uses `Control.Operation.Flow` from the pinned
 operation-capabilities 0.1.3.0. **Build the whole workflow inside `interpret`, after
 `eqT`/`Refl`; evaluate it separately.** `PayoutWorkflow` in `Operation/Internal.hs`
 implements that boundary: its `CompilePayoutWorkflow` constructor carries
-`WorkerOperations`, its payload equality proof precedes the `F.do`, and its outcome
+`PayoutCapabilities` (the union of its seven required worker groups), its payload
+equality proof precedes the `F.do`, and its outcome
 is the pure typed Flow. The wrapper declares no additional preparation capabilities.
 `payoutFlow` only requests interpretation and returns `Nothing` on mismatch. The
 worker rejects mismatch, then runs the resulting workflow under the held critical
 gate. Runtime-dependent branches remain deferred continuations of the compiled Flow.
 
 The flow inspects saved attempts, prepares/backs up/signs a new payment or selects
-its saved transaction, then queues/backs up and broadcasts. Each `PayoutStep`
-requires `WorkerOperations`; payment/transaction identifiers travel through distinct
+its saved transaction, then queues/backs up and broadcasts. Each
+`PayoutInstruction` requires its own capability: observation, preparation plus
+backup, signing, recovery, queue plus backup, or broadcast. Those dictionaries
+restrict stage construction. Concrete leaf interpretation still chooses the
+fixed, private implementations; it does not execute caller-supplied dictionaries.
+Its `evalWorker @'[SelectedCapability]` calls go through the same restricted request
+path described above. Payment/transaction identifiers travel through distinct
 `PreparedPayout`, `SignedPayout` and `QueuedPayout` states. These record sequencing,
 not financial authority. `payoutOperation` separately packs each private leaf
 `PayoutCommand` into `SomeOperationAt`. Its `interpret` in `Critical.hs` proves the
-complete input/output/result payload type, then selects a deferred `WorkerEffect`.
+complete capability-carrier/input/output/result payload type, then selects a
+deferred `WorkerEffect`.
 Private `evalWorkerRequest` executes that action inside the already-held gate;
 existing ledger checks and `evalWorker` dispatch remain. No new API, signer path,
 database operation or retry policy is introduced.
 
-The flow contract checks mismatched whole-workflow payload rejection, then resolves
+Compile checks reject hidden signing, broadcast, treasury and replacement methods
+on actual request selectors, cross-caller capability selection, and preparation
+without backup capability. The flow contract checks mismatched whole-workflow
+payload rejection, then resolves
 and traces the actual compiled Flow and its leaf operations with an independent
 oracle. That verifies compilation and sequencing, not execution of the concrete
 closures. Exceptions, including cancellation and unknown signing or broadcast

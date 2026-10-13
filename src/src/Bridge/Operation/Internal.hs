@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE FlexibleInstances, DataKinds, FunctionalDependencies, RoleAnnotations, TypeFamilies, TypeFamilyDependencies, ConstraintKinds, UndecidableSuperClasses, TypeApplications, ScopedTypeVariables, RankNTypes, QuantifiedConstraints, UndecidableInstances #-}
 {-# OPTIONS_GHC -Werror=incomplete-patterns #-}
 {-# LANGUAGE QualifiedDo, TypeOperators #-}
@@ -17,6 +18,7 @@ import Control.Operation.Flow (Flow)
 import qualified Control.Operation.Flow as F
 import Data.Text (Text)
 import Data.Int (Int64)
+import Data.Proxy (Proxy(..))
 
 data Caller = Customer | Signer | Worker | Operator
 
@@ -49,25 +51,33 @@ data OperatorRead a where
   ServiceState :: OperatorRead ServiceStatus
   TreasuryReceipts :: OperatorRead [(Text,Asset,Amount)]
 
-class OperatorWrite value where
+class OperatorService value where
+  pauseService :: value -> Text -> Program 'Operator 'Critical ()
+  resumeService :: value -> Program 'Operator 'Critical ()
+
+class OperatorRepair value where
   repairCompletedOrder :: value -> Text -> Program 'Operator 'Critical ()
+  retrySolanaPayment :: value -> Text -> Text -> Program 'Operator 'Critical ()
+  cancelPreparation :: value -> Text -> Int -> Text -> Program 'Operator 'Critical ()
+  refundDeposit :: value -> Text -> Program 'Operator 'Critical RefundAuthorization
+
+class OperatorNative value where
   rebroadcastNative :: value -> Text -> Int64 -> Text -> Program 'Operator 'Critical Text
   draftNativeReplacement :: value -> Text -> Amount -> Text -> Program 'Operator 'Critical Int64
   signNativeReplacement :: value -> Int64 -> Program 'Operator 'Critical Text
   cancelNativeReplacement :: value -> Int64 -> Text -> Program 'Operator 'Critical ()
+
+class OperatorSource value where
   coverLostSource :: value -> Text -> Int64 -> Amount -> Amount -> Text -> Program 'Operator 'Critical ()
   approveCovered :: value -> Text -> Int64 -> Text -> Program 'Operator 'Critical ()
   restoreSource :: value -> Text -> Int64 -> Text -> Program 'Operator 'Critical ()
+
+class OperatorTreasury value where
   classifySpend :: value -> Text -> Text -> Text -> Program 'Operator 'Critical Int64
   initializeOperating :: value -> Text -> Text -> Text -> Program 'Operator 'Critical Int64
   allocateReceipt :: value -> Text -> [(Text,Amount)] -> Text -> Program 'Operator 'Critical Int64
   withdrawFees :: value -> Text -> Asset -> Amount -> Text -> Text -> Program 'Operator 'Critical Text
   cancelFeeWithdrawal :: value -> Text -> Text -> Program 'Operator 'Critical Text
-  retrySolanaPayment :: value -> Text -> Text -> Program 'Operator 'Critical ()
-  cancelPreparation :: value -> Text -> Int -> Text -> Program 'Operator 'Critical ()
-  refundDeposit :: value -> Text -> Program 'Operator 'Critical RefundAuthorization
-  pauseService :: value -> Text -> Program 'Operator 'Critical ()
-  resumeService :: value -> Program 'Operator 'Critical ()
 
 -- Data families are generative and injective in BOTH indices. No type-family
 -- injectivity annotation is needed. Each instance has its own output constructor.
@@ -110,20 +120,34 @@ data SigningOperation a where
   DraftSigning :: DraftReplacement a -> SigningOperation a
   CheckpointSigning :: CheckpointCustody a -> SigningOperation a
 
-class WorkerOperations value where
+class WorkerBackup value where
   checkpointBackup :: value -> Int64 -> Program 'Worker 'Critical ()
   checkpointForUpgrade :: value -> Program 'Worker 'Critical BackupReceipt
+
+class WorkerObservation value where
+  observeChains :: value -> Program 'Worker 'Critical ()
+  reconcileCustody :: value -> Program 'Worker 'Critical ()
+
+class WorkerRecovery value where
   recoverNativeSettlements :: value -> Program 'Worker 'Critical ()
   recoverNativeSources :: value -> Program 'Worker 'Critical ()
   recoverNativeLocks :: value -> Program 'Worker 'Critical ()
-  runWorkerCycle :: value -> Program 'Worker 'Critical ()
-  observeChains :: value -> Program 'Worker 'Critical ()
-  prepareOutgoing :: value -> Text -> Program 'Worker 'Critical ()
-  reconcileCustody :: value -> Program 'Worker 'Critical ()
-  signPreparedPayment :: value -> Text -> Program 'Worker 'Critical Text
   reconcilePayment :: value -> Text -> Program 'Worker 'Critical ()
+
+class WorkerPreparation value where
+  prepareOutgoing :: value -> Text -> Program 'Worker 'Critical ()
+
+class WorkerSigning value where
+  signPreparedPayment :: value -> Text -> Program 'Worker 'Critical Text
+
+class WorkerQueue value where
   queuePayment :: value -> Text -> Program 'Worker 'Critical Int64
+
+class WorkerBroadcast value where
   broadcastPayment :: value -> Text -> Program 'Worker 'Critical ()
+
+class WorkerCycle value where
+  runWorkerCycle :: value -> Program 'Worker 'Critical ()
 
 -- Actual identifiers travel between completed stages. These are sequencing
 -- markers, NOT financial authority: each existing operation rechecks the ledger.
@@ -134,23 +158,25 @@ data QueuedPayout = QueuedPayout Text
 -- Closed, bounded payout grammar; no arbitrary IO or retry instruction.
 -- The constructor supplies the worker capability after the payload's Refl.
 data PayoutStep value before after result where
-  PayoutStep :: (WorkerOperations value, Typeable before, Typeable after, Typeable result)
-             => PayoutInstruction before after result -> PayoutStep value before after result
+  PayoutStep :: (Typeable value, Typeable before, Typeable after, Typeable result)
+             => PayoutInstruction value before after result -> PayoutStep value before after result
 
-data PayoutInstruction before after result where
-  InspectPayout :: PayoutInstruction '[Text] '[Text] [Text]
-  PreparePayout :: PayoutInstruction '[Text] '[PreparedPayout] ()
-  SignPayout :: PayoutInstruction '[PreparedPayout] '[SignedPayout] ()
-  ReusePayout :: [Text] -> PayoutInstruction '[Text] '[SignedPayout] ()
-  QueuePayout :: PayoutInstruction '[SignedPayout] '[QueuedPayout] ()
-  SendPayout :: PayoutInstruction '[QueuedPayout] '[] ()
+data PayoutInstruction value before after result where
+  InspectPayout :: WorkerObservation value => PayoutInstruction value '[Text] '[Text] [Text]
+  PreparePayout :: (WorkerPreparation value, WorkerBackup value) => PayoutInstruction value '[Text] '[PreparedPayout] ()
+  SignPayout :: WorkerSigning value => PayoutInstruction value '[PreparedPayout] '[SignedPayout] ()
+  ReusePayout :: WorkerRecovery value => [Text] -> PayoutInstruction value '[Text] '[SignedPayout] ()
+  QueuePayout :: (WorkerQueue value, WorkerBackup value) => PayoutInstruction value '[SignedPayout] '[QueuedPayout] ()
+  SendPayout :: WorkerBroadcast value => PayoutInstruction value '[QueuedPayout] '[] ()
 
 -- Interpretation constructs the whole workflow; it never evaluates a step.
--- The DSL constructor supplies WorkerOperations; this wrapper grants no new caps.
+-- Each step carries its own capability; composition requires their union.
+type PayoutCapabilities value = (WorkerObservation value, WorkerPreparation value, WorkerSigning value, WorkerRecovery value, WorkerBackup value, WorkerQueue value, WorkerBroadcast value)
+
 data PayoutWorkflow value = PayoutWorkflow value
 
 instance (Typeable value, caps ~ '[]) => Operation (PayoutWorkflow value) caps where
-  type Context (PayoutWorkflow value) = WorkerOperations value
+  type Context (PayoutWorkflow value) = PayoutCapabilities value
   type Outcome (PayoutWorkflow value) = Flow (PayoutStep value) '[Text] '[] ()
   data DSL (PayoutWorkflow value) where
     CompilePayoutWorkflow :: Context (PayoutWorkflow value) => DSL (PayoutWorkflow value)
@@ -167,7 +193,7 @@ instance (Typeable value, caps ~ '[]) => Operation (PayoutWorkflow value) caps w
         F.step (PayoutStep QueuePayout)
         F.step (PayoutStep SendPayout)
 
-payoutFlow :: (Typeable value, WorkerOperations value) => value -> Maybe (Flow (PayoutStep value) '[Text] '[] ())
+payoutFlow :: (Typeable value, PayoutCapabilities value) => value -> Maybe (Flow (PayoutStep value) '[Text] '[] ())
 payoutFlow value = interpret (SomeOperation $ PayoutWorkflow value) CompilePayoutWorkflow
 
 -- One closed payload GADT carries caller, severity and the exact result type.
@@ -176,8 +202,16 @@ data Command (caller :: Caller) (severity :: Severity) a where
   CustomerQuery :: CustomerRead a -> Command 'Customer 'Safe a
   CustomerChange :: CustomerWrite a -> Command 'Customer 'Critical a
   OperatorQuery :: OperatorRead a -> Command 'Operator 'Safe a
-  OperatorChange :: OperatorWrite (OperatorCommand 'Critical a) => (forall value. OperatorWrite value => value -> Program 'Operator 'Critical a) -> Command 'Operator 'Critical a
-  WorkerAction :: WorkerOperations (WorkerCommand 'Critical a) => (forall value. WorkerOperations value => value -> Program 'Worker 'Critical a) -> Command 'Worker 'Critical a
+  OperatorChange :: (Capabilities (DomainCaps 'Operator 'Critical) (OperatorCommand 'Critical a),
+                     UniqueCapabilities selected, Subset selected (DomainCaps 'Operator 'Critical),
+                     Subset selected (PreparationCaps 'Operator 'Critical a))
+                 => Proxy selected -> (forall value. Capabilities selected value => value -> Program 'Operator 'Critical a)
+                 -> Command 'Operator 'Critical a
+  WorkerAction :: (Capabilities (DomainCaps 'Worker 'Critical) (WorkerCommand 'Critical a),
+                     UniqueCapabilities selected, Subset selected (DomainCaps 'Worker 'Critical),
+                     Subset selected (PreparationCaps 'Worker 'Critical a))
+                 => Proxy selected -> (forall value. Capabilities selected value => value -> Program 'Worker 'Critical a)
+                 -> Command 'Worker 'Critical a
   SignerAction :: SigningOperation a -> Command 'Signer 'Critical a
 
 type CustomerCommand = Command 'Customer
@@ -207,8 +241,8 @@ class CompileOperation (caller :: Caller) (severity :: Severity) a value
 -- Domain methods are real library capabilities on the hidden command payload.
 -- Other callers retain their small closed GADTs (notably the signer boundary).
 type family DomainCaps (caller :: Caller) (severity :: Severity) :: [Type -> Constraint] where
-  DomainCaps 'Operator 'Critical = '[OperatorWrite]
-  DomainCaps 'Worker 'Critical = '[WorkerOperations]
+  DomainCaps 'Operator 'Critical = '[OperatorService, OperatorRepair, OperatorNative, OperatorSource, OperatorTreasury]
+  DomainCaps 'Worker 'Critical = '[WorkerBackup, WorkerObservation, WorkerRecovery, WorkerPreparation, WorkerSigning, WorkerQueue, WorkerBroadcast, WorkerCycle]
   DomainCaps caller severity = '[]
 type PreparationCaps caller severity a = CompileOperation caller severity a ': DomainCaps caller severity
 -- The library owns the severity/caller/result-indexed existential. Selecting the
@@ -237,13 +271,15 @@ instance (ExecutionContext caller severity a,
     Compile :: Context (Command caller severity a) => DSL (Command caller severity a)
   interpret (SomeOperation (value :: actual)) Compile =
     case eqT @actual @(Command caller severity a) of
-      Just Refl -> Just $ case value of
-        CustomerQuery op -> ReadCustomer op
-        CustomerChange op -> WriteCustomer op
-        OperatorQuery op -> ReadOperator op
-        OperatorChange select -> select value
-        WorkerAction select -> select value
-        SignerAction op -> SigningDSL op
+      Just Refl -> case value of
+        CustomerQuery op -> Just (ReadCustomer op)
+        CustomerChange op -> Just (WriteCustomer op)
+        OperatorQuery op -> Just (ReadOperator op)
+        OperatorChange scope select -> either (const Nothing) (Just . withCapabilities select)
+          (pipeline (Restrict scope) (prepare @(Command caller severity a) @(PreparationCaps caller severity a) value))
+        WorkerAction scope select -> either (const Nothing) (Just . withCapabilities select)
+          (pipeline (Restrict scope) (prepare @(Command caller severity a) @(PreparationCaps caller severity a) value))
+        SignerAction op -> Just (SigningDSL op)
       Nothing -> Nothing
 
 -- Retain caller identity through dispatch; a critical customer operation cannot
@@ -258,17 +294,29 @@ safe = SafePlan . pending . CustomerQuery
 customer :: (Typeable a, Execution 'Customer 'Critical CustomerCommand) => CustomerWrite a -> Plan 'Customer a
 customer = CriticalPlan . pending . CustomerChange
 
-operator :: (Typeable a, Execution 'Operator 'Critical OperatorCommand, OperatorWrite (OperatorCommand 'Critical a))
-         => (forall value. OperatorWrite value => value -> Program 'Operator 'Critical a) -> Plan 'Operator a
-operator select=CriticalPlan (pending $ OperatorChange select)
+operator :: forall selected a.
+            (Typeable a, Execution 'Operator 'Critical OperatorCommand,
+             Capabilities (DomainCaps 'Operator 'Critical) (OperatorCommand 'Critical a),
+             UniqueCapabilities selected, Subset selected (DomainCaps 'Operator 'Critical),
+             Subset selected (PreparationCaps 'Operator 'Critical a))
+         => (forall value. Capabilities selected value => value -> Program 'Operator 'Critical a) -> Plan 'Operator a
+operator select=CriticalPlan (pending $ OperatorChange (Proxy @selected) select)
 operatorRead :: (Typeable a, Execution 'Operator 'Safe OperatorCommand) => OperatorRead a -> Plan 'Operator a
 operatorRead=SafePlan . pending . OperatorQuery
 
-workerRequest :: (Typeable a, Execution 'Worker 'Critical WorkerCommand, WorkerOperations (WorkerCommand 'Critical a))
-              => (forall value. WorkerOperations value => value -> Program 'Worker 'Critical a) -> SomeOperationAt Program 'Worker 'Critical a
-workerRequest select = pending (WorkerAction select)
+workerRequest :: forall selected a.
+                 (Typeable a, Execution 'Worker 'Critical WorkerCommand,
+                  Capabilities (DomainCaps 'Worker 'Critical) (WorkerCommand 'Critical a),
+                  UniqueCapabilities selected, Subset selected (DomainCaps 'Worker 'Critical),
+                  Subset selected (PreparationCaps 'Worker 'Critical a))
+              => (forall value. Capabilities selected value => value -> Program 'Worker 'Critical a) -> SomeOperationAt Program 'Worker 'Critical a
+workerRequest select = pending (WorkerAction (Proxy @selected) select)
 
 -- Pure HTTP/control assembly carries these closed instance requirements.
 type CustomerOperations = (Execution 'Customer 'Safe CustomerCommand, Execution 'Customer 'Critical CustomerCommand)
 class (Execution 'Operator 'Safe OperatorCommand, Execution 'Operator 'Critical OperatorCommand,
-       forall a. OperatorWrite (OperatorCommand 'Critical a)) => OperatorOperations
+       forall a. OperatorService (OperatorCommand 'Critical a),
+       forall a. OperatorRepair (OperatorCommand 'Critical a),
+       forall a. OperatorNative (OperatorCommand 'Critical a),
+       forall a. OperatorSource (OperatorCommand 'Critical a),
+       forall a. OperatorTreasury (OperatorCommand 'Critical a)) => OperatorOperations

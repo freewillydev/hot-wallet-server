@@ -43,6 +43,15 @@ pure Flow; reject interpretation mismatch before evaluating it under the existin
 critical gate. Keep leaf interpretation and financial checks unchanged. Make this
 boundary prominent in the library's design guidance and compiling example.
 
+Capability follow-up: replace broad OperatorWrite/WorkerOperations with cohesive
+capabilities, select explicit subsets at each request, and project those dictionaries
+with `Restrict`/`withCapabilities` inside `interpret` after `Refl`. Payout instructions
+carry their individual capability requirements; the complete interpreted `F.do`
+requires their union. Keep the 31 financial operation bodies and their ordering
+unchanged. Verify actual selectors cannot call hidden methods, not just generic
+library Stage examples; repeat affected process/ledger contracts. Do not chain
+independent operator commands or claim the dictionary boundary replaces IO checks.
+
 Status: **117/120 steps verified (A–I, J105–111, J113–117, J120)**. Implementation and
 available acceptance are complete; external gates J112, J118 and J119 remain open.
 The source-size reduction target was not met; see the measured J117 results. This replaces the

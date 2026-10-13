@@ -8,6 +8,22 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Implemented and checked
 
+- 2026-10-13: split OperatorWrite into five capabilities and WorkerOperations
+  into eight. Actual rank-n request selectors receive only their explicit subset
+  through Restrict/withCapabilities inside interpret after Refl. Each payout step
+  requires its own groups; the complete F.do requires their union. Concrete IO
+  remains private to Critical.hs. A separate comparison found all 31 effect bodies
+  unchanged after normalizing capability annotations and the WorkerAction proxy.
+  Build and full bridge suite PASS (249 groups/15,608 cases, two expected mutation
+  failures). Positive type checks include a composed two-capability request; all
+  21 negative cases reject. Three fresh PostgreSQL/HTTPS fixture modes PASS:
+  Devnet signer/recovery, canonical signer/owner scheduling, and active Native work.
+  Production lines 1,592 -> 1,670 across the three touched files (+78); tests +42
+  across two existing files. No new source files, dependency or public API changes.
+  This adds checked boundaries rather than reducing source size. No deployment or
+  funds changed; task PostgreSQL stopped. Receipt: /tmp/hot-wallet-caps-receipt.json.
+  Separate capability_split_review PASS for scoped publication; hashes in DONE.
+
 - 2026-10-13: whole payout `F.do` now lives inside PayoutWorkflow.interpret,
   after eqT/Refl. The helper returns the pure interpreted Flow; the worker rejects
   mismatch and evaluates under the existing gate. Leaf actions remain unchanged.

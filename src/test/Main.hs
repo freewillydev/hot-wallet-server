@@ -102,8 +102,11 @@ fullSuite = do
           [select(pending $ CustomerQuery PublicConfig)=="customer-read"
           ,select(pending $ OperatorQuery ServiceState)=="operator-read"
           ,select(pending $ CustomerChange $ CreateOrder "auth" $ W.OrderRequest NativeToWrapped (good $ amount 100) "dest" "refund" Nothing "key")=="customer-write"
-          ,select(pending $ OperatorChange $ \cap -> pauseService cap "reason")=="operator-write"
-          ,select(workerRequest runWorkerCycle)=="worker"
+          ,select(pending $ OperatorChange (Proxy @'[OperatorService]) $ \cap -> pauseService cap "reason")=="operator-write"
+          ,select(workerRequest @'[WorkerCycle] runWorkerCycle)=="worker"
+          ,select(workerRequest @'[WorkerSigning] (\cap -> signPreparedPayment cap "payment"))=="worker"
+          ,select(workerRequest @'[WorkerQueue] (\cap -> queuePayment cap "transaction"))=="worker"
+          ,select(workerRequest @'[WorkerBroadcast] (\cap -> broadcastPayment cap "transaction"))=="worker"
           ,select(pending $ SignerAction $ PreparedSigning $ SignPrepared "deployment" "payment" 3)=="signer"]
     , check "distinct dictionary constraints and signer outputs have no equality witness" $ once $ property $
         absent(eqT @(Context (CustomerCommand 'Safe ())) @(Context (CustomerCommand 'Critical ())))
@@ -113,7 +116,7 @@ fullSuite = do
         && absent(eqT @ReplacementResult @CheckpointResult) && absent(eqT @DraftResult @CheckpointResult)
     , check "library existential dispatch preserves payload and rejects a different caller" $ once $ property $
         let selector = Compile :: DSL (CustomerCommand 'Safe W.PublicConfiguration)
-            mismatch = interpret (SomeOperation (WorkerAction runWorkerCycle)) selector
+            mismatch = interpret (SomeOperation (WorkerAction (Proxy @'[WorkerCycle]) runWorkerCycle)) selector
         in case (checkedOperation (pending $ CustomerQuery PublicConfig), mismatch) of
           (Right (ReadCustomer PublicConfig), Nothing) -> True
           _ -> False
@@ -254,7 +257,7 @@ absent Just{}=False
 -- exercise existing durable operation and service boundaries.
 payoutFlowContract :: IO Bool
 payoutFlowContract = do
-  let request = WorkerAction runWorkerCycle :: WorkerCommand 'Critical ()
+  let request = WorkerAction (Proxy @'[WorkerCycle]) runWorkerCycle :: WorkerCommand 'Critical ()
   unless (case interpret (SomeOperation request) (CompilePayoutWorkflow :: DSL (PayoutWorkflow (WorkerCommand 'Critical ()))) of
     Nothing -> True; Just _ -> False) $ fail "payout workflow accepted a different payload"
   workflow <- maybe (fail "payout workflow did not compile") pure (payoutFlow request)
@@ -277,7 +280,7 @@ payoutFlowContract = do
               Right WorkerDSL{} -> pure ()
               _ -> fail "payout did not compile to a deferred worker action"
             traceInstruction step values
-          traceInstruction :: PayoutInstruction before after a -> Values before -> IO (a,Values after)
+          traceInstruction :: PayoutInstruction (WorkerCommand 'Critical ()) before after a -> Values before -> IO (a,Values after)
           traceInstruction step values = case (step,values) of
             (InspectPayout,identifier :& VNil) -> record ("inspect:"<>identifier) >> pure (attempts,values)
             (PreparePayout,identifier :& VNil) -> do

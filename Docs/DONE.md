@@ -775,3 +775,24 @@ Separate payout_interpret_verifier PASS for scoped source publication; reviewed 
   /tmp/hot-wallet-whole-receipt.json. Separate publication review recorded in DONE.
 
 Separate whole_payout_review PASS for scoped source publication: diff SHA256 556f24fe89f3c512dfe998e2e3a69ca3229f73c3fc242ac6a8d1daf285e2316f; receipt SHA256 5084f89f3957912aa75f09ba1d46eeb79d88910f011074eb2acd3e9d33af9957. All four source/seven log hashes verified; no live or production certification.
+
+## Scoped operator/worker capability split (2026-10-13)
+
+- 2026-10-13: split OperatorWrite into five capabilities and WorkerOperations
+  into eight. Actual rank-n request selectors receive only their explicit subset
+  through Restrict/withCapabilities inside interpret after Refl. Each payout step
+  requires its own groups; the complete F.do requires their union. Concrete IO
+  remains private to Critical.hs. A separate comparison found all 31 effect bodies
+  unchanged after normalizing capability annotations and the WorkerAction proxy.
+  Build and full bridge suite PASS (249 groups/15,608 cases, two expected mutation
+  failures). Positive type checks include a composed two-capability request; all
+  21 negative cases reject. Three fresh PostgreSQL/HTTPS fixture modes PASS:
+  Devnet signer/recovery, canonical signer/owner scheduling, and active Native work.
+  Production lines 1,592 -> 1,670 across the three touched files (+78); tests +42
+  across two existing files. No new source files, dependency or public API changes.
+  This adds checked boundaries rather than reducing source size. No deployment or
+  funds changed; task PostgreSQL stopped. Receipt: /tmp/hot-wallet-caps-receipt.json.
+
+Broader production gates above remain open.
+
+Separate capability_split_review PASS for scoped source publication: all five source/29 log hashes verified; source diff SHA256 7294bbacf04c31d46b8014202ab87ba998fee4ea4d4a1a8ae790f3b4c0749541; receipt SHA256 11f2e53407053eb851580e82774b1bb1826cb055b8f0278c2524d878ca00ac3d. All 31 concrete method bodies preserve behavior. No production certification.
