@@ -11,6 +11,26 @@ schema conversion/backfill and migration tests below are superseded. Fresh setup
 uses `src/schema.sql`; only schema 23 may run or be restored. Never reset an old
 ledger to make setup pass. `example.conf` is the sole configuration example.
 
+## Current refactor: operation-capabilities handoff (2026-10-13)
+
+Apply the handoff to one complete, bounded payout workflow before extending it.
+Pin 0.1.3.0 at `86c5b86078bc6fe9b9130a28d9de600a339f6221`, reconcile every
+component bound, and verify the resolved build. Keep the existing existential,
+caller/severity constraints, safe/critical evaluators and sole critical dispatch.
+Use the library's `Flow` and QualifiedDo to express inspect → new or saved payment
+→ queue/backup → broadcast with actual identifiers and different state types.
+Keep concrete effects private to Critical.hs, with the existing `evalWorker`
+rechecks, backup order, durable recovery and exception behavior. Do not wrap every
+operation, add an arbitrary IO instruction, or invent new automatic retries.
+
+Acceptance: ordinary bridge and dependency properties; compile rejection for
+wrong caller/severity/result/capability and invalid flow stages/branches/coercions;
+all three payment branches and every failure/cancellation prefix; actual disposable
+PostgreSQL/HTTPS worker contracts; then a separate hash-bound review. Report the
+net line count including tests. These checks do not deploy or re-certify production.
+Only extend Flow or IndexedRequest where it removes duplicated decisions or enforces
+a useful boundary; leave the already-small order, signer and recovery paths intact.
+
 Status: **117/120 steps verified (A–I, J105–111, J113–117, J120)**. Implementation and
 available acceptance are complete; external gates J112, J118 and J119 remain open.
 The source-size reduction target was not met; see the measured J117 results. This replaces the

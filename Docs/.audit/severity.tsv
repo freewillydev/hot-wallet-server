@@ -34,3 +34,23 @@ readable_signer	PASS	/tmp/hot-wallet-round-tls.log sha256=d876b4a87ce2d4b3384b3e
 readable_setup	PASS	/tmp/hot-wallet-round-setup.log sha256=d017249a37d5051c7424fe92632e3242a8b13cc6c680382df1e450a417c2e930; combined working tree includes unstaged payout work
 readable_scope	PASS	same Cabal build/test options as refl entries; 223 local checks; five disposable PostgreSQL/process modes; no real-chain activity; test processes stopped
 readable_production	FAIL	Readability refactor only. Payout queue-capacity issue and outstanding production gates remain open.
+flow_baseline	PASS	424c1a47f89f5d5417c5d3337dc2b272de639b8b; operation-capabilities 0.1.3.0 pinned86c5b86078bc6fe9b9130a28d9de600a339f6221; archive sha256=6bcb9c9638e7df050a47c8f1431366153b0816372733cdfdf5a597611b11c978
+flow_scope	PASS	One bounded worker payout Flow; same Refl/evaluator/evalWorker authority and effect order; no retry or rollback; production+50 lines, tests+90 lines, no new source files
+flow_source	PASS	Internal.hs sha256=8b7e77f1b06ed093988bf3fecd41e05af7bf08c72a0c339b84f4fda4e1098d14; Critical.hs sha256=bc21180aa5160003b2875a5b0accc0f33253790a6943cb69c175a17e1bdc0d4f
+flow_commands	PASS	Cabal --config-file=/tmp/hot-wallet-flow-cabal.config --store-dir=/tmp/hot-wallet-flow-store --project-dir=build; GHC9.14.1 -j1; build10789/test17658/library99095/types80178/store-build95482/pg47022 all exit0; full shared cache preserved with temporary overlay
+flow_build	PASS	/tmp/hot-wallet-flow-build.log sha256=62c9d84e9518e45348ea177320de32edb33e1ad016d0663e5e854b113907c27d
+flow_bridge	PASS	/tmp/hot-wallet-flow-tests.log sha256=30170b85ffc41e4c33569fef897965b4d3fddf5006b625cad1f75fd2267bfa3f
+flow_types	PASS	/tmp/hot-wallet-flow-typechecks-final.log sha256=d4b332c109ca053d0d645b91d66074e9345f793b610aed4a905cfc2667e0d5f8
+flow_library_build	PASS	/tmp/hot-wallet-flow-library-build.log sha256=6c5d4f4b83f6295064ea598f5a502f84656cdbacd7662b6d85cac91dea01ff3c
+flow_library	PASS	/tmp/hot-wallet-flow-library-tests.log sha256=ba595256030893965ab28c78e77654a48b1bac006c4705f3eac9250868559190
+flow_store_build	PASS	/tmp/hot-wallet-flow-store-build-final.log sha256=a3d7139898b0bdd1f3cee3e3728f2abd9a8acdbceec7dd12b70f0481a5a809a4
+flow_pg_devnet	PASS	/tmp/hot-wallet-flow-pg.Skx94g9k/tls.log sha256=45774f7ef0812cdab735826be0dfb925c5c76a8117411e7e387b15bf15ba1dca
+flow_pg_canonical	PASS	/tmp/hot-wallet-flow-pg.Skx94g9k/tls_canonical_final.log sha256=2e4e8fbaaa2da4b031f1093a3397fa6712bcb11d4fefb57cf2e1bd263225e353
+flow_pg_active_native	PASS	/tmp/hot-wallet-flow-pg.Skx94g9k/tls_active_native_final.log sha256=4542355a88a2f151c7a9f37ac376ce1fad4d9bf045bd0059eec896f4bd73fa62
+flow_pg_final	PASS	/tmp/hot-wallet-flow-pg-final.log sha256=cc5f06da9f99c783e28fffabaa3c401159ded61805f0bf59933bf52bded377a8
+flow_fixture_repair	PASS	Canonical worker timeout before Flow: dedicated history manager contacted old fixture URL port1. Test now points nativeRpc at actual loopback listener; canonical and active Native reruns exit0. No production check changed.
+flow_receipt	PASS	/tmp/hot-wallet-flow-receipt.json sha256=79ac206cd85544450d5256528b0197e645259d567d9fa6f2d0376bc298edea3c; trace oracle tests Flow grammar; existing PG contracts test real processes with offline chain fixtures, not funded acceptance
+flow_review	PENDING	Separate final source/evidence verification requested; no publication yet
+flow_production	FAIL	No live deployment or funds changed. Existing production acceptance gates remain open; local tests do not re-certify production.
+flow_final_receipt	PASS	/tmp/hot-wallet-flow-receipt-final.json sha256=641b33805a4bcf9f4ea56f192d9691bf4cfa818b9155c57d2e5d8cccefe87bbd; only two comment lines clarified after tests; executable source unchanged
+flow_final_review	PASS	/root/flow_refactor_review verified final ten-file diff sha256=468222b65315b363e2239494d86d5db508ffafe186bfccb9275a55828d1a3de6 and final receipt source/log hashes; scoped source-publication PASS, no production/funded certification; only verdict metadata follows

@@ -8,6 +8,23 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Implemented and checked
 
+- 2026-10-13: operation-capabilities handoff applied to the bounded worker payout
+  flow, pinned 0.1.3.0/86c5b86. Existing existential/Refl and critical dispatch
+  retained; typed identifiers sequence inspect, prepare/backup, sign or reuse,
+  queue/backup and send. Concrete actions remain private in Critical.hs. +50
+  production lines, +90 test lines; no new source files. Build, full bridge suite,
+  dependency properties, 15 negative type checks and three PG/HTTPS contract modes
+  PASS within their local fixture scopes. Corrected canonical test's port-1 native
+  history URL and improved failure diagnostics; no production workaround.
+  Receipt `/tmp/hot-wallet-flow-receipt-final.json`; details in DONE and severity.tsv.
+  Separate `flow_refactor_review` PASS for source publication. Broader release
+  gates in DONE remain open. No services/funds/deployment changed;
+  task-owned test PostgreSQL stopped. External Cabal store is full: this turn used
+  `cabal --config-file=/tmp/hot-wallet-flow-cabal.config
+  --store-dir=/tmp/hot-wallet-flow-store --project-dir=build` with GHC9.14.1/-j1.
+  Existing shared caches/config were preserved. Keep the temporary overlay while
+  using these locally linked binaries; ordinary builds work with adequate space.
+
 - User requested removing README production warnings and approved 10,000 ECX
   automatic payout cap. README now links verification records without approval
   claims. Configure template owner-withdrawal cap becomes 1,000,000,000,000 base

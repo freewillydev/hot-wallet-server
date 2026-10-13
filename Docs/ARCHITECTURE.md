@@ -146,6 +146,22 @@ and operator pause retain their previous observation-only access. Customer and
 signer leaves remain small explicit GADTs; signer result constructors remain unique.
 Class implementations are checked with `-Werror=missing-methods`.
 
+The worker's bounded payout sequence uses `Control.Operation.Flow` from the pinned
+operation-capabilities 0.1.3.0. `payoutFlow` in `Operation/Internal.hs` inspects saved
+attempts, then prepares/backs up/signs a new payment or selects its saved transaction.
+Both branches converge on queue/backup and broadcast. Each `PayoutStep` requires
+`WorkerOperations`; actual payment/transaction identifiers travel through distinct
+`PreparedPayout`, `SignedPayout` and `QueuedPayout` state types. These record sequencing,
+not financial authority. The private `runPayoutStep` in `Critical.hs` retains every
+existing ledger check and `evalWorker` dispatch inside the already-held critical gate.
+The `WorkerOperations` instance builds this deferred flow after the command's `Refl`;
+construction cannot perform IO. No new API, signer path, database operation or retry
+policy is introduced. IO exceptions, including cancellation and unknown signing or
+broadcast outcomes, stop the continuation. Completed effects are not rolled back;
+restart recovery still uses the ledger and exact saved bytes. Never replay the Flow
+as an automatic retry. `IndexedRequest` is not added as a second operation registry:
+the current typed selectors already retain the required capability dictionaries.
+
 Both evaluators use the private `Executable` view to recover a payload-free
 `ExecutionProof` of the constructor's combined constraints. Authorization and
 evaluation receive the same compiled program; worker/operator selectors are not

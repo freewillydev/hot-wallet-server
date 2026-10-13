@@ -43,6 +43,27 @@ source hashes and test scope are in [RESUME.md](RESUME.md) and the records below
 
 ## Historical verification records
 
+## Scoped typed payout Flow (2026-10-13)
+
+Build, bridge suite (249 passing groups / 15,608 cases), pinned library properties
+(15 groups / 140,001 cases), positive compilation and all 15 negative type checks
+PASS. Three disposable PostgreSQL/HTTPS modes PASS: Devnet signer/recovery,
+canonical signer/owner scheduling, and pending Native work alongside Wrapped work.
+The canonical fixture now gives the dedicated history reader its actual local RPC
+URL; its earlier port-1 timeout was a fixture defect. Production checks were not
+weakened. The Flow trace contract covers three branches and every failure/cancellation
+prefix; it does not directly execute every private interpreter IO effect.
+
+Source starts at `424c1a4`; dependency is operation-capabilities 0.1.3.0 at
+`86c5b86078bc6fe9b9130a28d9de600a339f6221`. Production changes total +50 lines in
+two existing files; tests +90 lines in three existing files. No new source files.
+This enforces stage ordering, not new financial authority, rollback or replay.
+Exact source/log hashes and command outcomes: `.audit/severity.tsv` and
+`/tmp/hot-wallet-flow-receipt-final.json`. Separate `flow_refactor_review` verdict:
+PASS for this refactor/publication; implementation diff SHA-256
+`468222b65315b363e2239494d86d5db508ffafe186bfccb9275a55828d1a3de6`.
+No deployment, funds or broader production acceptance changed. Test database stopped.
+
 ## Scoped wallet-mode check (2026-10-10)
 
 PASS: `cabal test bridge-test -j1 --builddir=/tmp/hot-wallet-server-build --test-show-details=direct --test-options=--configure-only`

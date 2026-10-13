@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleInstances, DataKinds, FunctionalDependencies, RoleAnnotations, TypeFamilies, TypeFamilyDependencies, ConstraintKinds, UndecidableSuperClasses, TypeApplications, ScopedTypeVariables, RankNTypes, QuantifiedConstraints, UndecidableInstances #-}
 {-# OPTIONS_GHC -Werror=incomplete-patterns #-}
+{-# LANGUAGE QualifiedDo, TypeOperators #-}
 -- Closed grammar and capability contract. Handler selections cannot supply IO.
 module Bridge.Operation.Internal (module Bridge.Operation.Internal, Severity(..), SomeOperationAt) where
 
@@ -12,6 +13,8 @@ import Data.Typeable (Typeable,eqT)
 import Data.Type.Equality ((:~:)(Refl))
 import Control.Operation
 import Control.Operation.Severity
+import Control.Operation.Flow (Flow)
+import qualified Control.Operation.Flow as F
 import Data.Text (Text)
 import Data.Int (Int64)
 
@@ -121,6 +124,33 @@ class WorkerOperations value where
   reconcilePayment :: value -> Text -> Program 'Worker 'Critical ()
   queuePayment :: value -> Text -> Program 'Worker 'Critical Int64
   broadcastPayment :: value -> Text -> Program 'Worker 'Critical ()
+
+-- Actual identifiers travel between completed stages. These are sequencing
+-- markers, NOT financial authority: each existing operation rechecks the ledger.
+data PreparedPayout = PreparedPayout Text
+data SignedPayout = SignedPayout Text
+data QueuedPayout = QueuedPayout Text
+
+-- Closed, bounded payout grammar; no arbitrary IO or retry instruction.
+-- The constructor supplies the worker capability after the payload's Refl.
+data PayoutStep value before after result where
+  InspectPayout :: WorkerOperations value => PayoutStep value '[Text] '[Text] [Text]
+  PreparePayout :: WorkerOperations value => PayoutStep value '[Text] '[PreparedPayout] ()
+  SignPayout :: WorkerOperations value => PayoutStep value '[PreparedPayout] '[SignedPayout] ()
+  ReusePayout :: WorkerOperations value => [Text] -> PayoutStep value '[Text] '[SignedPayout] ()
+  QueuePayout :: WorkerOperations value => PayoutStep value '[SignedPayout] '[QueuedPayout] ()
+  SendPayout :: WorkerOperations value => PayoutStep value '[QueuedPayout] '[] ()
+
+payoutFlow :: WorkerOperations value => value -> Flow (PayoutStep value) '[Text] '[] ()
+payoutFlow _ = F.do
+  attempts <- F.step InspectPayout
+  case attempts of
+    [] -> F.do
+      F.step PreparePayout
+      F.step SignPayout
+    _ -> F.step (ReusePayout attempts)
+  F.step QueuePayout
+  F.step SendPayout
 
 -- One closed payload GADT carries caller, severity and the exact result type.
 -- Family aliases retain the evaluator's caller -> family functional dependency.

@@ -1,10 +1,42 @@
-{-# LANGUAGE CPP, OverloadedStrings, DataKinds, TypeApplications, FlexibleContexts #-}
+{-# LANGUAGE CPP, OverloadedStrings, DataKinds, TypeApplications, FlexibleContexts, TypeOperators, QualifiedDo #-}
 -- Compile normally for the positive control; each BAD_* macro must fail.
 module CapabilityCompile where
 import Bridge.Operation.Internal
 import Control.Operation
 import Data.Coerce (coerce)
 import Data.Proxy (Proxy(..))
+import Control.Operation.Flow (Flow)
+import qualified Control.Operation.Flow as F
+import Data.Text (Text)
+
+validPayout :: WorkerOperations value => value -> Flow (PayoutStep value) '[Text] '[] ()
+validPayout = payoutFlow
+
+#ifdef BAD_FLOW_ORDER
+signWithoutPreparation :: WorkerOperations value => Flow (PayoutStep value) '[Text] '[SignedPayout] ()
+signWithoutPreparation = F.step SignPayout
+#endif
+#ifdef BAD_FLOW_BRANCH
+unbackedBranch :: WorkerOperations value => Bool -> Flow (PayoutStep value) '[SignedPayout] '[QueuedPayout] ()
+unbackedBranch queued = if queued then F.step QueuePayout else F.pure ()
+#endif
+#ifdef BAD_FLOW_SEND
+sendWithoutIntent :: WorkerOperations value => Flow (PayoutStep value) '[SignedPayout] '[] ()
+sendWithoutIntent = F.step SendPayout
+#endif
+#ifdef BAD_FLOW_CAPABILITY
+hiddenPayout :: Stage '[CompileOperation 'Worker 'Critical ()]
+hiddenPayout = Stage (\value -> payoutFlow value `seq` Right value)
+#endif
+#ifdef BAD_FLOW_IO
+uncheckedPayout :: IO () -> Flow (PayoutStep value) '[] '[] ()
+uncheckedPayout work = F.step work
+#endif
+#ifdef BAD_FLOW_COERCE
+coercePreparation :: Flow (PayoutStep value) '[PreparedPayout] '[SignedPayout] ()
+                  -> Flow (PayoutStep value) '[Text] '[SignedPayout] ()
+coercePreparation = coerce
+#endif
 
 valid :: Stage '[CompileOperation 'Customer 'Safe ()]
 valid = Stage (\value -> operationDSL value `seq` Right value)

@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds, GADTs, TypeOperators, TypeFamilies, TypeApplications #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module Main (main) where
 
 import qualified RestoreGuideCheck
@@ -21,6 +22,10 @@ import qualified Data.ByteString.Lazy.Char8 as BL
 import Data.List (nub)
 import Data.Typeable (typeRep,eqT)
 import Control.Operation
+import Control.Operation.Flow (Values(..),runFlow)
+import Control.Exception (SomeException,AsyncException(ThreadKilled),try,throwIO,fromException)
+import Control.Monad (forM,when)
+import Data.IORef (newIORef,modifyIORef',readIORef)
 import Data.Proxy (Proxy(..))
 import Data.Type.Equality ((:~:)(Refl))
 import qualified Data.Map.Strict as M
@@ -59,6 +64,7 @@ fullSuite = do
             ,bearerHash ("Bearer "<>T.replicate 64 "0")==capabilityHash (T.replicate 64 "0")
             ,all (isLeft . bearerHash) ["", "bearer "<>T.replicate 64 "0", "Bearer "<>T.replicate 64 "A", "Bearer "<>T.replicate 64 "0"<>" "]]
     , check "customer handlers preserve request, result type and severity" $ once $ property handlerContract
+    , check "payout flow preserves new/resumed/family paths and stops after failure or cancellation" $ once $ ioProperty payoutFlowContract
     , check "signer handler resolves an existential to a signer-only critical operation" $ once $ property $
         let prepared :<|> replacement :<|> draft :<|> checkpoint=signingServer ()
         in case (checkedOperation $ prepared ("deployment","payment",3),checkedOperation $ replacement ("deployment",7),checkedOperation $ draft ("deployment","parent",good $ amount 2),checkedOperation $ checkpoint ("deployment",9)) of
@@ -242,3 +248,48 @@ resultIndices Refl = (Refl,Refl)
 absent :: Maybe a -> Bool
 absent Nothing=True
 absent Just{}=False
+
+-- Trace the actual closed Flow grammar, including actual identifier threading.
+-- This is an unfunded control-flow oracle; PostgreSQL/HTTPS contracts separately
+-- exercise existing durable operation and service boundaries.
+payoutFlowContract :: IO Bool
+payoutFlowContract = and <$> forM [[],["saved"],["parent","replacement"]] (\attempts -> do
+  let txid = case attempts of [] -> "new"; [saved] -> saved; _ -> "family-tip"
+      prefix = ["inspect:payment"] <> case attempts of
+        [] -> ["prepare:payment","backup:preparation","sign:payment"]
+        [_] -> ["reuse:"<>txid]
+        _ -> ["family:payment"]
+      expected = prefix <> ["queue:"<>txid,"backup:intent","send:"<>txid]
+  and <$> forM [(fault,asynchronous) | fault<-[0..length expected], asynchronous<-[False,True]] (\(fault,asynchronous) -> do
+    trace <- newIORef []
+    let record event = do
+          modifyIORef' trace (<>[event])
+          count <- length <$> readIORef trace
+          when (fault==count) $ if asynchronous then throwIO ThreadKilled else throwIO (userError "outcome unknown")
+        traceStep :: PayoutStep (WorkerCommand 'Critical ()) before after a -> Values before -> IO (a,Values after)
+        traceStep step values = case (step,values) of
+          (InspectPayout,identifier :& VNil) -> record ("inspect:"<>identifier) >> pure (attempts,values)
+          (PreparePayout,identifier :& VNil) -> do
+            record ("prepare:"<>identifier)
+            record "backup:preparation"
+            pure ((),PreparedPayout identifier :& VNil)
+          (SignPayout,PreparedPayout identifier :& VNil) -> do
+            record ("sign:"<>identifier)
+            pure ((),SignedPayout "new" :& VNil)
+          (ReusePayout saved,identifier :& VNil) -> do
+            actual <- case saved of
+              [one] -> record ("reuse:"<>one) >> pure one
+              _ -> record ("family:"<>identifier) >> pure "family-tip"
+            pure ((),SignedPayout actual :& VNil)
+          (QueuePayout,SignedPayout signed :& VNil) -> do
+            record ("queue:"<>signed)
+            record "backup:intent"
+            pure ((),QueuedPayout signed :& VNil)
+          (SendPayout,QueuedPayout queued :& VNil) -> record ("send:"<>queued) >> pure ((),VNil)
+    result <- try (runFlow traceStep (payoutFlow (WorkerAction runWorkerCycle :: WorkerCommand 'Critical ())) ("payment" :& VNil))
+      :: IO (Either SomeException ((),Values '[]))
+    actual <- readIORef trace
+    pure $ actual==take (if fault==0 then length expected else fault) expected && case result of
+      Right ((),VNil) -> fault==0
+      Left failure -> fault/=0 && if asynchronous then fromException failure==Just ThreadKilled
+        else (fromException failure :: Maybe AsyncException)==Nothing))

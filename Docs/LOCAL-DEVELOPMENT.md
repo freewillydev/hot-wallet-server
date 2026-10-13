@@ -266,10 +266,11 @@ After building the core library, the positive control must compile; each negativ
 variant must fail for the named missing capability or incompatible nominal index:
 
 ```sh
-cabal --project-dir=build exec -- ghc -fno-code -package ecx-bridge -package operation-capabilities-0.1.1.0 \
+cabal --project-dir=build exec -- ghc-9.14.1 -fno-code -package-id ecx-bridge-0.1.0.0-inplace -package operation-capabilities-0.1.3.0 \
   src/test/CapabilityCompile.hs
-for check in BAD_COMPILE BAD_WIDEN BAD_CALLER BAD_SEVERITY BAD_RESULT BAD_COERCE BAD_DOMAIN BAD_HIDDEN_WORKER BAD_IO; do
-  if cabal --project-dir=build exec -- ghc -fno-code -package ecx-bridge -package operation-capabilities-0.1.1.0 \
+for check in BAD_COMPILE BAD_WIDEN BAD_CALLER BAD_SEVERITY BAD_RESULT BAD_COERCE BAD_DOMAIN BAD_HIDDEN_WORKER BAD_IO \
+    BAD_FLOW_ORDER BAD_FLOW_BRANCH BAD_FLOW_SEND BAD_FLOW_CAPABILITY BAD_FLOW_IO BAD_FLOW_COERCE; do
+  if cabal --project-dir=build exec -- ghc-9.14.1 -fno-code -package-id ecx-bridge-0.1.0.0-inplace -package operation-capabilities-0.1.3.0 \
       -D"$check" src/test/CapabilityCompile.hs; then
     echo "Unexpected compilation success: $check"
     exit 1

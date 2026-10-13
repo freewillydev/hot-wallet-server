@@ -19,7 +19,7 @@ library
   import: settings
   hs-source-dirs: ../src/src
   exposed-modules: Bridge.Domain, Bridge.Error, Bridge.Identity, Bridge.Wire, Bridge.Lifecycle, Bridge.Operation, Bridge.Operation.Internal
-  build-depends: operation-capabilities ==0.1.1.0, base >=4.20 && <4.23, aeson >=2.2 && <2.4, text >=2.1 && <2.2, containers, bytestring, base16-bytestring, base58-bytestring, crypton >=1 && <1.2, ram >=0.22 && <0.23
+  build-depends: operation-capabilities ==0.1.3.0, base >=4.20 && <4.23, aeson >=2.2 && <2.4, text >=2.1 && <2.2, containers, bytestring, base16-bytestring, base58-bytestring, crypton >=1 && <1.2, ram >=0.22 && <0.23
 
 library customer-api
   import: settings
@@ -68,7 +68,7 @@ library workflow
   hs-source-dirs: ../src/workflow
   other-modules: Bridge.Credentials
   exposed-modules: Bridge.Observer, Bridge.Payment, Bridge.Signer, Bridge.Critical, Bridge.Reconciliation, Bridge.Admission, Bridge.Order, Bridge.Web, Bridge.Config, Bridge.Control, Bridge.Recovery
-  build-depends: base, ecx-bridge, ecx-bridge:customer-api, ecx-bridge:store,
+  build-depends: operation-capabilities ==0.1.3.0, base, ecx-bridge, ecx-bridge:customer-api, ecx-bridge:store,
     ecx-bridge:chain, aeson, bytestring, text, time, containers, http-client, servant, servant-server,
     async, transformers, stm, ram, base64-bytestring, crypton, crypton-pem, crypton-x509, http-types, wai, warp, warp-tls, filepath, unix,
     servant-client, http-client-tls, crypton-connection, tls, crypton-x509-store, directory, network, binary, postgresql-simple
@@ -82,7 +82,7 @@ test-suite bridge-test
   build-tool-depends: ecx-bridge:ecx-bridge
   other-modules: RestoreGuide, RestoreNative, RestoreGuideCheck, Configure, InstallConfig, Upgrade, Bootstrap, NodeSetup, SetupPaths, ConfigureCheck, ChainCheck, NativePaymentCheck, SolanaPaymentCheck, ObservationCheck, SigningTransportCheck, LifecycleCheck, Paths_ecx_bridge
   autogen-modules: Paths_ecx_bridge
-  build-depends: operation-capabilities ==0.1.1.0, base, ecx-bridge, ecx-bridge:customer-api, ecx-bridge:chain, ecx-bridge:store, ecx-bridge:workflow, servant, aeson, text, containers,
+  build-depends: operation-capabilities ==0.1.3.0, base, ecx-bridge, ecx-bridge:customer-api, ecx-bridge:chain, ecx-bridge:store, ecx-bridge:workflow, servant, aeson, text, containers,
     QuickCheck >=2.15 && <2.19, bytestring, scientific, http-client, base64-bytestring, wai, wai-extra, warp, http-types, directory, unix, filepath,
     ecx-build-assets, ecx-bridge:administration, process, async, network, crypton, ram, time, data-default, crypton-pem, crypton-x509, crypton-x509-validation, crypton-x509-store, base58-bytestring, iproute >=1.7 && <1.8
 
@@ -105,7 +105,7 @@ executable ecx-store-check
   main-is: StoreCheck.hs
   other-modules: ProvisionCheck, Bridge.Fence, Bridge.Store, Bridge.Store.Schema, Bridge.Store.Catalog, Bridge.Store.Backup, Bridge.Store.Projection, Bridge.Store.Provision, Bridge.Observer, Bridge.Payment, Bridge.Signer, Bridge.Critical, Bridge.Reconciliation, Bridge.Admission, Bridge.Order, Bridge.Web, Bridge.Config, Bridge.Control, Bridge.Recovery, Bridge.Credentials, Paths_ecx_bridge
   autogen-modules: Paths_ecx_bridge
-  build-depends: base, async, ecx-bridge, ecx-bridge:customer-api, ecx-bridge:chain, http-client, servant, servant-server, aeson, bytestring,
+  build-depends: operation-capabilities ==0.1.3.0, base, async, ecx-bridge, ecx-bridge:customer-api, ecx-bridge:chain, http-client, servant, servant-server, aeson, bytestring,
     base64-bytestring, containers, text, crypton, base16-bytestring, time, directory, scientific, opaleye, postgresql-simple, product-profunctors, QuickCheck,
     transformers, stm, ram, crypton-pem, crypton-x509, http-types, wai, wai-extra, warp, warp-tls, filepath, unix,
     servant-client, http-client-tls, crypton-connection, tls, crypton-x509-store, process, network, binary

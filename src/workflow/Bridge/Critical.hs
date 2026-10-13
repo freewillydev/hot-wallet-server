@@ -4,6 +4,7 @@
 module Bridge.Critical (operationPath,Process(..),WorkerLifetime(..),runProcess,CustomerSettings(..),SignerSettings(..),runWorkerLoop) where
 import Bridge.Operation.Internal hiding (customer)
 import qualified Bridge.Operation.Internal as Operation
+import Control.Operation.Flow (Values(..),runFlow)
 import Bridge.Domain (Asset(..),gross,paymentAsset,paymentId,units)
 import Bridge.Identity (payURIFor,digest)
 import Bridge.Admission (checkSolanaPayoutWith)
@@ -873,7 +874,7 @@ instance WorkerOperations (WorkerCommand 'Critical result) where
         verifySignedAttempt (N.nativeCall rpc native) (N.profile native) config prepared signed
         recorded<-evalWrite writer (RecordAttempt prepared signed)
         pure (signedId $ recordedSigned recorded)
-  runWorkerCycle _ = workerEffect True run
+  runWorkerCycle value = workerEffect True run
    where
     run environment@(CriticalEnvironment _ _ _ _ _ reader writer) = cycleWork `catch` (\(BridgeError code)->
       if code=="custody_not_reconciled" then do
@@ -888,21 +889,8 @@ instance WorkerOperations (WorkerCommand 'Critical result) where
           now<-floor <$> getPOSIXTime
           evalWrite writer (AdmitPayoutRounds now)
           candidates<-evalRead reader PaymentCandidates
-          forM_ candidates $ \identifier->do
-            freshIntake environment
-            (_,_,attempts)<-evalRead reader (ReadPaymentWork identifier)
-            txid<-case attempts of
-              []->do
-                evalWorker environment (\cap -> prepareOutgoing cap identifier)
-                backupDecisions environment
-                evalWorker environment (\cap -> signPreparedPayment cap identifier)
-              [saved]->pure saved
-              _->do
-                family<-evalRead reader (ReadNativeFamily identifier)
-                pure (signedId $ recordedSigned $ fst $ last family)
-            _<-evalWorker environment (\cap -> queuePayment cap txid)
-            backupDecisions environment
-            evalWorker environment (\cap -> broadcastPayment cap txid)
+          forM_ candidates $ \identifier->
+            runFlow (runPayoutStep environment) (payoutFlow value) (identifier :& VNil)
           -- Existing payments get first use of capacity, but one active chain
           -- must not prevent optional work on the other.
           _<-scheduleOwnerFees environment
@@ -910,6 +898,38 @@ instance WorkerOperations (WorkerCommand 'Critical result) where
 
   -- Shared workflows take only the private resource context.
   -- Refresh stale evidence after slow checkpoints; never extend quote/backup terms.
+
+-- Called only inside the worker's already-authorized critical action. Exceptions
+-- stop Flow immediately; uncertain signing/sending never retries the whole flow.
+-- Backup belongs to the stage that produced the durable work, before advancing.
+runPayoutStep :: CriticalEnvironment -> PayoutStep (WorkerCommand 'Critical result) before after a
+             -> Values before -> IO (a,Values after)
+runPayoutStep environment@(CriticalEnvironment _ _ _ _ _ reader _) step values = case (step,values) of
+  (InspectPayout,identifier :& VNil) -> do
+    freshIntake environment
+    (_,_,attempts) <- evalRead reader (ReadPaymentWork identifier)
+    pure (attempts,values)
+  (PreparePayout,identifier :& VNil) -> do
+    evalWorker environment (\cap -> prepareOutgoing cap identifier)
+    backupDecisions environment
+    pure ((),PreparedPayout identifier :& VNil)
+  (SignPayout,PreparedPayout identifier :& VNil) -> do
+    txid <- evalWorker environment (\cap -> signPreparedPayment cap identifier)
+    pure ((),SignedPayout txid :& VNil)
+  (ReusePayout attempts,identifier :& VNil) -> do
+    txid <- case attempts of
+      [saved] -> pure saved
+      _ -> do
+        family <- evalRead reader (ReadNativeFamily identifier)
+        pure (signedId $ recordedSigned $ fst $ last family)
+    pure ((),SignedPayout txid :& VNil)
+  (QueuePayout,SignedPayout txid :& VNil) -> do
+    _ <- evalWorker environment (\cap -> queuePayment cap txid)
+    backupDecisions environment
+    pure ((),QueuedPayout txid :& VNil)
+  (SendPayout,QueuedPayout txid :& VNil) -> do
+    evalWorker environment (\cap -> broadcastPayment cap txid)
+    pure ((),VNil)
 
 -- This optional reservation never signs. All resulting work uses the ordinary
 -- payout pipeline, and a commit ends this cycle so custody can be reconciled.

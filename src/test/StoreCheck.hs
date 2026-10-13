@@ -3799,7 +3799,11 @@ withProcessListening process port action=withAsync process $ \child->do
         result<-try $ bracket (NS.socket NS.AF_INET NS.Stream NS.defaultProtocol) NS.close $ \socket->
           NS.connect socket (NS.SockAddrInet (fromIntegral port) (NS.tupleToHostAddress (127,0,0,1)))
         pure (case result::Either IOException () of Right ()->True; Left _->False)
-  action
+  action `onException` do
+    status<-poll child
+    case status of
+      Just (Left problem)->throwIO problem
+      _->pure ()
 
 withWorkerProcess :: HTTP.Manager -> Reader -> Writer -> ObserverSettings -> H.SolanaPolicy
   -> Maybe CustomerSettings -> SigningEndpoint -> (Int -> FilePath -> IO a) -> IO a
@@ -4748,13 +4752,16 @@ tlsMain=do
             before<-evalRead reader ReadBalances
             Warp.testWithApplication (pure rpcApplication) $ \rpcPort->
               bracket (newManager defaultManagerSettings {managerModifyRequest= \request->pure request {HTTP.secure=False,HTTP.host="127.0.0.1",HTTP.port=rpcPort}}) closeManager $ \manager->do
+                -- History capture owns its own manager and uses this URL directly.
+                let connectedNative=configuredNative {N.nativeRpc="http://127.0.0.1:"<>show rpcPort}
                 -- Stop the next cycle at its first identity RPC even if the
                 -- assertion thread is delayed; never race a signing attempt.
                 writeIORef workerProbe ((not.null) <$> saved)
                 flip finally (writeIORef workerProbe (pure False) >> void (tryPutMVar workerRelease ())) $
-                 withWorkerProcess manager reader writer (ObserverSettings configuredNative solana 1 headSignature headSignature) config
+                 withWorkerProcess manager reader writer (ObserverSettings connectedNative solana 1 headSignature headSignature) config
                   (Just $ CustomerSettings public store sdk $ Just recipients) endpoint $ \_ _->do
                     awaitCondition "automatic worker owner reservation" ((==1) . length <$> saved)
+                      `onException` (evalRead reader ReadServiceStatus >>= print)
                     evalRead reader ReadState >>= check . not . ledgerPaused
             keys<-saved
             key<-case keys of [one]->pure one; _->fail "owner reservation count changed"
