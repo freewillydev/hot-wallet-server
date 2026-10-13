@@ -8,6 +8,27 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Implemented and checked
 
+- 2026-10-13: operator/worker methods now return indexed Flow directly through
+  Method/MethodStep. Program holds balanced caller-specific Flows; private concrete
+  runners check each leaf's observation permission under the held critical gate.
+  PayoutWorkflow.interpret constructs F.do after Refl by composing the methods;
+  redundant PayoutStep/PayoutInstruction/PayoutCommand dispatch is gone. Both
+  checkpoint positions have explicit BackupCovered state requirements. Of the 31
+  original methods, 26 bodies are byte-identical; five only change state threading
+  or dispatch. Three former payout leaves relocate inspection/reuse/checkpointing.
+  Build and suite PASS (249 groups/15,608 cases, two expected mutation failures),
+  positive and 23 negative compile checks PASS. Six fresh PostgreSQL modes PASS:
+  server authorization, ordinary ledger, complete-draft resume, Devnet HTTPS,
+  canonical HTTPS/owner scheduling and active Native. These are offline fixtures,
+  not new live-chain acceptance. Production: 1,521 -> 1,513 lines in two files;
+  tests: 438 -> 483 in two files. No new source files, API or dependency changes.
+  Evidence: /tmp/hot-wallet-methods-receipt.json; final review recorded in DONE.
+  Task database stopped; no deployment/funds changed. Generated build cache moved
+  to /Volumes/T705/codex-build/hot-wallet-method-flow, with the existing
+  build/dist-newstyle path retained as a locally ignored symlink. Keep the Cabal
+  overlay documented below while using these binaries. Next work is the existing
+  release checklist, not another payout abstraction or repeat fixture run.
+
 - 2026-10-13: split OperatorWrite into five capabilities and WorkerOperations
   into eight. Actual rank-n request selectors receive only their explicit subset
   through Restrict/withCapabilities inside interpret after Refl. Each payout step

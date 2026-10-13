@@ -20,8 +20,8 @@ caller/severity constraints, safe/critical evaluators and sole critical dispatch
 Use the library's `Flow` and QualifiedDo to express inspect → new or saved payment
 → queue/backup → broadcast with actual identifiers and different state types.
 Keep concrete effects private to Critical.hs, with the existing `evalWorker`
-rechecks, backup order, durable recovery and exception behavior. Do not wrap every
-operation, add an arbitrary IO instruction, or invent new automatic retries.
+rechecks, backup order, durable recovery and exception behavior. Do not add an
+arbitrary IO instruction or invent new automatic retries.
 
 Acceptance: ordinary bridge and dependency properties; compile rejection for
 wrong caller/severity/result/capability and invalid flow stages/branches/coercions;
@@ -31,26 +31,21 @@ net line count including tests. These checks do not deploy or re-certify product
 Only extend Flow or IndexedRequest where it removes duplicated decisions or enforces
 a useful boundary; leave the already-small order, signer and recovery paths intact.
 
-Payout interpreter follow-up: remove `runPayoutStep`; use a private payout-specific
-Operation payload and compile each typed stage after its own `eqT`/`Refl` proof.
-Keep every concrete action deferred under the existing critical gate. Test actual
-existential resolution plus the independent ordering oracle, and rerun affected
-PostgreSQL worker contracts. Do not treat the oracle as concrete-effect coverage.
-
-Whole-workflow follow-up: define the complete payout `F.do` only in the
-`PayoutWorkflow` Operation's `interpret`, after payload `eqT`/`Refl`. Return the
-pure Flow; reject interpretation mismatch before evaluating it under the existing
-critical gate. Keep leaf interpretation and financial checks unchanged. Make this
-boundary prominent in the library's design guidance and compiling example.
-
-Capability follow-up: replace broad OperatorWrite/WorkerOperations with cohesive
-capabilities, select explicit subsets at each request, and project those dictionaries
-with `Restrict`/`withCapabilities` inside `interpret` after `Refl`. Payout instructions
-carry their individual capability requirements; the complete interpreted `F.do`
-requires their union. Keep the 31 financial operation bodies and their ordering
-unchanged. Verify actual selectors cannot call hidden methods, not just generic
-library Stage examples; repeat affected process/ledger contracts. Do not chain
-independent operator commands or claim the dictionary boundary replaces IO checks.
+Current follow-up supersedes the intermediate payout instruction wrapper: operator
+and worker capability methods themselves return indexed `Flow` values. Keep the
+cohesive capability groups and explicit request subsets; project dictionaries with
+`Restrict`/`withCapabilities` inside `interpret` after `Refl`, then prove the hidden
+carrier again before returning its associated Flow. Construct the complete payout
+`F.do` inside `PayoutWorkflow.interpret`, after its `Refl`, by calling those methods
+directly. Remove the redundant payout step/command dispatcher. Represent both
+checkpoint positions in the state types. Keep concrete instruction constructors
+private and check observation-mode permission before each leaf under the existing
+gate. Preserve all 31 financial method bodies, ordering and exception scopes.
+Verify actual restricted selectors, missing capabilities/checkpoints, all payout
+branch/failure prefixes, and affected PostgreSQL/process/HTTPS contracts. The trace
+carrier tests the interpreted workflow, not production IO. Independent operator
+commands remain single steps. Flow is neither transaction rollback nor automatic
+retry. Library guidance already requires post-Refl workflow construction.
 
 Status: **117/120 steps verified (A–I, J105–111, J113–117, J120)**. Implementation and
 available acceptance are complete; external gates J112, J118 and J119 remain open.

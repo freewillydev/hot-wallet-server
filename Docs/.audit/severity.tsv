@@ -78,3 +78,9 @@ capability_split_types	PASS	/tmp/hot-wallet-caps-types.log sha256=f2cd7a29d0036c
 capability_split_pg	PASS	/tmp/hot-wallet-caps-pg.log sha256=a7d1f72cc6c9b2057e7cc44710abd24c1ff5755e1335c8616fae29ca5b8ed7dc
 capability_split_receipt	PASS	/tmp/hot-wallet-caps-receipt.json sha256=11f2e53407053eb851580e82774b1bb1826cb055b8f0278c2524d878ca00ac3d; local fixture scope; all 31 operation bodies preserved; +78 production/+42 test lines
 capability_split_review	PASS	Separate capability_split_review PASS for scoped source publication: all five source/29 log hashes verified; source diff SHA256 7294bbacf04c31d46b8014202ab87ba998fee4ea4d4a1a8ae790f3b4c0749541; receipt SHA256 11f2e53407053eb851580e82774b1bb1826cb055b8f0278c2524d878ca00ac3d. All 31 concrete method bodies preserve behavior. No production certification.
+capability_flow_build	PASS	/tmp/hot-wallet-methods-build.log sha256=fac002879b227b2586957923cea4d40eda6ac2f04aa3ee5e4c912222520c0c81
+capability_flow_tests	PASS	/tmp/hot-wallet-methods-tests.log sha256=db32b5e23300fefd55b4655839de4ac481c58774a5bf873b7256dbf3935a3fee
+capability_flow_types	PASS	/tmp/hot-wallet-methods-types.log sha256=83700b4006b410b048f99927c1e6578f6f8de352f1749913e36c3781138c82f6
+capability_flow_pg	PASS	/tmp/hot-wallet-methods-pg.log sha256=3936faf47e16fbbc57582dcc91892d17946d3e0aacc5002dd8394ff230da2a90
+capability_flow_receipt	PASS	/tmp/hot-wallet-methods-receipt.json sha256=7b68382f5d10b78676191812cf1f235372033c65f99bda126ba0c4fdfdc1ee59; local fixture scope; -8 production/+45 test lines; 23 negative types and six PostgreSQL modes; test cluster stopped
+capability_flow_review	PASS	Separate capability_split_review PASS for scoped publication: 48 artifact hashes and all 23 intended rejection diagnostics verified; source patch SHA256 b51d4307258a9c93da6a4dd14f481b0c721709d0cd660ef85bcc9b439a3a7052; receipt SHA256 7b68382f5d10b78676191812cf1f235372033c65f99bda126ba0c4fdfdc1ee59. No production certification or live changes.

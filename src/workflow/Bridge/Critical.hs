@@ -1,14 +1,13 @@
-{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE AllowAmbiguousTypes, QualifiedDo #-}
 {-# LANGUAGE DataKinds, GADTs, RankNTypes, ScopedTypeVariables, TypeFamilies, TypeApplications, ConstraintKinds, PatternSynonyms, ViewPatterns, FlexibleInstances, QuantifiedConstraints, FlexibleContexts, UndecidableInstances, MultiParamTypeClasses #-}
 {-# OPTIONS_GHC -Werror=incomplete-patterns -Werror=missing-methods #-}
 -- The signer ClientM is constructed only inside this critical evaluator.
-module Bridge.Critical (payoutOperation,operationPath,Process(..),WorkerLifetime(..),runProcess,CustomerSettings(..),SignerSettings(..),runWorkerLoop) where
+module Bridge.Critical (operationPath,Process(..),WorkerLifetime(..),runProcess,CustomerSettings(..),SignerSettings(..),runWorkerLoop) where
 import Bridge.Operation.Internal hiding (customer)
 import qualified Bridge.Operation.Internal as Operation
-import Control.Operation (Operation(..),SomeOperation(..),prepare,Capabilities,UniqueCapabilities,Subset)
-import Control.Operation.Severity (prepareOperation,OperationDSL(..))
-import Data.Type.Equality ((:~:)(Refl))
-import Control.Operation.Flow (Values(..),runFlow)
+import Control.Operation (Capabilities,UniqueCapabilities,Subset)
+import Control.Operation.Flow (Flow,Values(..),runFlow)
+import qualified Control.Operation.Flow as F
 import Bridge.Domain (Asset(..),gross,paymentAsset,paymentId,units)
 import Bridge.Identity (payURIFor,digest)
 import Bridge.Admission (checkSolanaPayoutWith)
@@ -43,7 +42,7 @@ import qualified Bridge.AdminStatus as Admin
 import Data.Aeson (Value,eitherDecodeStrict',FromJSON,toJSON,object,(.=),parseJSON,encode)
 import qualified Data.Text.Encoding as TE
 import qualified Data.ByteString.Lazy as BL
-import Data.Typeable (Typeable,eqT)
+import Data.Typeable (Typeable)
 import Data.Proxy (Proxy(..))
 import Bridge.Signer (signingAPI,SigningEndpoint(..),signerCredentials,signerCertificate,verifySigningKey,signingApplication,runSigningServer)
 import Bridge.Store
@@ -401,7 +400,7 @@ evalWorker :: forall selected a.
                UniqueCapabilities selected, Subset selected (DomainCaps 'Worker 'Critical),
                Subset selected (PreparationCaps 'Worker 'Critical a))
            => CriticalEnvironment
-           -> (forall value. Capabilities selected value => value -> Program 'Worker 'Critical a) -> IO a
+           -> (forall value. Capabilities selected value => value -> Method value '[] '[] a) -> IO a
 evalWorker environment operation=evalWorkerRequest environment (workerRequest @selected operation)
 
 evalWorkerRequest :: CriticalEnvironment -> SomeOperationAt Program 'Worker 'Critical a -> IO a
@@ -455,23 +454,39 @@ instance Execution 'Customer 'Critical CustomerCommand where
     c<-customer environment
     createCustomerOrder rpc settings config (customerPolicy c) (unsignedSdk c) (\n->evalWorker @'[WorkerBackup] environment (\cap -> checkpointBackup cap n) >> freshIntake environment) reader writer header request
 
--- Methods below construct actions; only this module knows their IO representation.
--- The Boolean records the existing observation-only allowlist at construction.
-data instance Action 'Operator a = OperatorEffect Bool (CriticalEnvironment -> IO a)
-data instance Action 'Worker a = WorkerEffect Bool (CriticalEnvironment -> IO a)
+-- Private instruction constructors own IO; capability methods only build Flow.
+-- A composed Flow checks each leaf's original observation permission before IO,
+-- including leaves chosen by a value-dependent continuation, under the held gate.
+data instance Action 'Operator before after a = OperatorEffect Bool (CriticalEnvironment -> Values before -> IO (a,Values after))
+data instance Action 'Worker before after a = WorkerEffect Bool (CriticalEnvironment -> Values before -> IO (a,Values after))
 
-operatorEffect :: Typeable a => Bool -> (CriticalEnvironment -> IO a) -> Program 'Operator 'Critical a
-operatorEffect allowed = OperatorDSL . OperatorEffect allowed
-workerEffect :: Typeable a => Bool -> (CriticalEnvironment -> IO a) -> Program 'Worker 'Critical a
-workerEffect allowed = WorkerDSL . WorkerEffect allowed
+operatorEffect :: Bool -> (CriticalEnvironment -> IO a) -> Flow (Action 'Operator) state state a
+operatorEffect allowed action = F.step $ OperatorEffect allowed $ \environment values -> do
+  result <- action environment
+  pure (result,values)
+workerEffect :: Bool -> (CriticalEnvironment -> IO a) -> Flow (Action 'Worker) state state a
+workerEffect allowed action = workerStep allowed $ \environment values -> do
+  result <- action environment
+  pure (result,values)
+workerStep :: Bool -> (CriticalEnvironment -> Values before -> IO (a,Values after)) -> Flow (Action 'Worker) before after a
+workerStep allowed = F.step . WorkerEffect allowed
+
+runOperatorFlow :: CriticalEnvironment -> Flow (Action 'Operator) before after a -> Values before -> IO (a,Values after)
+runOperatorFlow environment = runFlow $ \(OperatorEffect allowed action) values -> do
+  require (allowed || paying environment) "observation_only"
+  action environment values
+runWorkerFlow :: CriticalEnvironment -> Flow (Action 'Worker) before after a -> Values before -> IO (a,Values after)
+runWorkerFlow environment = runFlow $ \(WorkerEffect allowed action) values -> do
+  require (allowed || paying environment) "observation_only"
+  action environment values
 
 instance OperatorOperations
 
 instance Execution 'Operator 'Critical OperatorCommand where
   authorizeOperation SignerEvaluation{} _=reject "signer_context_forbidden"
-  authorizeOperation (WorkerEvaluation environment) (OperatorDSL (OperatorEffect allowed _))=require (allowed || paying environment) "observation_only"
+  authorizeOperation WorkerEvaluation{} _=pure ()
   evaluateOperation SignerEvaluation{} _=reject "signer_context_forbidden"
-  evaluateOperation (WorkerEvaluation environment) (OperatorDSL (OperatorEffect _ action))=action environment
+  evaluateOperation (WorkerEvaluation environment) (OperatorDSL workflow)=fst <$> runOperatorFlow environment workflow VNil
 
 instance OperatorService (OperatorCommand 'Critical result) where
   pauseService _ reason = operatorEffect True $ \(CriticalEnvironment _ _ _ _ _ _ writer) -> evalWrite writer (Pause reason)
@@ -748,9 +763,9 @@ instance OperatorTreasury (OperatorCommand 'Critical result) where
 
 instance Execution 'Worker 'Critical WorkerCommand where
   authorizeOperation SignerEvaluation{} _=reject "signer_context_forbidden"
-  authorizeOperation (WorkerEvaluation environment) (WorkerDSL (WorkerEffect allowed _))=require (allowed || paying environment) "observation_only"
+  authorizeOperation WorkerEvaluation{} _=pure ()
   evaluateOperation SignerEvaluation{} _=reject "signer_context_forbidden"
-  evaluateOperation (WorkerEvaluation environment) (WorkerDSL (WorkerEffect _ action))=action environment
+  evaluateOperation (WorkerEvaluation environment) (WorkerDSL workflow)=fst <$> runWorkerFlow environment workflow VNil
 
 instance WorkerBackup (WorkerCommand 'Critical result) where
   checkpointBackup _ minimumSequence = workerEffect False $ \environment@(CriticalEnvironment _ _ _ _ _ reader _) -> guarded environment $ do
@@ -762,9 +777,18 @@ instance WorkerBackup (WorkerCommand 'Critical result) where
     require (ledgerPaused before) "pause_before_upgrade_checkpoint"
     checkpoint environment (ledgerSequence before) before
 
+  checkpointPending _ = workerStep False $ \environment (value :& VNil) -> do
+    backupDecisions environment
+    pure ((),BackupCovered value :& VNil)
+
 instance WorkerObservation (WorkerCommand 'Critical result) where
   observeChains _ = workerEffect True $ \(CriticalEnvironment rpc settings _ _ _ reader writer) -> observeOnce rpc settings reader writer
   reconcileCustody _ = workerEffect True $ \(CriticalEnvironment rpc settings config _ _ reader writer) -> Reconciliation.reconcileCustody rpc settings config reader writer
+
+  inspectPayout _ identifier = workerStep False $ \environment@(CriticalEnvironment _ _ _ _ _ reader _) VNil -> do
+    freshIntake environment
+    (_,_,attempts) <- evalRead reader (ReadPaymentWork identifier)
+    pure (attempts,identifier :& VNil)
 
 instance WorkerRecovery (WorkerCommand 'Critical result) where
   recoverNativeSettlements _ = workerEffect True $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) -> guarded environment $ do
@@ -830,8 +854,16 @@ instance WorkerRecovery (WorkerCommand 'Critical result) where
       (winner,outcome)<-observeAttempt environment current reply
       recordOutcome environment winner outcome
 
+  reusePayout _ attempts = workerStep False $ \(CriticalEnvironment _ _ _ _ _ reader _) (identifier :& VNil) -> do
+    txid <- case attempts of
+      [saved] -> pure saved
+      _ -> do
+        family <- evalRead reader (ReadNativeFamily identifier)
+        pure (signedId $ recordedSigned $ fst $ last family)
+    pure ((),SignedPayout txid :& VNil)
+
 instance WorkerPreparation (WorkerCommand 'Critical result) where
-  prepareOutgoing _ identifier = workerEffect False $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) -> do
+  prepareOutgoing _ = workerStep False $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) (identifier :& VNil) -> do
     now<-floor <$> getPOSIXTime
     evalWrite writer (AdmitPayoutRounds now)
     -- Waiting for a round is normal, before RPC and before exception-driven pause.
@@ -846,12 +878,14 @@ instance WorkerPreparation (WorkerCommand 'Critical result) where
       -- Plan RPC and source updates may age or invalidate custody before commit.
       _<-prepareUnsigned (freshIntake environment >> floor <$> getPOSIXTime) (N.nativeCall rpc native) (S.solanaCall rpc solana)
         (N.profile native) config reader writer identifier
-      pure ()
+      pure ((),PreparedPayout identifier :& VNil)
 
 instance WorkerSigning (WorkerCommand 'Critical result) where
-  signPreparedPayment _ identifier = workerEffect False run
+  signPreparedPayment _ = workerStep False $ \environment (BackupCovered (PreparedPayout identifier) :& VNil) -> do
+    txid <- run identifier environment
+    pure (txid,SignedPayout txid :& VNil)
    where
-    run environment@(CriticalEnvironment rpc settings config _ _ reader writer) = signing `onException` evalWrite writer (Pause "signing_requires_review")
+    run identifier environment@(CriticalEnvironment rpc settings config _ _ reader writer) = signing `onException` evalWrite writer (Pause "signing_requires_review")
      where
       native=nativeSettings settings
       signing = do
@@ -878,15 +912,16 @@ instance WorkerSigning (WorkerCommand 'Critical result) where
         pure (signedId $ recordedSigned recorded)
 
 instance WorkerQueue (WorkerCommand 'Critical result) where
-  queuePayment _ txid = workerEffect False $ \environment@(CriticalEnvironment _ _ _ _ _ _ writer) -> guarded environment $ do
+  queuePayment _ = workerStep False $ \environment@(CriticalEnvironment _ _ _ _ _ _ writer) (SignedPayout txid :& VNil) -> guarded environment $ do
     (recorded,_)<-loadActive environment txid
     refreshSource environment (recordedPayment recorded)
     freshIntake environment
     now<-floor <$> getPOSIXTime
-    evalWrite writer (MarkBroadcast now txid)
+    sequenceNo <- evalWrite writer (MarkBroadcast now txid)
+    pure (sequenceNo,QueuedPayout txid :& VNil)
 
 instance WorkerBroadcast (WorkerCommand 'Critical result) where
-  broadcastPayment _ txid = workerEffect False $ \environment@(CriticalEnvironment rpc settings _ _ _ _ writer) -> guarded environment $ do
+  broadcastPayment _ = workerStep False $ \environment@(CriticalEnvironment rpc settings _ _ _ _ writer) (BackupCovered (QueuedPayout txid) :& VNil) -> guarded environment $ do
     let native=nativeSettings settings; solana=solanaSettings settings
     (recorded,reply)<-loadActive environment txid
     require (recordedState recorded=="broadcast_intent") "broadcast_intent_required"
@@ -907,6 +942,7 @@ instance WorkerBroadcast (WorkerCommand 'Critical result) where
             ["encoding" .= ("base64"::Text),"skipPreflight" .= False,"preflightCommitment" .= ("confirmed"::Text),"maxRetries" .= (0::Int)]] >>= parseValue parseJSON
         require (actual==txid) "broadcast_identifier_mismatch"
       _->recordOutcome environment observedAttempt observed
+    pure ((),VNil)
 
 instance WorkerCycle (WorkerCommand 'Critical result) where
   runWorkerCycle _ = workerEffect True run
@@ -924,10 +960,10 @@ instance WorkerCycle (WorkerCommand 'Critical result) where
           now<-floor <$> getPOSIXTime
           evalWrite writer (AdmitPayoutRounds now)
           candidates<-evalRead reader PaymentCandidates
-          workflow <- maybe (reject "operation_dictionary_mismatch") pure (payoutFlow (WorkerAction (Proxy @'[WorkerCycle]) runWorkerCycle :: WorkerCommand 'Critical ()))
-          forM_ candidates $ \identifier->
-            runFlow (\step values -> evalWorkerRequest environment $ payoutOperation step values)
-              workflow (identifier :& VNil)
+          forM_ candidates $ \identifier -> do
+            workflow <- maybe (reject "operation_dictionary_mismatch") pure $
+              payoutFlow (WorkerAction (Proxy @'[WorkerCycle]) runWorkerCycle :: WorkerCommand 'Critical ()) identifier
+            runWorkerFlow environment workflow VNil
           -- Existing payments get first use of capacity, but one active chain
           -- must not prevent optional work on the other.
           _<-scheduleOwnerFees environment
@@ -935,56 +971,6 @@ instance WorkerCycle (WorkerCommand 'Critical result) where
 
   -- Shared workflows take only the private resource context.
   -- Refresh stale evidence after slow checkpoints; never extend quote/backup terms.
-
--- The library existential carries this closed payload. Interpretation is pure:
--- it proves the payload type before building an action for the critical evaluator.
-data PayoutCommand value before after a = PayoutCommand (PayoutInstruction value before after a) (Values before)
-
-payoutOperation :: PayoutStep value before after a -> Values before
-                -> SomeOperationAt Program 'Worker 'Critical (a,Values after)
-payoutOperation (PayoutStep step) values =
-  prepareOperation operationDSL (prepare $ PayoutCommand step values)
-
-instance (Typeable value,Typeable before,Typeable after,Typeable a)
-    => CompileOperation 'Worker 'Critical (a,Values after) (PayoutCommand value before after a) where
-  operationDSL _ = OperationDSL CompilePayout
-
-instance (Typeable value,Typeable before,Typeable after,Typeable a, caps ~ '[CompileOperation 'Worker 'Critical (a,Values after)])
-    => Operation (PayoutCommand value before after a) caps where
-  type Context (PayoutCommand value before after a) = CompileOperation 'Worker 'Critical (a,Values after) (PayoutCommand value before after a)
-  type Outcome (PayoutCommand value before after a) = Program 'Worker 'Critical (a,Values after)
-  data DSL (PayoutCommand value before after a) where
-    CompilePayout :: Context (PayoutCommand value before after a) => DSL (PayoutCommand value before after a)
-  interpret (SomeOperation (payload :: actual)) CompilePayout =
-    case eqT @actual @(PayoutCommand value before after a) of
-      Nothing -> Nothing
-      Just Refl -> case payload of
-        PayoutCommand step values -> Just $ case (step,values) of
-          (InspectPayout,identifier :& VNil) -> workerEffect False $ \environment@(CriticalEnvironment _ _ _ _ _ reader _) -> do
-            freshIntake environment
-            (_,_,attempts) <- evalRead reader (ReadPaymentWork identifier)
-            pure (attempts,values)
-          (PreparePayout,identifier :& VNil) -> workerEffect False $ \environment -> do
-            evalWorker @'[WorkerPreparation] environment (\cap -> prepareOutgoing cap identifier)
-            backupDecisions environment
-            pure ((),PreparedPayout identifier :& VNil)
-          (SignPayout,PreparedPayout identifier :& VNil) -> workerEffect False $ \environment -> do
-            txid <- evalWorker @'[WorkerSigning] environment (\cap -> signPreparedPayment cap identifier)
-            pure ((),SignedPayout txid :& VNil)
-          (ReusePayout attempts,identifier :& VNil) -> workerEffect False $ \environment@(CriticalEnvironment _ _ _ _ _ reader _) -> do
-            txid <- case attempts of
-              [saved] -> pure saved
-              _ -> do
-                family <- evalRead reader (ReadNativeFamily identifier)
-                pure (signedId $ recordedSigned $ fst $ last family)
-            pure ((),SignedPayout txid :& VNil)
-          (QueuePayout,SignedPayout txid :& VNil) -> workerEffect False $ \environment -> do
-            _ <- evalWorker @'[WorkerQueue] environment (\cap -> queuePayment cap txid)
-            backupDecisions environment
-            pure ((),QueuedPayout txid :& VNil)
-          (SendPayout,QueuedPayout txid :& VNil) -> workerEffect False $ \environment -> do
-            evalWorker @'[WorkerBroadcast] environment (\cap -> broadcastPayment cap txid)
-            pure ((),VNil)
 
 -- This optional reservation never signs. All resulting work uses the ordinary
 -- payout pipeline, and a commit ends this cycle so custody can be reconciled.

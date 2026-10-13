@@ -43,6 +43,30 @@ source hashes and test scope are in [RESUME.md](RESUME.md) and the records below
 
 ## Historical verification records
 
+## Scoped capability Flow methods (2026-10-13)
+
+PASS: build, full bridge suite (249 groups / 15,608 cases, two expected mutation
+failures), one positive / 23 negative compile checks, and six fresh PostgreSQL
+contracts: server observation permissions, ordinary ledger, complete-draft resume,
+Devnet HTTPS, canonical HTTPS/owner scheduling and active Native payouts.
+The production methods now return indexed Flow; private instructions keep concrete
+IO in Critical.hs. The payout workflow composes those methods after Refl, with
+explicit checkpoint states before signing and sending. Tests reject omitted
+checkpoints/capabilities. The trace carrier exercises the same interpreted workflow
+but does not execute production IO; process contracts cover their stated fixture
+scope. All prior method bodies retain financial/exception ordering.
+
+Baseline `cd5b429`; four source files, no new files. Production 1,521 -> 1,513
+lines (-8); tests 438 -> 483 (+45). Source patch SHA256
+`b51d4307258a9c93da6a4dd14f481b0c721709d0cd660ef85bcc9b439a3a7052`.
+Receipt `/tmp/hot-wallet-methods-receipt.json` SHA256
+`7b68382f5d10b78676191812cf1f235372033c65f99bda126ba0c4fdfdc1ee59` binds
+source, design docs, test logs and observed exits. Separate
+`capability_split_review`: PASS for scoped publication after verifying all 48 bound
+artifacts and all 23 negative diagnostics. No independent test rerun or production
+certification is claimed. No live deployment, funds or production approval changed.
+The temporary PostgreSQL cluster is stopped.
+
 ## Scoped typed payout Flow (2026-10-13)
 
 Build, bridge suite (249 passing groups / 15,608 cases), pinned library properties

@@ -51,33 +51,38 @@ data OperatorRead a where
   ServiceState :: OperatorRead ServiceStatus
   TreasuryReceipts :: OperatorRead [(Text,Asset,Amount)]
 
+-- Methods construct composable syntax. Only the concrete critical module knows
+-- the production instruction constructors; tests can use a separate trace carrier.
+type family MethodStep value :: [Type] -> [Type] -> Type -> Type
+type Method value before after result = Flow (MethodStep value) before after result
+
 class OperatorService value where
-  pauseService :: value -> Text -> Program 'Operator 'Critical ()
-  resumeService :: value -> Program 'Operator 'Critical ()
+  pauseService :: value -> Text -> Method value '[] '[] ()
+  resumeService :: value -> Method value '[] '[] ()
 
 class OperatorRepair value where
-  repairCompletedOrder :: value -> Text -> Program 'Operator 'Critical ()
-  retrySolanaPayment :: value -> Text -> Text -> Program 'Operator 'Critical ()
-  cancelPreparation :: value -> Text -> Int -> Text -> Program 'Operator 'Critical ()
-  refundDeposit :: value -> Text -> Program 'Operator 'Critical RefundAuthorization
+  repairCompletedOrder :: value -> Text -> Method value '[] '[] ()
+  retrySolanaPayment :: value -> Text -> Text -> Method value '[] '[] ()
+  cancelPreparation :: value -> Text -> Int -> Text -> Method value '[] '[] ()
+  refundDeposit :: value -> Text -> Method value '[] '[] RefundAuthorization
 
 class OperatorNative value where
-  rebroadcastNative :: value -> Text -> Int64 -> Text -> Program 'Operator 'Critical Text
-  draftNativeReplacement :: value -> Text -> Amount -> Text -> Program 'Operator 'Critical Int64
-  signNativeReplacement :: value -> Int64 -> Program 'Operator 'Critical Text
-  cancelNativeReplacement :: value -> Int64 -> Text -> Program 'Operator 'Critical ()
+  rebroadcastNative :: value -> Text -> Int64 -> Text -> Method value '[] '[] Text
+  draftNativeReplacement :: value -> Text -> Amount -> Text -> Method value '[] '[] Int64
+  signNativeReplacement :: value -> Int64 -> Method value '[] '[] Text
+  cancelNativeReplacement :: value -> Int64 -> Text -> Method value '[] '[] ()
 
 class OperatorSource value where
-  coverLostSource :: value -> Text -> Int64 -> Amount -> Amount -> Text -> Program 'Operator 'Critical ()
-  approveCovered :: value -> Text -> Int64 -> Text -> Program 'Operator 'Critical ()
-  restoreSource :: value -> Text -> Int64 -> Text -> Program 'Operator 'Critical ()
+  coverLostSource :: value -> Text -> Int64 -> Amount -> Amount -> Text -> Method value '[] '[] ()
+  approveCovered :: value -> Text -> Int64 -> Text -> Method value '[] '[] ()
+  restoreSource :: value -> Text -> Int64 -> Text -> Method value '[] '[] ()
 
 class OperatorTreasury value where
-  classifySpend :: value -> Text -> Text -> Text -> Program 'Operator 'Critical Int64
-  initializeOperating :: value -> Text -> Text -> Text -> Program 'Operator 'Critical Int64
-  allocateReceipt :: value -> Text -> [(Text,Amount)] -> Text -> Program 'Operator 'Critical Int64
-  withdrawFees :: value -> Text -> Asset -> Amount -> Text -> Text -> Program 'Operator 'Critical Text
-  cancelFeeWithdrawal :: value -> Text -> Text -> Program 'Operator 'Critical Text
+  classifySpend :: value -> Text -> Text -> Text -> Method value '[] '[] Int64
+  initializeOperating :: value -> Text -> Text -> Text -> Method value '[] '[] Int64
+  allocateReceipt :: value -> Text -> [(Text,Amount)] -> Text -> Method value '[] '[] Int64
+  withdrawFees :: value -> Text -> Asset -> Amount -> Text -> Text -> Method value '[] '[] Text
+  cancelFeeWithdrawal :: value -> Text -> Text -> Method value '[] '[] Text
 
 -- Data families are generative and injective in BOTH indices. No type-family
 -- injectivity annotation is needed. Each instance has its own output constructor.
@@ -121,80 +126,72 @@ data SigningOperation a where
   CheckpointSigning :: CheckpointCustody a -> SigningOperation a
 
 class WorkerBackup value where
-  checkpointBackup :: value -> Int64 -> Program 'Worker 'Critical ()
-  checkpointForUpgrade :: value -> Program 'Worker 'Critical BackupReceipt
+  checkpointBackup :: value -> Int64 -> Method value '[] '[] ()
+  checkpointForUpgrade :: value -> Method value '[] '[] BackupReceipt
+  checkpointPending :: value -> Method value '[state] '[BackupCovered state] ()
 
 class WorkerObservation value where
-  observeChains :: value -> Program 'Worker 'Critical ()
-  reconcileCustody :: value -> Program 'Worker 'Critical ()
+  observeChains :: value -> Method value '[] '[] ()
+  reconcileCustody :: value -> Method value '[] '[] ()
+  inspectPayout :: value -> Text -> Method value '[] '[Text] [Text]
 
 class WorkerRecovery value where
-  recoverNativeSettlements :: value -> Program 'Worker 'Critical ()
-  recoverNativeSources :: value -> Program 'Worker 'Critical ()
-  recoverNativeLocks :: value -> Program 'Worker 'Critical ()
-  reconcilePayment :: value -> Text -> Program 'Worker 'Critical ()
+  recoverNativeSettlements :: value -> Method value '[] '[] ()
+  recoverNativeSources :: value -> Method value '[] '[] ()
+  recoverNativeLocks :: value -> Method value '[] '[] ()
+  reconcilePayment :: value -> Text -> Method value '[] '[] ()
+  reusePayout :: value -> [Text] -> Method value '[Text] '[SignedPayout] ()
 
 class WorkerPreparation value where
-  prepareOutgoing :: value -> Text -> Program 'Worker 'Critical ()
+  prepareOutgoing :: value -> Method value '[Text] '[PreparedPayout] ()
 
 class WorkerSigning value where
-  signPreparedPayment :: value -> Text -> Program 'Worker 'Critical Text
+  signPreparedPayment :: value -> Method value '[BackupCovered PreparedPayout] '[SignedPayout] Text
 
 class WorkerQueue value where
-  queuePayment :: value -> Text -> Program 'Worker 'Critical Int64
+  queuePayment :: value -> Method value '[SignedPayout] '[QueuedPayout] Int64
 
 class WorkerBroadcast value where
-  broadcastPayment :: value -> Text -> Program 'Worker 'Critical ()
+  broadcastPayment :: value -> Method value '[BackupCovered QueuedPayout] '[] ()
 
 class WorkerCycle value where
-  runWorkerCycle :: value -> Program 'Worker 'Critical ()
+  runWorkerCycle :: value -> Method value '[] '[] ()
 
--- Actual identifiers travel between completed stages. These are sequencing
--- markers, NOT financial authority: each existing operation rechecks the ledger.
+-- Sequencing markers, not financial authority: every primitive still rechecks
+-- the ledger. Signing and sending require the preceding backup step in the Flow.
 data PreparedPayout = PreparedPayout Text
 data SignedPayout = SignedPayout Text
 data QueuedPayout = QueuedPayout Text
+data BackupCovered state = BackupCovered state
 
--- Closed, bounded payout grammar; no arbitrary IO or retry instruction.
--- The constructor supplies the worker capability after the payload's Refl.
-data PayoutStep value before after result where
-  PayoutStep :: (Typeable value, Typeable before, Typeable after, Typeable result)
-             => PayoutInstruction value before after result -> PayoutStep value before after result
-
-data PayoutInstruction value before after result where
-  InspectPayout :: WorkerObservation value => PayoutInstruction value '[Text] '[Text] [Text]
-  PreparePayout :: (WorkerPreparation value, WorkerBackup value) => PayoutInstruction value '[Text] '[PreparedPayout] ()
-  SignPayout :: WorkerSigning value => PayoutInstruction value '[PreparedPayout] '[SignedPayout] ()
-  ReusePayout :: WorkerRecovery value => [Text] -> PayoutInstruction value '[Text] '[SignedPayout] ()
-  QueuePayout :: (WorkerQueue value, WorkerBackup value) => PayoutInstruction value '[SignedPayout] '[QueuedPayout] ()
-  SendPayout :: WorkerBroadcast value => PayoutInstruction value '[QueuedPayout] '[] ()
-
--- Interpretation constructs the whole workflow; it never evaluates a step.
--- Each step carries its own capability; composition requires their union.
 type PayoutCapabilities value = (WorkerObservation value, WorkerPreparation value, WorkerSigning value, WorkerRecovery value, WorkerBackup value, WorkerQueue value, WorkerBroadcast value)
-
-data PayoutWorkflow value = PayoutWorkflow value
+data PayoutWorkflow value = PayoutWorkflow value Text
 
 instance (Typeable value, caps ~ '[]) => Operation (PayoutWorkflow value) caps where
   type Context (PayoutWorkflow value) = PayoutCapabilities value
-  type Outcome (PayoutWorkflow value) = Flow (PayoutStep value) '[Text] '[] ()
+  type Outcome (PayoutWorkflow value) = Method value '[] '[] ()
   data DSL (PayoutWorkflow value) where
     CompilePayoutWorkflow :: Context (PayoutWorkflow value) => DSL (PayoutWorkflow value)
-  interpret (SomeOperation (_ :: actual)) CompilePayoutWorkflow =
+  interpret (SomeOperation (payload :: actual)) CompilePayoutWorkflow =
     case eqT @actual @(PayoutWorkflow value) of
       Nothing -> Nothing
-      Just Refl -> Just $ F.do
-        attempts <- F.step (PayoutStep InspectPayout)
-        case attempts of
-          [] -> F.do
-            F.step (PayoutStep PreparePayout)
-            F.step (PayoutStep SignPayout)
-          _ -> F.step (PayoutStep $ ReusePayout attempts)
-        F.step (PayoutStep QueuePayout)
-        F.step (PayoutStep SendPayout)
+      Just Refl -> case payload of
+        PayoutWorkflow value identifier -> Just $ F.do
+          attempts <- inspectPayout value identifier
+          case attempts of
+            [] -> F.do
+              prepareOutgoing value
+              checkpointPending value
+              signPreparedPayment value
+              F.pure ()
+            _ -> reusePayout value attempts
+          queuePayment value
+          checkpointPending value
+          broadcastPayment value
 
-payoutFlow :: (Typeable value, PayoutCapabilities value) => value -> Maybe (Flow (PayoutStep value) '[Text] '[] ())
-payoutFlow value = interpret (SomeOperation $ PayoutWorkflow value) CompilePayoutWorkflow
+payoutFlow :: forall value. (Typeable value, PayoutCapabilities value) => value -> Text -> Maybe (Method value '[] '[] ())
+payoutFlow value identifier = interpret (SomeOperation $ PayoutWorkflow value identifier)
+  (CompilePayoutWorkflow :: DSL (PayoutWorkflow value))
 
 -- One closed payload GADT carries caller, severity and the exact result type.
 -- Family aliases retain the evaluator's caller -> family functional dependency.
@@ -205,12 +202,12 @@ data Command (caller :: Caller) (severity :: Severity) a where
   OperatorChange :: (Capabilities (DomainCaps 'Operator 'Critical) (OperatorCommand 'Critical a),
                      UniqueCapabilities selected, Subset selected (DomainCaps 'Operator 'Critical),
                      Subset selected (PreparationCaps 'Operator 'Critical a))
-                 => Proxy selected -> (forall value. Capabilities selected value => value -> Program 'Operator 'Critical a)
+                 => Proxy selected -> (forall value. Capabilities selected value => value -> Method value '[] '[] a)
                  -> Command 'Operator 'Critical a
   WorkerAction :: (Capabilities (DomainCaps 'Worker 'Critical) (WorkerCommand 'Critical a),
                      UniqueCapabilities selected, Subset selected (DomainCaps 'Worker 'Critical),
                      Subset selected (PreparationCaps 'Worker 'Critical a))
-                 => Proxy selected -> (forall value. Capabilities selected value => value -> Program 'Worker 'Critical a)
+                 => Proxy selected -> (forall value. Capabilities selected value => value -> Method value '[] '[] a)
                  -> Command 'Worker 'Critical a
   SignerAction :: SigningOperation a -> Command 'Signer 'Critical a
 
@@ -220,14 +217,15 @@ type WorkerCommand = Command 'Worker
 type SignerCommand = Command 'Signer
 
 -- Concrete action constructors exist only in the evaluator module.
-data family Action (caller :: Caller) a
+data family Action (caller :: Caller) (before :: [Type]) (after :: [Type]) a
+type instance MethodStep (Command caller severity result) = Action caller
 
 -- Each constructor stores the same closed execution capability as its operation.
 -- Caller/severity cannot be weakened when the interpreter constructs the DSL.
 data Program (caller :: Caller) (severity :: Severity) a where
   ReadOperator :: ExecutionContext 'Operator 'Safe a => OperatorRead a -> Program 'Operator 'Safe a
-  OperatorDSL :: ExecutionContext 'Operator 'Critical a => Action 'Operator a -> Program 'Operator 'Critical a
-  WorkerDSL :: ExecutionContext 'Worker 'Critical a => Action 'Worker a -> Program 'Worker 'Critical a
+  OperatorDSL :: ExecutionContext 'Operator 'Critical a => Flow (Action 'Operator) '[] '[] a -> Program 'Operator 'Critical a
+  WorkerDSL :: ExecutionContext 'Worker 'Critical a => Flow (Action 'Worker) '[] '[] a -> Program 'Worker 'Critical a
   SigningDSL :: ExecutionContext 'Signer 'Critical a => SigningOperation a -> Program 'Signer 'Critical a
   ReadCustomer :: ExecutionContext 'Customer 'Safe a => CustomerRead a -> Program 'Customer 'Safe a
   WriteCustomer :: ExecutionContext 'Customer 'Critical a => CustomerWrite a -> Program 'Customer 'Critical a
@@ -275,9 +273,17 @@ instance (ExecutionContext caller severity a,
         CustomerQuery op -> Just (ReadCustomer op)
         CustomerChange op -> Just (WriteCustomer op)
         OperatorQuery op -> Just (ReadOperator op)
-        OperatorChange scope select -> either (const Nothing) (Just . withCapabilities select)
+        -- Restrict re-hides the carrier; recover its exact type before returning
+        -- its associated method Flow. Both proofs stay inside interpretation.
+        OperatorChange scope select -> either (const Nothing)
+          (withCapabilities $ \(scoped :: hidden) -> case eqT @hidden @(Command caller severity a) of
+            Just Refl -> Just (OperatorDSL $ select scoped)
+            Nothing -> Nothing)
           (pipeline (Restrict scope) (prepare @(Command caller severity a) @(PreparationCaps caller severity a) value))
-        WorkerAction scope select -> either (const Nothing) (Just . withCapabilities select)
+        WorkerAction scope select -> either (const Nothing)
+          (withCapabilities $ \(scoped :: hidden) -> case eqT @hidden @(Command caller severity a) of
+            Just Refl -> Just (WorkerDSL $ select scoped)
+            Nothing -> Nothing)
           (pipeline (Restrict scope) (prepare @(Command caller severity a) @(PreparationCaps caller severity a) value))
         SignerAction op -> Just (SigningDSL op)
       Nothing -> Nothing
@@ -299,7 +305,7 @@ operator :: forall selected a.
              Capabilities (DomainCaps 'Operator 'Critical) (OperatorCommand 'Critical a),
              UniqueCapabilities selected, Subset selected (DomainCaps 'Operator 'Critical),
              Subset selected (PreparationCaps 'Operator 'Critical a))
-         => (forall value. Capabilities selected value => value -> Program 'Operator 'Critical a) -> Plan 'Operator a
+         => (forall value. Capabilities selected value => value -> Method value '[] '[] a) -> Plan 'Operator a
 operator select=CriticalPlan (pending $ OperatorChange (Proxy @selected) select)
 operatorRead :: (Typeable a, Execution 'Operator 'Safe OperatorCommand) => OperatorRead a -> Plan 'Operator a
 operatorRead=SafePlan . pending . OperatorQuery
@@ -309,7 +315,7 @@ workerRequest :: forall selected a.
                   Capabilities (DomainCaps 'Worker 'Critical) (WorkerCommand 'Critical a),
                   UniqueCapabilities selected, Subset selected (DomainCaps 'Worker 'Critical),
                   Subset selected (PreparationCaps 'Worker 'Critical a))
-              => (forall value. Capabilities selected value => value -> Program 'Worker 'Critical a) -> SomeOperationAt Program 'Worker 'Critical a
+              => (forall value. Capabilities selected value => value -> Method value '[] '[] a) -> SomeOperationAt Program 'Worker 'Critical a
 workerRequest select = pending (WorkerAction (Proxy @selected) select)
 
 -- Pure HTTP/control assembly carries these closed instance requirements.

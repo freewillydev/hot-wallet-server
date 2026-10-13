@@ -1,4 +1,5 @@
-{-# LANGUAGE DataKinds, GADTs, TypeOperators, TypeFamilies, TypeApplications #-}
+{-# LANGUAGE TypeFamilies, FlexibleInstances, QualifiedDo #-}
+{-# LANGUAGE DataKinds, GADTs, TypeOperators, TypeApplications #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 module Main (main) where
 
@@ -12,7 +13,7 @@ import Bridge.Identity (bearerHash,capabilityHash,payInstruction,payURIFor)
 import Bridge.API (customerServer)
 import Bridge.Signer (signingServer)
 import Bridge.Operation.Internal
-import Bridge.Critical (operationPath,payoutOperation)
+import Bridge.Critical (operationPath)
 import qualified Bridge.Wire as W
 import Servant.API ((:<|>)(..))
 import Bridge.Domain
@@ -22,6 +23,7 @@ import qualified Data.ByteString.Lazy.Char8 as BL
 import Data.List (nub)
 import Data.Typeable (typeRep,eqT)
 import Control.Operation
+import qualified Control.Operation.Flow as F
 import Control.Operation.Flow (Values(..),runFlow)
 import Control.Exception (SomeException,AsyncException(ThreadKilled),try,throwIO,fromException)
 import Control.Monad (forM,when,unless)
@@ -30,6 +32,7 @@ import Data.Proxy (Proxy(..))
 import Data.Type.Equality ((:~:)(Refl))
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
+import Data.Text (Text)
 import System.Exit (exitFailure)
 import System.Environment (getArgs)
 import Test.QuickCheck hiding (total,Result)
@@ -104,9 +107,11 @@ fullSuite = do
           ,select(pending $ CustomerChange $ CreateOrder "auth" $ W.OrderRequest NativeToWrapped (good $ amount 100) "dest" "refund" Nothing "key")=="customer-write"
           ,select(pending $ OperatorChange (Proxy @'[OperatorService]) $ \cap -> pauseService cap "reason")=="operator-write"
           ,select(workerRequest @'[WorkerCycle] runWorkerCycle)=="worker"
-          ,select(workerRequest @'[WorkerSigning] (\cap -> signPreparedPayment cap "payment"))=="worker"
-          ,select(workerRequest @'[WorkerQueue] (\cap -> queuePayment cap "transaction"))=="worker"
-          ,select(workerRequest @'[WorkerBroadcast] (\cap -> broadcastPayment cap "transaction"))=="worker"
+          ,select(workerRequest @'[WorkerObservation] observeChains)=="worker"
+          ,select(workerRequest @'[WorkerRecovery] recoverNativeLocks)=="worker"
+          ,select(workerRequest @'[WorkerObservation, WorkerRecovery] (\cap -> F.do
+              observeChains cap
+              recoverNativeLocks cap))=="worker"
           ,select(pending $ SignerAction $ PreparedSigning $ SignPrepared "deployment" "payment" 3)=="signer"]
     , check "distinct dictionary constraints and signer outputs have no equality witness" $ once $ property $
         absent(eqT @(Context (CustomerCommand 'Safe ())) @(Context (CustomerCommand 'Critical ())))
@@ -252,55 +257,82 @@ absent :: Maybe a -> Bool
 absent Nothing=True
 absent Just{}=False
 
--- Trace the actual closed Flow grammar, including actual identifier threading.
--- This is an unfunded control-flow oracle; PostgreSQL/HTTPS contracts separately
--- exercise existing durable operation and service boundaries.
+-- The same interpreted workflow uses a separate instruction carrier here.
+-- Trace instances supply syntax, never production IO; PG/HTTPS tests cover effects.
+data TraceWorker = TraceWorker
+type instance MethodStep TraceWorker = TraceStep
+data TraceStep before after result where
+  TraceInspect :: Text -> TraceStep '[] '[Text] [Text]
+  TracePrepare :: TraceStep '[Text] '[PreparedPayout] ()
+  TraceBackup :: TraceStep '[state] '[BackupCovered state] ()
+  TraceSign :: TraceStep '[BackupCovered PreparedPayout] '[SignedPayout] Text
+  TraceReuse :: [Text] -> TraceStep '[Text] '[SignedPayout] ()
+  TraceQueue :: TraceStep '[SignedPayout] '[QueuedPayout] Int64
+  TraceSend :: TraceStep '[BackupCovered QueuedPayout] '[] ()
+instance WorkerObservation TraceWorker where
+  inspectPayout _ = F.step . TraceInspect
+  observeChains _ = error "unexpected observation in payout workflow"
+  reconcileCustody _ = error "unexpected custody scan in payout workflow"
+instance WorkerPreparation TraceWorker where
+  prepareOutgoing _ = F.step TracePrepare
+instance WorkerBackup TraceWorker where
+  checkpointPending _ = F.step TraceBackup
+  checkpointBackup _ _ = error "unexpected explicit checkpoint in payout workflow"
+  checkpointForUpgrade _ = error "unexpected upgrade in payout workflow"
+instance WorkerSigning TraceWorker where
+  signPreparedPayment _ = F.step TraceSign
+instance WorkerRecovery TraceWorker where
+  reusePayout _ = F.step . TraceReuse
+  recoverNativeSettlements _ = error "unexpected settlement sweep in payout workflow"
+  recoverNativeSources _ = error "unexpected source sweep in payout workflow"
+  recoverNativeLocks _ = error "unexpected lock recovery in payout workflow"
+  reconcilePayment _ _ = error "unexpected reconciliation in payout workflow"
+instance WorkerQueue TraceWorker where
+  queuePayment _ = F.step TraceQueue
+instance WorkerBroadcast TraceWorker where
+  broadcastPayment _ = F.step TraceSend
+
 payoutFlowContract :: IO Bool
 payoutFlowContract = do
   let request = WorkerAction (Proxy @'[WorkerCycle]) runWorkerCycle :: WorkerCommand 'Critical ()
   unless (case interpret (SomeOperation request) (CompilePayoutWorkflow :: DSL (PayoutWorkflow (WorkerCommand 'Critical ()))) of
     Nothing -> True; Just _ -> False) $ fail "payout workflow accepted a different payload"
-  workflow <- maybe (fail "payout workflow did not compile") pure (payoutFlow request)
+  unless (case payoutFlow request "payment" of
+    Just _ -> True; Nothing -> False) $ fail "production payout workflow did not compile"
+  workflow <- maybe (fail "trace payout workflow did not compile") pure (payoutFlow TraceWorker "payment")
   and <$> forM [[],["saved"],["parent","replacement"]] (\attempts -> do
     let txid = case attempts of [] -> "new"; [saved] -> saved; _ -> "family-tip"
         prefix = ["inspect:payment"] <> case attempts of
-          [] -> ["prepare:payment","backup:preparation","sign:payment"]
+          [] -> ["prepare:payment","backup","sign:payment"]
           [_] -> ["reuse:"<>txid]
           _ -> ["family:payment"]
-        expected = prefix <> ["queue:"<>txid,"backup:intent","send:"<>txid]
+        expected = prefix <> ["queue:"<>txid,"backup","send:"<>txid]
     and <$> forM [(fault,asynchronous) | fault<-[0..length expected], asynchronous<-[False,True]] (\(fault,asynchronous) -> do
       trace <- newIORef []
       let record event = do
             modifyIORef' trace (<>[event])
             count <- length <$> readIORef trace
             when (fault==count) $ if asynchronous then throwIO ThreadKilled else throwIO (userError "outcome unknown")
-          traceStep :: PayoutStep (WorkerCommand 'Critical ()) before after a -> Values before -> IO (a,Values after)
-          traceStep wrapped@(PayoutStep step) values = do
-            case checkedOperation (payoutOperation wrapped values) of
-              Right WorkerDSL{} -> pure ()
-              _ -> fail "payout did not compile to a deferred worker action"
-            traceInstruction step values
-          traceInstruction :: PayoutInstruction (WorkerCommand 'Critical ()) before after a -> Values before -> IO (a,Values after)
-          traceInstruction step values = case (step,values) of
-            (InspectPayout,identifier :& VNil) -> record ("inspect:"<>identifier) >> pure (attempts,values)
-            (PreparePayout,identifier :& VNil) -> do
+          traceStep :: TraceStep before after a -> Values before -> IO (a,Values after)
+          traceStep step values = case (step,values) of
+            (TraceInspect identifier,VNil) -> record ("inspect:"<>identifier) >> pure (attempts,identifier :& VNil)
+            (TracePrepare,identifier :& VNil) -> do
               record ("prepare:"<>identifier)
-              record "backup:preparation"
               pure ((),PreparedPayout identifier :& VNil)
-            (SignPayout,PreparedPayout identifier :& VNil) -> do
+            (TraceBackup,value :& VNil) -> record "backup" >> pure ((),BackupCovered value :& VNil)
+            (TraceSign,BackupCovered (PreparedPayout identifier) :& VNil) -> do
               record ("sign:"<>identifier)
-              pure ((),SignedPayout "new" :& VNil)
-            (ReusePayout saved,identifier :& VNil) -> do
+              pure ("new",SignedPayout "new" :& VNil)
+            (TraceReuse saved,identifier :& VNil) -> do
               actual <- case saved of
                 [one] -> record ("reuse:"<>one) >> pure one
                 _ -> record ("family:"<>identifier) >> pure "family-tip"
               pure ((),SignedPayout actual :& VNil)
-            (QueuePayout,SignedPayout signed :& VNil) -> do
+            (TraceQueue,SignedPayout signed :& VNil) -> do
               record ("queue:"<>signed)
-              record "backup:intent"
-              pure ((),QueuedPayout signed :& VNil)
-            (SendPayout,QueuedPayout queued :& VNil) -> record ("send:"<>queued) >> pure ((),VNil)
-      result <- try (runFlow traceStep workflow ("payment" :& VNil))
+              pure (1,QueuedPayout signed :& VNil)
+            (TraceSend,BackupCovered (QueuedPayout queued) :& VNil) -> record ("send:"<>queued) >> pure ((),VNil)
+      result <- try (runFlow traceStep workflow VNil)
         :: IO (Either SomeException ((),Values '[]))
       actual <- readIORef trace
       pure $ actual==take (if fault==0 then length expected else fault) expected && case result of
