@@ -14,15 +14,15 @@ validPayout = payoutFlow
 
 #ifdef BAD_FLOW_ORDER
 signWithoutPreparation :: WorkerOperations value => Flow (PayoutStep value) '[Text] '[SignedPayout] ()
-signWithoutPreparation = F.step SignPayout
+signWithoutPreparation = F.step (PayoutStep SignPayout)
 #endif
 #ifdef BAD_FLOW_BRANCH
 unbackedBranch :: WorkerOperations value => Bool -> Flow (PayoutStep value) '[SignedPayout] '[QueuedPayout] ()
-unbackedBranch queued = if queued then F.step QueuePayout else F.pure ()
+unbackedBranch queued = if queued then F.step (PayoutStep QueuePayout) else F.pure ()
 #endif
 #ifdef BAD_FLOW_SEND
 sendWithoutIntent :: WorkerOperations value => Flow (PayoutStep value) '[SignedPayout] '[] ()
-sendWithoutIntent = F.step SendPayout
+sendWithoutIntent = F.step (PayoutStep SendPayout)
 #endif
 #ifdef BAD_FLOW_CAPABILITY
 hiddenPayout :: Stage '[CompileOperation 'Worker 'Critical ()]

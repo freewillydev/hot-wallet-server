@@ -134,23 +134,27 @@ data QueuedPayout = QueuedPayout Text
 -- Closed, bounded payout grammar; no arbitrary IO or retry instruction.
 -- The constructor supplies the worker capability after the payload's Refl.
 data PayoutStep value before after result where
-  InspectPayout :: WorkerOperations value => PayoutStep value '[Text] '[Text] [Text]
-  PreparePayout :: WorkerOperations value => PayoutStep value '[Text] '[PreparedPayout] ()
-  SignPayout :: WorkerOperations value => PayoutStep value '[PreparedPayout] '[SignedPayout] ()
-  ReusePayout :: WorkerOperations value => [Text] -> PayoutStep value '[Text] '[SignedPayout] ()
-  QueuePayout :: WorkerOperations value => PayoutStep value '[SignedPayout] '[QueuedPayout] ()
-  SendPayout :: WorkerOperations value => PayoutStep value '[QueuedPayout] '[] ()
+  PayoutStep :: (WorkerOperations value, Typeable before, Typeable after, Typeable result)
+             => PayoutInstruction before after result -> PayoutStep value before after result
+
+data PayoutInstruction before after result where
+  InspectPayout :: PayoutInstruction '[Text] '[Text] [Text]
+  PreparePayout :: PayoutInstruction '[Text] '[PreparedPayout] ()
+  SignPayout :: PayoutInstruction '[PreparedPayout] '[SignedPayout] ()
+  ReusePayout :: [Text] -> PayoutInstruction '[Text] '[SignedPayout] ()
+  QueuePayout :: PayoutInstruction '[SignedPayout] '[QueuedPayout] ()
+  SendPayout :: PayoutInstruction '[QueuedPayout] '[] ()
 
 payoutFlow :: WorkerOperations value => value -> Flow (PayoutStep value) '[Text] '[] ()
 payoutFlow _ = F.do
-  attempts <- F.step InspectPayout
+  attempts <- F.step (PayoutStep InspectPayout)
   case attempts of
     [] -> F.do
-      F.step PreparePayout
-      F.step SignPayout
-    _ -> F.step (ReusePayout attempts)
-  F.step QueuePayout
-  F.step SendPayout
+      F.step (PayoutStep PreparePayout)
+      F.step (PayoutStep SignPayout)
+    _ -> F.step (PayoutStep $ ReusePayout attempts)
+  F.step (PayoutStep QueuePayout)
+  F.step (PayoutStep SendPayout)
 
 -- One closed payload GADT carries caller, severity and the exact result type.
 -- Family aliases retain the evaluator's caller -> family functional dependency.

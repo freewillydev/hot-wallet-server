@@ -31,6 +31,12 @@ net line count including tests. These checks do not deploy or re-certify product
 Only extend Flow or IndexedRequest where it removes duplicated decisions or enforces
 a useful boundary; leave the already-small order, signer and recovery paths intact.
 
+Payout interpreter follow-up: remove `runPayoutStep`; use a private payout-specific
+Operation payload and compile each typed stage after its own `eqT`/`Refl` proof.
+Keep every concrete action deferred under the existing critical gate. Test actual
+existential resolution plus the independent ordering oracle, and rerun affected
+PostgreSQL worker contracts. Do not treat the oracle as concrete-effect coverage.
+
 Status: **117/120 steps verified (A–I, J105–111, J113–117, J120)**. Implementation and
 available acceptance are complete; external gates J112, J118 and J119 remain open.
 The source-size reduction target was not met; see the measured J117 results. This replaces the

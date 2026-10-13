@@ -12,7 +12,7 @@ import Bridge.Identity (bearerHash,capabilityHash,payInstruction,payURIFor)
 import Bridge.API (customerServer)
 import Bridge.Signer (signingServer)
 import Bridge.Operation.Internal
-import Bridge.Critical (operationPath)
+import Bridge.Critical (operationPath,payoutOperation)
 import qualified Bridge.Wire as W
 import Servant.API ((:<|>)(..))
 import Bridge.Domain
@@ -267,7 +267,13 @@ payoutFlowContract = and <$> forM [[],["saved"],["parent","replacement"]] (\atte
           count <- length <$> readIORef trace
           when (fault==count) $ if asynchronous then throwIO ThreadKilled else throwIO (userError "outcome unknown")
         traceStep :: PayoutStep (WorkerCommand 'Critical ()) before after a -> Values before -> IO (a,Values after)
-        traceStep step values = case (step,values) of
+        traceStep wrapped@(PayoutStep step) values = do
+          case checkedOperation (payoutOperation wrapped values) of
+            Right WorkerDSL{} -> pure ()
+            _ -> fail "payout did not compile to a deferred worker action"
+          traceInstruction step values
+        traceInstruction :: PayoutInstruction before after a -> Values before -> IO (a,Values after)
+        traceInstruction step values = case (step,values) of
           (InspectPayout,identifier :& VNil) -> record ("inspect:"<>identifier) >> pure (attempts,values)
           (PreparePayout,identifier :& VNil) -> do
             record ("prepare:"<>identifier)

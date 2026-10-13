@@ -54,3 +54,12 @@ flow_review	PENDING	Separate final source/evidence verification requested; no pu
 flow_production	FAIL	No live deployment or funds changed. Existing production acceptance gates remain open; local tests do not re-certify production.
 flow_final_receipt	PASS	/tmp/hot-wallet-flow-receipt-final.json sha256=641b33805a4bcf9f4ea56f192d9691bf4cfa818b9155c57d2e5d8cccefe87bbd; only two comment lines clarified after tests; executable source unchanged
 flow_final_review	PASS	/root/flow_refactor_review verified final ten-file diff sha256=468222b65315b363e2239494d86d5db508ffafe186bfccb9275a55828d1a3de6 and final receipt source/log hashes; scoped source-publication PASS, no production/funded certification; only verdict metadata follows
+payout_interpret_hot-wallet-interpret-build	PASS	/tmp/hot-wallet-interpret-build.log sha256=a8fd532fa3d9f0740d859a37f929a59e8c80b698c5592ac03755a3237449ded0
+payout_interpret_hot-wallet-interpret-tests	PASS	/tmp/hot-wallet-interpret-tests.log sha256=e511adf3a4d9ab164038d381ed1c6e2ac4e18c6f72dcd41eaa3e5f38d6f1625f
+payout_interpret_hot-wallet-interpret-types	PASS	/tmp/hot-wallet-interpret-types.log sha256=d4b332c109ca053d0d645b91d66074e9345f793b610aed4a905cfc2667e0d5f8
+payout_interpret_hot-wallet-interpret-pg	PASS	/tmp/hot-wallet-interpret-pg.log sha256=32c405577941eac82b9cf2aca9260b98d28a2789575ac0fbd48448a6f06f585f
+payout_interpret_interpret_tls	PASS	/tmp/hot-wallet-flow-pg.Skx94g9k/interpret_tls.log sha256=b78e636c56f5d06a7845bd622529cb8632fd8edbab9b0cbd2a6cd52779207254
+payout_interpret_interpret_canonical	PASS	/tmp/hot-wallet-flow-pg.Skx94g9k/interpret_canonical.log sha256=e28ea9cc86bfe3becdd35feacfc6cfc3274b0e4c2bbbb86ce0e7a92d0b9b4a0f
+payout_interpret_interpret_active_native	PASS	/tmp/hot-wallet-flow-pg.Skx94g9k/interpret_active_native.log sha256=4542355a88a2f151c7a9f37ac376ce1fad4d9bf045bd0059eec896f4bd73fa62
+payout_interpret_receipt	PASS	/tmp/hot-wallet-interpret-receipt.json sha256=91ba4766de9f5c65b98feb126aaf1574453b28ef60c21c73cc0b14c41227d316; fixture scope only; no live deployment
+payout_interpret_review	PASS	Separate payout_interpret_verifier PASS for scoped source publication; reviewed diff SHA256 52c96ebcec3d324c60d0099f17bf0e44c9159d76cfc5b8ee2d419f948f246f0f and receipt SHA256 91ba4766de9f5c65b98feb126aaf1574453b28ef60c21c73cc0b14c41227d316. No production certification.

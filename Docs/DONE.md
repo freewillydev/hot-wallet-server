@@ -746,3 +746,17 @@ Current change review: Codex Security diff scan
 impact remains deferred (partial coverage). Original Native-history finding and
 production security gate remain OPEN/FAIL. This is not fresh-install, live-network
 or whole-application certification. Details and next proof gap are in RESUME.md.
+
+## Payout interpretation follow-up (2026-10-13)
+
+- 2026-10-13: payout dispatch moved from runPayoutStep into the private
+  PayoutCommand Operation.interpret after eqT/Refl. Pure resolution creates
+  deferred WorkerEffect actions; the existing critical gate executes them.
+  Build, 249 QuickCheck groups/15,608 cases, positive and 15 negative type checks,
+  and three disposable PostgreSQL/HTTPS modes PASS (Devnet, canonical, active
+  Native). The trace oracle checks sequencing and actual pure compilation;
+  concrete effects remain covered only to the stated integration fixture scope.
+  Net +29 production/+6 test lines, no new files. No live deployment or funds
+  changed; task PostgreSQL stopped. Receipt: /tmp/hot-wallet-interpret-receipt.json.
+
+Separate payout_interpret_verifier PASS for scoped source publication; reviewed diff SHA256 52c96ebcec3d324c60d0099f17bf0e44c9159d76cfc5b8ee2d419f948f246f0f and receipt SHA256 91ba4766de9f5c65b98feb126aaf1574453b28ef60c21c73cc0b14c41227d316. No production certification.

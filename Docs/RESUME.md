@@ -8,6 +8,16 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Implemented and checked
 
+- 2026-10-13: payout dispatch moved from runPayoutStep into the private
+  PayoutCommand Operation.interpret after eqT/Refl. Pure resolution creates
+  deferred WorkerEffect actions; the existing critical gate executes them.
+  Build, 249 QuickCheck groups/15,608 cases, positive and 15 negative type checks,
+  and three disposable PostgreSQL/HTTPS modes PASS (Devnet, canonical, active
+  Native). The trace oracle checks sequencing and actual pure compilation;
+  concrete effects remain covered only to the stated integration fixture scope.
+  Net +29 production/+6 test lines, no new files. No live deployment or funds
+  changed; task PostgreSQL stopped. Receipt: /tmp/hot-wallet-interpret-receipt.json.
+
 - 2026-10-13: operation-capabilities handoff applied to the bounded worker payout
   flow, pinned 0.1.3.0/86c5b86. Existing existential/Refl and critical dispatch
   retained; typed identifiers sequence inspect, prepare/backup, sign or reuse,

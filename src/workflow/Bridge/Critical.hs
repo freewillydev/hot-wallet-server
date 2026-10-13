@@ -1,9 +1,12 @@
-{-# LANGUAGE DataKinds, GADTs, RankNTypes, ScopedTypeVariables, TypeFamilies, TypeApplications, ConstraintKinds, PatternSynonyms, ViewPatterns, FlexibleInstances, QuantifiedConstraints #-}
+{-# LANGUAGE DataKinds, GADTs, RankNTypes, ScopedTypeVariables, TypeFamilies, TypeApplications, ConstraintKinds, PatternSynonyms, ViewPatterns, FlexibleInstances, QuantifiedConstraints, FlexibleContexts, UndecidableInstances, MultiParamTypeClasses #-}
 {-# OPTIONS_GHC -Werror=incomplete-patterns -Werror=missing-methods #-}
 -- The signer ClientM is constructed only inside this critical evaluator.
-module Bridge.Critical (operationPath,Process(..),WorkerLifetime(..),runProcess,CustomerSettings(..),SignerSettings(..),runWorkerLoop) where
+module Bridge.Critical (payoutOperation,operationPath,Process(..),WorkerLifetime(..),runProcess,CustomerSettings(..),SignerSettings(..),runWorkerLoop) where
 import Bridge.Operation.Internal hiding (customer)
 import qualified Bridge.Operation.Internal as Operation
+import Control.Operation (Operation(..),SomeOperation(..),prepare)
+import Control.Operation.Severity (prepareOperation,OperationDSL(..))
+import Data.Type.Equality ((:~:)(Refl))
 import Control.Operation.Flow (Values(..),runFlow)
 import Bridge.Domain (Asset(..),gross,paymentAsset,paymentId,units)
 import Bridge.Identity (payURIFor,digest)
@@ -39,7 +42,7 @@ import qualified Bridge.AdminStatus as Admin
 import Data.Aeson (Value,eitherDecodeStrict',FromJSON,toJSON,object,(.=),parseJSON,encode)
 import qualified Data.Text.Encoding as TE
 import qualified Data.ByteString.Lazy as BL
-import Data.Typeable (Typeable)
+import Data.Typeable (Typeable,eqT)
 import Bridge.Signer (signingAPI,SigningEndpoint(..),signerCredentials,signerCertificate,verifySigningKey,signingApplication,runSigningServer)
 import Bridge.Store
 import qualified Bridge.Native as N
@@ -393,8 +396,11 @@ customer (CriticalEnvironment _ _ _ configured _ _ _)=maybe (reject "customer_co
 -- They pass through the checked grammar without reacquiring that gate.
 evalWorker :: Typeable a => CriticalEnvironment
            -> (forall value. WorkerOperations value => value -> Program 'Worker 'Critical a) -> IO a
-evalWorker environment operation=do
-  program<-either reject pure (checkedOperation $ workerRequest operation)
+evalWorker environment operation=evalWorkerRequest environment (workerRequest operation)
+
+evalWorkerRequest :: CriticalEnvironment -> SomeOperationAt Program 'Worker 'Critical a -> IO a
+evalWorkerRequest environment request=do
+  program<-either reject pure (checkedOperation request)
   case program of Executable->evaluateOperation (WorkerEvaluation environment) program
 
 evaluateSigning :: Typeable a => CriticalEnvironment -> SigningOperation a -> IO a
@@ -890,7 +896,8 @@ instance WorkerOperations (WorkerCommand 'Critical result) where
           evalWrite writer (AdmitPayoutRounds now)
           candidates<-evalRead reader PaymentCandidates
           forM_ candidates $ \identifier->
-            runFlow (runPayoutStep environment) (payoutFlow value) (identifier :& VNil)
+            runFlow (\step values -> evalWorkerRequest environment $ payoutOperation step values)
+              (payoutFlow value) (identifier :& VNil)
           -- Existing payments get first use of capacity, but one active chain
           -- must not prevent optional work on the other.
           _<-scheduleOwnerFees environment
@@ -899,37 +906,55 @@ instance WorkerOperations (WorkerCommand 'Critical result) where
   -- Shared workflows take only the private resource context.
   -- Refresh stale evidence after slow checkpoints; never extend quote/backup terms.
 
--- Called only inside the worker's already-authorized critical action. Exceptions
--- stop Flow immediately; uncertain signing/sending never retries the whole flow.
--- Backup belongs to the stage that produced the durable work, before advancing.
-runPayoutStep :: CriticalEnvironment -> PayoutStep (WorkerCommand 'Critical result) before after a
-             -> Values before -> IO (a,Values after)
-runPayoutStep environment@(CriticalEnvironment _ _ _ _ _ reader _) step values = case (step,values) of
-  (InspectPayout,identifier :& VNil) -> do
-    freshIntake environment
-    (_,_,attempts) <- evalRead reader (ReadPaymentWork identifier)
-    pure (attempts,values)
-  (PreparePayout,identifier :& VNil) -> do
-    evalWorker environment (\cap -> prepareOutgoing cap identifier)
-    backupDecisions environment
-    pure ((),PreparedPayout identifier :& VNil)
-  (SignPayout,PreparedPayout identifier :& VNil) -> do
-    txid <- evalWorker environment (\cap -> signPreparedPayment cap identifier)
-    pure ((),SignedPayout txid :& VNil)
-  (ReusePayout attempts,identifier :& VNil) -> do
-    txid <- case attempts of
-      [saved] -> pure saved
-      _ -> do
-        family <- evalRead reader (ReadNativeFamily identifier)
-        pure (signedId $ recordedSigned $ fst $ last family)
-    pure ((),SignedPayout txid :& VNil)
-  (QueuePayout,SignedPayout txid :& VNil) -> do
-    _ <- evalWorker environment (\cap -> queuePayment cap txid)
-    backupDecisions environment
-    pure ((),QueuedPayout txid :& VNil)
-  (SendPayout,QueuedPayout txid :& VNil) -> do
-    evalWorker environment (\cap -> broadcastPayment cap txid)
-    pure ((),VNil)
+-- The library existential carries this closed payload. Interpretation is pure:
+-- it proves the payload type before building an action for the critical evaluator.
+data PayoutCommand before after a = PayoutCommand (PayoutInstruction before after a) (Values before)
+
+payoutOperation :: PayoutStep value before after a -> Values before
+                -> SomeOperationAt Program 'Worker 'Critical (a,Values after)
+payoutOperation (PayoutStep step) values =
+  prepareOperation operationDSL (prepare $ PayoutCommand step values)
+
+instance (Typeable before,Typeable after,Typeable a)
+    => CompileOperation 'Worker 'Critical (a,Values after) (PayoutCommand before after a) where
+  operationDSL _ = OperationDSL CompilePayout
+
+instance (Typeable before,Typeable after,Typeable a, caps ~ '[CompileOperation 'Worker 'Critical (a,Values after)])
+    => Operation (PayoutCommand before after a) caps where
+  type Context (PayoutCommand before after a) = CompileOperation 'Worker 'Critical (a,Values after) (PayoutCommand before after a)
+  type Outcome (PayoutCommand before after a) = Program 'Worker 'Critical (a,Values after)
+  data DSL (PayoutCommand before after a) where
+    CompilePayout :: Context (PayoutCommand before after a) => DSL (PayoutCommand before after a)
+  interpret (SomeOperation (payload :: actual)) CompilePayout =
+    case eqT @actual @(PayoutCommand before after a) of
+      Nothing -> Nothing
+      Just Refl -> case payload of
+        PayoutCommand step values -> Just $ case (step,values) of
+          (InspectPayout,identifier :& VNil) -> workerEffect False $ \environment@(CriticalEnvironment _ _ _ _ _ reader _) -> do
+            freshIntake environment
+            (_,_,attempts) <- evalRead reader (ReadPaymentWork identifier)
+            pure (attempts,values)
+          (PreparePayout,identifier :& VNil) -> workerEffect False $ \environment -> do
+            evalWorker environment (\cap -> prepareOutgoing cap identifier)
+            backupDecisions environment
+            pure ((),PreparedPayout identifier :& VNil)
+          (SignPayout,PreparedPayout identifier :& VNil) -> workerEffect False $ \environment -> do
+            txid <- evalWorker environment (\cap -> signPreparedPayment cap identifier)
+            pure ((),SignedPayout txid :& VNil)
+          (ReusePayout attempts,identifier :& VNil) -> workerEffect False $ \environment@(CriticalEnvironment _ _ _ _ _ reader _) -> do
+            txid <- case attempts of
+              [saved] -> pure saved
+              _ -> do
+                family <- evalRead reader (ReadNativeFamily identifier)
+                pure (signedId $ recordedSigned $ fst $ last family)
+            pure ((),SignedPayout txid :& VNil)
+          (QueuePayout,SignedPayout txid :& VNil) -> workerEffect False $ \environment -> do
+            _ <- evalWorker environment (\cap -> queuePayment cap txid)
+            backupDecisions environment
+            pure ((),QueuedPayout txid :& VNil)
+          (SendPayout,QueuedPayout txid :& VNil) -> workerEffect False $ \environment -> do
+            evalWorker environment (\cap -> broadcastPayment cap txid)
+            pure ((),VNil)
 
 -- This optional reservation never signs. All resulting work uses the ordinary
 -- payout pipeline, and a commit ends this cycle so custody can be reconciled.

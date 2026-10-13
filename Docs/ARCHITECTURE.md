@@ -152,10 +152,14 @@ attempts, then prepares/backs up/signs a new payment or selects its saved transa
 Both branches converge on queue/backup and broadcast. Each `PayoutStep` requires
 `WorkerOperations`; actual payment/transaction identifiers travel through distinct
 `PreparedPayout`, `SignedPayout` and `QueuedPayout` state types. These record sequencing,
-not financial authority. The private `runPayoutStep` in `Critical.hs` retains every
-existing ledger check and `evalWorker` dispatch inside the already-held critical gate.
-The `WorkerOperations` instance builds this deferred flow after the command's `Refl`;
-construction cannot perform IO. No new API, signer path, database operation or retry
+not financial authority. Each step carries its capability and runtime type evidence.
+`payoutOperation` packs a private `PayoutCommand` into the library's `SomeOperationAt`.
+Its `interpret` instance in `Critical.hs` proves the complete input/output/result
+payload type with `eqT`/`Refl`, then selects a deferred `WorkerEffect`. Construction
+cannot perform IO. Private `evalWorkerRequest` executes that program inside the
+already-held critical gate; existing ledger checks and `evalWorker` dispatch remain.
+The flow contract resolves these actual operations before using a separate trace
+oracle. It checks compilation and sequencing, not execution of the deferred closures. No new API, signer path, database operation or retry
 policy is introduced. IO exceptions, including cancellation and unknown signing or
 broadcast outcomes, stop the continuation. Completed effects are not rolled back;
 restart recovery still uses the ledger and exact saved bytes. Never replay the Flow
