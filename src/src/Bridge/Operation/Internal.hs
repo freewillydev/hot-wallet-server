@@ -145,16 +145,30 @@ data PayoutInstruction before after result where
   QueuePayout :: PayoutInstruction '[SignedPayout] '[QueuedPayout] ()
   SendPayout :: PayoutInstruction '[QueuedPayout] '[] ()
 
-payoutFlow :: WorkerOperations value => value -> Flow (PayoutStep value) '[Text] '[] ()
-payoutFlow _ = F.do
-  attempts <- F.step (PayoutStep InspectPayout)
-  case attempts of
-    [] -> F.do
-      F.step (PayoutStep PreparePayout)
-      F.step (PayoutStep SignPayout)
-    _ -> F.step (PayoutStep $ ReusePayout attempts)
-  F.step (PayoutStep QueuePayout)
-  F.step (PayoutStep SendPayout)
+-- Interpretation constructs the whole workflow; it never evaluates a step.
+-- The DSL constructor supplies WorkerOperations; this wrapper grants no new caps.
+data PayoutWorkflow value = PayoutWorkflow value
+
+instance (Typeable value, caps ~ '[]) => Operation (PayoutWorkflow value) caps where
+  type Context (PayoutWorkflow value) = WorkerOperations value
+  type Outcome (PayoutWorkflow value) = Flow (PayoutStep value) '[Text] '[] ()
+  data DSL (PayoutWorkflow value) where
+    CompilePayoutWorkflow :: Context (PayoutWorkflow value) => DSL (PayoutWorkflow value)
+  interpret (SomeOperation (_ :: actual)) CompilePayoutWorkflow =
+    case eqT @actual @(PayoutWorkflow value) of
+      Nothing -> Nothing
+      Just Refl -> Just $ F.do
+        attempts <- F.step (PayoutStep InspectPayout)
+        case attempts of
+          [] -> F.do
+            F.step (PayoutStep PreparePayout)
+            F.step (PayoutStep SignPayout)
+          _ -> F.step (PayoutStep $ ReusePayout attempts)
+        F.step (PayoutStep QueuePayout)
+        F.step (PayoutStep SendPayout)
+
+payoutFlow :: (Typeable value, WorkerOperations value) => value -> Maybe (Flow (PayoutStep value) '[Text] '[] ())
+payoutFlow value = interpret (SomeOperation $ PayoutWorkflow value) CompilePayoutWorkflow
 
 -- One closed payload GADT carries caller, severity and the exact result type.
 -- Family aliases retain the evaluator's caller -> family functional dependency.

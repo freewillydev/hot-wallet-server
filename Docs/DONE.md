@@ -760,3 +760,18 @@ or whole-application certification. Details and next proof gap are in RESUME.md.
   changed; task PostgreSQL stopped. Receipt: /tmp/hot-wallet-interpret-receipt.json.
 
 Separate payout_interpret_verifier PASS for scoped source publication; reviewed diff SHA256 52c96ebcec3d324c60d0099f17bf0e44c9159d76cfc5b8ee2d419f948f246f0f and receipt SHA256 91ba4766de9f5c65b98feb126aaf1574453b28ef60c21c73cc0b14c41227d316. No production certification.
+
+## Whole payout workflow interpretation (2026-10-13)
+
+- 2026-10-13: whole payout `F.do` now lives inside PayoutWorkflow.interpret,
+  after eqT/Refl. The helper returns the pure interpreted Flow; the worker rejects
+  mismatch and evaluates under the existing gate. Leaf actions remain unchanged.
+  Build, 249 QuickCheck groups/15,608 cases, one positive/15 negative type checks,
+  and three fresh PostgreSQL/HTTPS modes PASS. Added whole-payload mismatch check;
+  flow trace still uses an independent oracle, not live financial acceptance.
+  Net +15 production/+6 test lines; no new files. Library design guidance and
+  compiling example updated separately in operation-capabilities (API unchanged).
+  No deployment/funds changed; test PostgreSQL stopped. Verification receipt:
+  /tmp/hot-wallet-whole-receipt.json. Separate publication review recorded in DONE.
+
+Separate whole_payout_review PASS for scoped source publication: diff SHA256 556f24fe89f3c512dfe998e2e3a69ca3229f73c3fc242ac6a8d1daf285e2316f; receipt SHA256 5084f89f3957912aa75f09ba1d46eeb79d88910f011074eb2acd3e9d33af9957. All four source/seven log hashes verified; no live or production certification.

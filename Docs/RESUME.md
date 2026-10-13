@@ -8,6 +8,17 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Implemented and checked
 
+- 2026-10-13: whole payout `F.do` now lives inside PayoutWorkflow.interpret,
+  after eqT/Refl. The helper returns the pure interpreted Flow; the worker rejects
+  mismatch and evaluates under the existing gate. Leaf actions remain unchanged.
+  Build, 249 QuickCheck groups/15,608 cases, one positive/15 negative type checks,
+  and three fresh PostgreSQL/HTTPS modes PASS. Added whole-payload mismatch check;
+  flow trace still uses an independent oracle, not live financial acceptance.
+  Net +15 production/+6 test lines; no new files. Library design guidance and
+  compiling example updated separately in operation-capabilities (API unchanged).
+  No deployment/funds changed; test PostgreSQL stopped. Verification receipt:
+  /tmp/hot-wallet-whole-receipt.json. Separate publication review recorded in DONE.
+
 - 2026-10-13: payout dispatch moved from runPayoutStep into the private
   PayoutCommand Operation.interpret after eqT/Refl. Pure resolution creates
   deferred WorkerEffect actions; the existing critical gate executes them.

@@ -63,3 +63,12 @@ payout_interpret_interpret_canonical	PASS	/tmp/hot-wallet-flow-pg.Skx94g9k/inter
 payout_interpret_interpret_active_native	PASS	/tmp/hot-wallet-flow-pg.Skx94g9k/interpret_active_native.log sha256=4542355a88a2f151c7a9f37ac376ce1fad4d9bf045bd0059eec896f4bd73fa62
 payout_interpret_receipt	PASS	/tmp/hot-wallet-interpret-receipt.json sha256=91ba4766de9f5c65b98feb126aaf1574453b28ef60c21c73cc0b14c41227d316; fixture scope only; no live deployment
 payout_interpret_review	PASS	Separate payout_interpret_verifier PASS for scoped source publication; reviewed diff SHA256 52c96ebcec3d324c60d0099f17bf0e44c9159d76cfc5b8ee2d419f948f246f0f and receipt SHA256 91ba4766de9f5c65b98feb126aaf1574453b28ef60c21c73cc0b14c41227d316. No production certification.
+whole_payout_hot-wallet-whole-build	PASS	/tmp/hot-wallet-whole-build.log sha256=5107545f0410a29883e5e8f089338be86e86e45ffaefd9e7e120c9c9e310ac1e
+whole_payout_hot-wallet-whole-tests	PASS	/tmp/hot-wallet-whole-tests.log sha256=69dca2619ab7abad7118ff86ce5d9d9b54f362db1c93f82dc920233d6d6c2138
+whole_payout_hot-wallet-whole-types	PASS	/tmp/hot-wallet-whole-types.log sha256=d4b332c109ca053d0d645b91d66074e9345f793b610aed4a905cfc2667e0d5f8
+whole_payout_hot-wallet-whole-pg	PASS	/tmp/hot-wallet-whole-pg.log sha256=e259f3e89fdde44edaf72fb71a5efe011163d7f1214fe06ad103d36aab5a736a
+whole_payout_whole_tls	PASS	/tmp/hot-wallet-flow-pg.Skx94g9k/whole_tls.log sha256=3037797a0d75d3bbce1c768fa466458b71f640d490842dba6520159e434ea6f6
+whole_payout_whole_canonical	PASS	/tmp/hot-wallet-flow-pg.Skx94g9k/whole_canonical.log sha256=204ce148052876edca005a205f354aa1e9339731370cd99713d98a32c0b21b00
+whole_payout_whole_active_native	PASS	/tmp/hot-wallet-flow-pg.Skx94g9k/whole_active_native.log sha256=4542355a88a2f151c7a9f37ac376ce1fad4d9bf045bd0059eec896f4bd73fa62
+whole_payout_receipt	PASS	/tmp/hot-wallet-whole-receipt.json sha256=5084f89f3957912aa75f09ba1d46eeb79d88910f011074eb2acd3e9d33af9957; fixture scope only; no live deployment
+whole_payout_review	PASS	Separate whole_payout_review PASS for scoped source publication: diff SHA256 556f24fe89f3c512dfe998e2e3a69ca3229f73c3fc242ac6a8d1daf285e2316f; receipt SHA256 5084f89f3957912aa75f09ba1d46eeb79d88910f011074eb2acd3e9d33af9957. All four source/seven log hashes verified; no live or production certification.

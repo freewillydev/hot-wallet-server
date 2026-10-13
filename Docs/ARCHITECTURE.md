@@ -147,24 +147,34 @@ signer leaves remain small explicit GADTs; signer result constructors remain uni
 Class implementations are checked with `-Werror=missing-methods`.
 
 The worker's bounded payout sequence uses `Control.Operation.Flow` from the pinned
-operation-capabilities 0.1.3.0. `payoutFlow` in `Operation/Internal.hs` inspects saved
-attempts, then prepares/backs up/signs a new payment or selects its saved transaction.
-Both branches converge on queue/backup and broadcast. Each `PayoutStep` requires
-`WorkerOperations`; actual payment/transaction identifiers travel through distinct
-`PreparedPayout`, `SignedPayout` and `QueuedPayout` state types. These record sequencing,
-not financial authority. Each step carries its capability and runtime type evidence.
-`payoutOperation` packs a private `PayoutCommand` into the library's `SomeOperationAt`.
-Its `interpret` instance in `Critical.hs` proves the complete input/output/result
-payload type with `eqT`/`Refl`, then selects a deferred `WorkerEffect`. Construction
-cannot perform IO. Private `evalWorkerRequest` executes that program inside the
-already-held critical gate; existing ledger checks and `evalWorker` dispatch remain.
-The flow contract resolves these actual operations before using a separate trace
-oracle. It checks compilation and sequencing, not execution of the deferred closures. No new API, signer path, database operation or retry
-policy is introduced. IO exceptions, including cancellation and unknown signing or
-broadcast outcomes, stop the continuation. Completed effects are not rolled back;
-restart recovery still uses the ledger and exact saved bytes. Never replay the Flow
-as an automatic retry. `IndexedRequest` is not added as a second operation registry:
-the current typed selectors already retain the required capability dictionaries.
+operation-capabilities 0.1.3.0. **Build the whole workflow inside `interpret`, after
+`eqT`/`Refl`; evaluate it separately.** `PayoutWorkflow` in `Operation/Internal.hs`
+implements that boundary: its `CompilePayoutWorkflow` constructor carries
+`WorkerOperations`, its payload equality proof precedes the `F.do`, and its outcome
+is the pure typed Flow. The wrapper declares no additional preparation capabilities.
+`payoutFlow` only requests interpretation and returns `Nothing` on mismatch. The
+worker rejects mismatch, then runs the resulting workflow under the held critical
+gate. Runtime-dependent branches remain deferred continuations of the compiled Flow.
+
+The flow inspects saved attempts, prepares/backs up/signs a new payment or selects
+its saved transaction, then queues/backs up and broadcasts. Each `PayoutStep`
+requires `WorkerOperations`; payment/transaction identifiers travel through distinct
+`PreparedPayout`, `SignedPayout` and `QueuedPayout` states. These record sequencing,
+not financial authority. `payoutOperation` separately packs each private leaf
+`PayoutCommand` into `SomeOperationAt`. Its `interpret` in `Critical.hs` proves the
+complete input/output/result payload type, then selects a deferred `WorkerEffect`.
+Private `evalWorkerRequest` executes that action inside the already-held gate;
+existing ledger checks and `evalWorker` dispatch remain. No new API, signer path,
+database operation or retry policy is introduced.
+
+The flow contract checks mismatched whole-workflow payload rejection, then resolves
+and traces the actual compiled Flow and its leaf operations with an independent
+oracle. That verifies compilation and sequencing, not execution of the concrete
+closures. Exceptions, including cancellation and unknown signing or broadcast
+outcomes, stop the continuation. Completed effects are not rolled back; restart
+recovery uses the ledger and exact saved bytes. Never replay the Flow as an automatic
+retry. `IndexedRequest` is not added as a second registry: the current typed selectors
+already retain the required capability dictionaries.
 
 Both evaluators use the private `Executable` view to recover a payload-free
 `ExecutionProof` of the constructor's combined constraints. Authorization and

@@ -880,7 +880,7 @@ instance WorkerOperations (WorkerCommand 'Critical result) where
         verifySignedAttempt (N.nativeCall rpc native) (N.profile native) config prepared signed
         recorded<-evalWrite writer (RecordAttempt prepared signed)
         pure (signedId $ recordedSigned recorded)
-  runWorkerCycle value = workerEffect True run
+  runWorkerCycle _ = workerEffect True run
    where
     run environment@(CriticalEnvironment _ _ _ _ _ reader writer) = cycleWork `catch` (\(BridgeError code)->
       if code=="custody_not_reconciled" then do
@@ -895,9 +895,10 @@ instance WorkerOperations (WorkerCommand 'Critical result) where
           now<-floor <$> getPOSIXTime
           evalWrite writer (AdmitPayoutRounds now)
           candidates<-evalRead reader PaymentCandidates
+          workflow <- maybe (reject "operation_dictionary_mismatch") pure (payoutFlow (WorkerAction runWorkerCycle :: WorkerCommand 'Critical ()))
           forM_ candidates $ \identifier->
             runFlow (\step values -> evalWorkerRequest environment $ payoutOperation step values)
-              (payoutFlow value) (identifier :& VNil)
+              workflow (identifier :& VNil)
           -- Existing payments get first use of capacity, but one active chain
           -- must not prevent optional work on the other.
           _<-scheduleOwnerFees environment

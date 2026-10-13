@@ -37,6 +37,12 @@ Keep every concrete action deferred under the existing critical gate. Test actua
 existential resolution plus the independent ordering oracle, and rerun affected
 PostgreSQL worker contracts. Do not treat the oracle as concrete-effect coverage.
 
+Whole-workflow follow-up: define the complete payout `F.do` only in the
+`PayoutWorkflow` Operation's `interpret`, after payload `eqT`/`Refl`. Return the
+pure Flow; reject interpretation mismatch before evaluating it under the existing
+critical gate. Keep leaf interpretation and financial checks unchanged. Make this
+boundary prominent in the library's design guidance and compiling example.
+
 Status: **117/120 steps verified (A–I, J105–111, J113–117, J120)**. Implementation and
 available acceptance are complete; external gates J112, J118 and J119 remain open.
 The source-size reduction target was not met; see the measured J117 results. This replaces the

@@ -24,7 +24,7 @@ import Data.Typeable (typeRep,eqT)
 import Control.Operation
 import Control.Operation.Flow (Values(..),runFlow)
 import Control.Exception (SomeException,AsyncException(ThreadKilled),try,throwIO,fromException)
-import Control.Monad (forM,when)
+import Control.Monad (forM,when,unless)
 import Data.IORef (newIORef,modifyIORef',readIORef)
 import Data.Proxy (Proxy(..))
 import Data.Type.Equality ((:~:)(Refl))
@@ -253,49 +253,54 @@ absent Just{}=False
 -- This is an unfunded control-flow oracle; PostgreSQL/HTTPS contracts separately
 -- exercise existing durable operation and service boundaries.
 payoutFlowContract :: IO Bool
-payoutFlowContract = and <$> forM [[],["saved"],["parent","replacement"]] (\attempts -> do
-  let txid = case attempts of [] -> "new"; [saved] -> saved; _ -> "family-tip"
-      prefix = ["inspect:payment"] <> case attempts of
-        [] -> ["prepare:payment","backup:preparation","sign:payment"]
-        [_] -> ["reuse:"<>txid]
-        _ -> ["family:payment"]
-      expected = prefix <> ["queue:"<>txid,"backup:intent","send:"<>txid]
-  and <$> forM [(fault,asynchronous) | fault<-[0..length expected], asynchronous<-[False,True]] (\(fault,asynchronous) -> do
-    trace <- newIORef []
-    let record event = do
-          modifyIORef' trace (<>[event])
-          count <- length <$> readIORef trace
-          when (fault==count) $ if asynchronous then throwIO ThreadKilled else throwIO (userError "outcome unknown")
-        traceStep :: PayoutStep (WorkerCommand 'Critical ()) before after a -> Values before -> IO (a,Values after)
-        traceStep wrapped@(PayoutStep step) values = do
-          case checkedOperation (payoutOperation wrapped values) of
-            Right WorkerDSL{} -> pure ()
-            _ -> fail "payout did not compile to a deferred worker action"
-          traceInstruction step values
-        traceInstruction :: PayoutInstruction before after a -> Values before -> IO (a,Values after)
-        traceInstruction step values = case (step,values) of
-          (InspectPayout,identifier :& VNil) -> record ("inspect:"<>identifier) >> pure (attempts,values)
-          (PreparePayout,identifier :& VNil) -> do
-            record ("prepare:"<>identifier)
-            record "backup:preparation"
-            pure ((),PreparedPayout identifier :& VNil)
-          (SignPayout,PreparedPayout identifier :& VNil) -> do
-            record ("sign:"<>identifier)
-            pure ((),SignedPayout "new" :& VNil)
-          (ReusePayout saved,identifier :& VNil) -> do
-            actual <- case saved of
-              [one] -> record ("reuse:"<>one) >> pure one
-              _ -> record ("family:"<>identifier) >> pure "family-tip"
-            pure ((),SignedPayout actual :& VNil)
-          (QueuePayout,SignedPayout signed :& VNil) -> do
-            record ("queue:"<>signed)
-            record "backup:intent"
-            pure ((),QueuedPayout signed :& VNil)
-          (SendPayout,QueuedPayout queued :& VNil) -> record ("send:"<>queued) >> pure ((),VNil)
-    result <- try (runFlow traceStep (payoutFlow (WorkerAction runWorkerCycle :: WorkerCommand 'Critical ())) ("payment" :& VNil))
-      :: IO (Either SomeException ((),Values '[]))
-    actual <- readIORef trace
-    pure $ actual==take (if fault==0 then length expected else fault) expected && case result of
-      Right ((),VNil) -> fault==0
-      Left failure -> fault/=0 && if asynchronous then fromException failure==Just ThreadKilled
-        else (fromException failure :: Maybe AsyncException)==Nothing))
+payoutFlowContract = do
+  let request = WorkerAction runWorkerCycle :: WorkerCommand 'Critical ()
+  unless (case interpret (SomeOperation request) (CompilePayoutWorkflow :: DSL (PayoutWorkflow (WorkerCommand 'Critical ()))) of
+    Nothing -> True; Just _ -> False) $ fail "payout workflow accepted a different payload"
+  workflow <- maybe (fail "payout workflow did not compile") pure (payoutFlow request)
+  and <$> forM [[],["saved"],["parent","replacement"]] (\attempts -> do
+    let txid = case attempts of [] -> "new"; [saved] -> saved; _ -> "family-tip"
+        prefix = ["inspect:payment"] <> case attempts of
+          [] -> ["prepare:payment","backup:preparation","sign:payment"]
+          [_] -> ["reuse:"<>txid]
+          _ -> ["family:payment"]
+        expected = prefix <> ["queue:"<>txid,"backup:intent","send:"<>txid]
+    and <$> forM [(fault,asynchronous) | fault<-[0..length expected], asynchronous<-[False,True]] (\(fault,asynchronous) -> do
+      trace <- newIORef []
+      let record event = do
+            modifyIORef' trace (<>[event])
+            count <- length <$> readIORef trace
+            when (fault==count) $ if asynchronous then throwIO ThreadKilled else throwIO (userError "outcome unknown")
+          traceStep :: PayoutStep (WorkerCommand 'Critical ()) before after a -> Values before -> IO (a,Values after)
+          traceStep wrapped@(PayoutStep step) values = do
+            case checkedOperation (payoutOperation wrapped values) of
+              Right WorkerDSL{} -> pure ()
+              _ -> fail "payout did not compile to a deferred worker action"
+            traceInstruction step values
+          traceInstruction :: PayoutInstruction before after a -> Values before -> IO (a,Values after)
+          traceInstruction step values = case (step,values) of
+            (InspectPayout,identifier :& VNil) -> record ("inspect:"<>identifier) >> pure (attempts,values)
+            (PreparePayout,identifier :& VNil) -> do
+              record ("prepare:"<>identifier)
+              record "backup:preparation"
+              pure ((),PreparedPayout identifier :& VNil)
+            (SignPayout,PreparedPayout identifier :& VNil) -> do
+              record ("sign:"<>identifier)
+              pure ((),SignedPayout "new" :& VNil)
+            (ReusePayout saved,identifier :& VNil) -> do
+              actual <- case saved of
+                [one] -> record ("reuse:"<>one) >> pure one
+                _ -> record ("family:"<>identifier) >> pure "family-tip"
+              pure ((),SignedPayout actual :& VNil)
+            (QueuePayout,SignedPayout signed :& VNil) -> do
+              record ("queue:"<>signed)
+              record "backup:intent"
+              pure ((),QueuedPayout signed :& VNil)
+            (SendPayout,QueuedPayout queued :& VNil) -> record ("send:"<>queued) >> pure ((),VNil)
+      result <- try (runFlow traceStep workflow ("payment" :& VNil))
+        :: IO (Either SomeException ((),Values '[]))
+      actual <- readIORef trace
+      pure $ actual==take (if fault==0 then length expected else fault) expected && case result of
+        Right ((),VNil) -> fault==0
+        Left failure -> fault/=0 && if asynchronous then fromException failure==Just ThreadKilled
+          else (fromException failure :: Maybe AsyncException)==Nothing))

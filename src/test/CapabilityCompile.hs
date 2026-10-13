@@ -8,8 +8,9 @@ import Data.Proxy (Proxy(..))
 import Control.Operation.Flow (Flow)
 import qualified Control.Operation.Flow as F
 import Data.Text (Text)
+import Data.Typeable (Typeable)
 
-validPayout :: WorkerOperations value => value -> Flow (PayoutStep value) '[Text] '[] ()
+validPayout :: (Typeable value, WorkerOperations value) => value -> Maybe (Flow (PayoutStep value) '[Text] '[] ())
 validPayout = payoutFlow
 
 #ifdef BAD_FLOW_ORDER
