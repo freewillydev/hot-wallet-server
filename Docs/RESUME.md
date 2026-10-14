@@ -8,6 +8,21 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Implemented and checked
 
+- 2026-10-14: retry approval, preparation cancellation and owner-fee selection now
+  compose inside post-Refl Workflow.interpret, sharing operator custody steps.
+  Two state-preserving Flow helpers handle conditional/traversal composition;
+  concrete validation/commits and narrow catches stay private. Build, full suite
+  (250 groups/15,609 cases, two expected mutation failures), positive/37 negative
+  compile checks and six fresh PG/process modes PASS. Initial TLS run failed when
+  a PostgreSQL backend received SIGKILL during COMMIT (cause unknown); the remaining
+  three modes passed sequentially on fresh databases after recovery, unchanged
+  source. Cluster stopped. Production +59 lines, tests +58 across four existing
+  files; no new files/dependencies. Receipt /tmp/hot-wallet-composition-receipt.json
+  binds70 artifacts including the failed run. Fresh flow_composition_verifier PASS
+  for scoped source publication: all70 hashes and current source patch match.
+  Next work is the existing release checklist; no further abstraction is required
+  by this change. No live deployment/funds changed; broader release gates unchanged.
+
 - 2026-10-13: expanded post-Refl Workflow.interpret to cycle, resume, signing,
   broadcast and three native workflows. Internal *Steps capabilities are excluded
   from request DomainCaps; private whole-flow scopes preserve failure/cancellation

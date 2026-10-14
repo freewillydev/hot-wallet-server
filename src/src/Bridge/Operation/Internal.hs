@@ -56,20 +56,28 @@ data OperatorRead a where
 type family MethodStep value :: [Type] -> [Type] -> Type -> Type
 type Method value before after result = Flow (MethodStep value) before after result
 
+-- These combinators preserve the state indices; changing stages stays explicit.
+whenFlow :: Bool -> Flow step state state () -> Flow step state state ()
+whenFlow enabled action = if enabled then action else F.pure ()
+traverseFlow_ :: (a -> Flow step state state b) -> [a] -> Flow step state state ()
+traverseFlow_ action = foldr (\value rest -> action value F.>> rest) (F.pure ())
+
 class OperatorService value where
   pauseService :: value -> Text -> Method value '[] '[] ()
   resumeService :: value -> Method value '[] '[] ()
 
 -- Internal workflow capability: deliberately absent from DomainCaps.
+class CustodySteps value where
+  custodyScope :: value -> Method value before after a -> Method value before after a
+  checkpointCustody :: value -> Method value '[] '[] ()
+  observeCustody :: value -> Method value '[] '[] ()
+  reconcileCustodyStep :: value -> Method value '[] '[] ()
+
 class ResumeSteps value where
-  resumeScope :: value -> Method value before after a -> Method value before after a
   checkResume :: value -> Method value '[] '[] ()
   recoverResume :: value -> Method value '[] '[] ()
   inspectResume :: value -> Method value '[] '[] (ResumeWork value)
   refreshResume :: value -> ResumeWork value -> Method value '[] '[] ()
-  checkpointResume :: value -> Method value '[] '[] ()
-  observeResume :: value -> Method value '[] '[] ()
-  reconcileResume :: value -> Method value '[] '[] ()
   inspectResumeDraft :: value -> Method value '[] '[] (Maybe (ResumeDraft value))
   restoreResumeDraft :: value -> ResumeDraft value -> Method value '[] '[] ()
   finishResume :: value -> ResumeWork value -> Maybe (ResumeDraft value) -> Method value '[] '[] ()
@@ -80,6 +88,19 @@ class OperatorRepair value where
   cancelPreparation :: value -> Text -> Int -> Text -> Method value '[] '[] ()
   refundDeposit :: value -> Text -> Method value '[] '[] RefundAuthorization
 
+class RetrySteps value where
+  inspectRetry :: value -> Text -> Text -> Method value '[] '[] (Maybe (RetryWork value))
+  refreshRetrySource :: value -> RetryWork value -> Method value '[] '[] ()
+  proveRetryExpired :: value -> RetryWork value -> Method value '[] '[] Text
+  commitRetryApproval :: value -> RetryWork value -> Text -> Method value '[] '[] ()
+
+class CancellationSteps value where
+  inspectCancellation :: value -> Text -> Int -> Text -> Method value '[] '[] (Maybe (CancellationWork value))
+  refreshCancellationSource :: value -> CancellationWork value -> Method value '[] '[] ()
+  beginCancellation :: value -> CancellationWork value -> Method value '[] '[] (CancellationCommit value)
+  releaseCancellation :: value -> CancellationCommit value -> Method value '[] '[] ()
+  finishCancellation :: value -> CancellationCommit value -> Method value '[] '[] ()
+
 class OperatorNative value where
   rebroadcastNative :: value -> Text -> Int64 -> Text -> Method value '[] '[] Text
   draftNativeReplacement :: value -> Text -> Amount -> Text -> Method value '[] '[] Int64
@@ -88,10 +109,6 @@ class OperatorNative value where
 
 -- Internal workflow capability: deliberately absent from DomainCaps.
 class NativeSteps value where
-  nativeScope :: value -> Method value before after a -> Method value before after a
-  checkpointNative :: value -> Method value '[] '[] ()
-  observeNative :: value -> Method value '[] '[] ()
-  reconcileNative :: value -> Method value '[] '[] ()
   inspectRebroadcast :: value -> Text -> Int64 -> Text -> Method value '[] '[] (RebroadcastWork value)
   sendRebroadcast :: value -> RebroadcastWork value -> Method value '[] '[] Text
   inspectReplacementDraft :: value -> Text -> Amount -> Text -> Method value '[] '[] (Either Int64 (ReplacementDraftWork value))
@@ -209,6 +226,10 @@ class CycleSteps value where
   cyclePayout :: value -> Text -> Method value '[] '[] ()
   cycleOwnerFees :: value -> Method value '[] '[] ()
 
+class OwnerFeeSteps value where
+  ownerFeeCandidates :: value -> Method value '[] '[] [OwnerFeeWork value]
+  reserveOwnerFee :: value -> OwnerFeeWork value -> Method value '[] '[] Bool
+
 -- Runtime evidence stays opaque to the compiler and request selectors.
 -- Only the corresponding concrete capability implementation constructs it.
 data family ResumeWork value
@@ -218,6 +239,10 @@ data family BroadcastWork value
 data family RebroadcastWork value
 data family ReplacementDraftWork value
 data family ReplacementSigningWork value
+data family RetryWork value
+data family CancellationWork value
+data family CancellationCommit value
+data family OwnerFeeWork value
 
 -- Sequencing markers, not financial authority: every primitive still rechecks
 -- the ledger. Signing and sending require the preceding backup step in the Flow.
@@ -232,12 +257,15 @@ type PayoutCapabilities value = (WorkerObservation value, WorkerPreparation valu
 data Workflow value (before :: [Type]) (after :: [Type]) result where
   PayoutWorkflow :: PayoutCapabilities value => value -> Text -> Workflow value '[] '[] ()
   CycleWorkflow :: CycleSteps value => value -> Workflow value '[] '[] ()
-  ResumeWorkflow :: ResumeSteps value => value -> Workflow value '[] '[] ()
+  ResumeWorkflow :: (ResumeSteps value, CustodySteps value) => value -> Workflow value '[] '[] ()
   SigningWorkflow :: SigningSteps value => value -> Workflow value '[BackupCovered PreparedPayout] '[SignedPayout] Text
   BroadcastWorkflow :: BroadcastSteps value => value -> Workflow value '[BackupCovered QueuedPayout] '[] ()
-  RebroadcastWorkflow :: NativeSteps value => value -> Text -> Int64 -> Text -> Workflow value '[] '[] Text
-  ReplacementDraftWorkflow :: NativeSteps value => value -> Text -> Amount -> Text -> Workflow value '[] '[] Int64
-  ReplacementSigningWorkflow :: NativeSteps value => value -> Int64 -> Workflow value '[] '[] Text
+  RebroadcastWorkflow :: (NativeSteps value, CustodySteps value) => value -> Text -> Int64 -> Text -> Workflow value '[] '[] Text
+  ReplacementDraftWorkflow :: (NativeSteps value, CustodySteps value) => value -> Text -> Amount -> Text -> Workflow value '[] '[] Int64
+  ReplacementSigningWorkflow :: (NativeSteps value, CustodySteps value) => value -> Int64 -> Workflow value '[] '[] Text
+  RetryWorkflow :: (RetrySteps value, CustodySteps value) => value -> Text -> Text -> Workflow value '[] '[] ()
+  CancellationWorkflow :: (CancellationSteps value, CustodySteps value) => value -> Text -> Int -> Text -> Workflow value '[] '[] ()
+  OwnerFeesWorkflow :: OwnerFeeSteps value => value -> Workflow value '[] '[] ()
 
 instance (Typeable value, Typeable before, Typeable after, Typeable result, caps ~ '[])
     => Operation (Workflow value before after result) caps where
@@ -264,21 +292,18 @@ instance (Typeable value, Typeable before, Typeable after, Typeable result, caps
         CycleWorkflow value -> cycleScope value $ F.do
           recoverCycle value
           enabled <- cycleCanPay value
-          if enabled then F.do
+          whenFlow enabled $ F.do
             candidates <- cycleCandidates value
-            let pay [] = F.pure ()
-                pay (identifier:rest) = cyclePayout value identifier F.>> pay rest
-            pay candidates
+            traverseFlow_ (cyclePayout value) candidates
             cycleOwnerFees value
-          else F.pure ()
-        ResumeWorkflow value -> resumeScope value $ F.do
+        ResumeWorkflow value -> custodyScope value $ F.do
           checkResume value
           recoverResume value
           reviewed <- inspectResume value
           refreshResume value reviewed
-          checkpointResume value
-          observeResume value
-          reconcileResume value
+          checkpointCustody value
+          observeCustody value
+          reconcileCustodyStep value
           draft <- inspectResumeDraft value
           case draft of
             Nothing -> F.pure ()
@@ -292,28 +317,54 @@ instance (Typeable value, Typeable before, Typeable after, Typeable result, caps
         BroadcastWorkflow value -> broadcastScope value $ F.do
           unseen <- inspectBroadcast value
           if unseen then sendUnseenPayment value else recordObservedPayment value
-        RebroadcastWorkflow value txid anchor reason -> nativeScope value $ F.do
+        RebroadcastWorkflow value txid anchor reason -> custodyScope value $ F.do
           work <- inspectRebroadcast value txid anchor reason
-          checkpointNative value
+          checkpointCustody value
           sendRebroadcast value work
-        ReplacementDraftWorkflow value parent fee reason -> nativeScope value $ F.do
+        ReplacementDraftWorkflow value parent fee reason -> custodyScope value $ F.do
           previous <- inspectReplacementDraft value parent fee reason
           case previous of
             Left decision -> F.pure decision
             Right work -> F.do
               refreshReplacementDraft value work
-              reconcileNative value
+              reconcileCustodyStep value
               issueReplacementDraft value work
-        ReplacementSigningWorkflow value decision -> nativeScope value $ F.do
+        ReplacementSigningWorkflow value decision -> custodyScope value $ F.do
           previous <- inspectReplacementSigning value decision
           case previous of
             Left txid -> F.pure txid
             Right work -> F.do
               refreshReplacementSigning value work
-              checkpointNative value
-              observeNative value
-              reconcileNative value
+              checkpointCustody value
+              observeCustody value
+              reconcileCustodyStep value
               issueReplacementSigning value work
+        RetryWorkflow value txid reason -> custodyScope value $ F.do
+          previous <- inspectRetry value txid reason
+          case previous of
+            Nothing -> F.pure ()
+            Just work -> F.do
+              refreshRetrySource value work
+              proof <- proveRetryExpired value work
+              reconcileCustodyStep value
+              commitRetryApproval value work proof
+        CancellationWorkflow value identifier generation reason -> custodyScope value $ F.do
+          previous <- inspectCancellation value identifier generation reason
+          case previous of
+            Nothing -> F.pure ()
+            Just work -> F.do
+              refreshCancellationSource value work
+              reconcileCustodyStep value
+              committed <- beginCancellation value work
+              releaseCancellation value committed
+              finishCancellation value committed
+        OwnerFeesWorkflow value -> F.do
+          candidates <- ownerFeeCandidates value
+          let reserve [] = F.pure ()
+              reserve (candidate:rest) = F.do
+                saved <- reserveOwnerFee value candidate
+                whenFlow (not saved) (reserve rest)
+          reserve candidates
 
 workflow :: forall value before after result.
             (Typeable value, Typeable before, Typeable after, Typeable result)
@@ -453,7 +504,7 @@ workerRequest select = pending (WorkerAction (Proxy @selected) select)
 type CustomerOperations = (Execution 'Customer 'Safe CustomerCommand, Execution 'Customer 'Critical CustomerCommand)
 class (Execution 'Operator 'Safe OperatorCommand, Execution 'Operator 'Critical OperatorCommand,
        forall a. Typeable a => OperatorService (OperatorCommand 'Critical a),
-       forall a. OperatorRepair (OperatorCommand 'Critical a),
+       forall a. Typeable a => OperatorRepair (OperatorCommand 'Critical a),
        forall a. Typeable a => OperatorNative (OperatorCommand 'Critical a),
        forall a. OperatorSource (OperatorCommand 'Critical a),
        forall a. OperatorTreasury (OperatorCommand 'Critical a)) => OperatorOperations

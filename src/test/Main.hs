@@ -361,16 +361,21 @@ data instance BroadcastWork TraceWorkflow = TraceBroadcastWork Text
 data instance RebroadcastWork TraceWorkflow = TraceRebroadcastWork Text
 data instance ReplacementDraftWork TraceWorkflow = TraceReplacementDraft Text
 data instance ReplacementSigningWork TraceWorkflow = TraceReplacementSigning Int64
+data instance RetryWork TraceWorkflow = TraceRetryWork Text Text
+data instance CancellationWork TraceWorkflow = TraceCancellationWork Text Int Text
+data instance CancellationCommit TraceWorkflow = TraceCancellationCommit Text
+data instance OwnerFeeWork TraceWorkflow = TraceOwnerFeeWork Text
 
+instance CustodySteps TraceWorkflow where
+  custodyScope _ = scoped "operator"
+  checkpointCustody _ = event "backup" ()
+  observeCustody _ = event "observe" ()
+  reconcileCustodyStep _ = event "reconcile" ()
 instance ResumeSteps TraceWorkflow where
-  resumeScope _ = scoped "resume"
   checkResume _ = event "check" ()
   recoverResume _ = event "recover" ()
   inspectResume _ = event "inspect" TraceResumeWork
   refreshResume _ TraceResumeWork = event "refresh" ()
-  checkpointResume _ = event "backup" ()
-  observeResume _ = event "observe" ()
-  reconcileResume _ = event "reconcile" ()
   inspectResumeDraft (TraceWorkflow draft _) = event "draft" (if draft then Just TraceResumeDraft else Nothing)
   restoreResumeDraft _ TraceResumeDraft = event "restore" ()
   finishResume _ TraceResumeWork draft = event (case draft of Nothing->"finish:no-draft"; Just TraceResumeDraft->"finish:draft") ()
@@ -394,10 +399,6 @@ instance BroadcastSteps TraceWorkflow where
   sendUnseenPayment _ = F.step $ WorkflowEvent "send" $ \(TraceBroadcastWork _ :& VNil) -> ((),VNil)
   recordObservedPayment _ = F.step $ WorkflowEvent "record" $ \(TraceBroadcastWork _ :& VNil) -> ((),VNil)
 instance NativeSteps TraceWorkflow where
-  nativeScope _ = scoped "native"
-  checkpointNative _ = event "backup" ()
-  observeNative _ = event "observe" ()
-  reconcileNative _ = event "reconcile" ()
   inspectRebroadcast _ txid anchor reason = event ("inspect:"<>txid<>":"<>T.pack(show anchor)<>":"<>reason) (TraceRebroadcastWork txid)
   sendRebroadcast _ (TraceRebroadcastWork txid) = event "send-saved" txid
   inspectReplacementDraft (TraceWorkflow saved _) parent fee reason = event ("draft:"<>parent<>":"<>T.pack(show $ units fee)<>":"<>reason)
@@ -408,6 +409,25 @@ instance NativeSteps TraceWorkflow where
     (if saved then Left "saved" else Right $ TraceReplacementSigning decision)
   refreshReplacementSigning _ (TraceReplacementSigning decision) = event ("refresh:"<>T.pack(show decision)) ()
   issueReplacementSigning _ (TraceReplacementSigning _) = event "replacement-sign" "new"
+instance RetrySteps TraceWorkflow where
+  inspectRetry (TraceWorkflow saved _) txid reason = event ("retry:"<>txid<>":"<>reason)
+    (if saved then Nothing else Just $ TraceRetryWork txid reason)
+  refreshRetrySource _ (TraceRetryWork txid _) = event ("refresh:"<>txid) ()
+  proveRetryExpired _ (TraceRetryWork txid _) = event "expiry" ("proof:"<>txid)
+  commitRetryApproval _ (TraceRetryWork _ reason) proof = event ("approve:"<>reason<>":"<>proof) ()
+instance CancellationSteps TraceWorkflow where
+  inspectCancellation (TraceWorkflow complete _) identifier generation reason = event ("cancel:"<>identifier)
+    (if complete then Nothing else Just $ TraceCancellationWork identifier generation reason)
+  refreshCancellationSource _ (TraceCancellationWork identifier _ _) = event ("refresh:"<>identifier) ()
+  beginCancellation _ (TraceCancellationWork identifier generation reason) = F.do
+    event "reread-and-validate" ()
+    event ("begin:"<>T.pack(show generation)<>":"<>reason) (TraceCancellationCommit identifier)
+  releaseCancellation _ (TraceCancellationCommit identifier) = event ("release:"<>identifier) ()
+  finishCancellation _ (TraceCancellationCommit identifier) = event ("finish:"<>identifier) ()
+instance OwnerFeeSteps TraceWorkflow where
+  ownerFeeCandidates (TraceWorkflow configured candidates) = event "fee-candidates"
+    (if configured then map TraceOwnerFeeWork candidates else [])
+  reserveOwnerFee _ (TraceOwnerFeeWork candidate) = event ("reserve:"<>candidate) (candidate=="saved")
 
 workflowContract :: IO Bool
 workflowContract = do
@@ -426,23 +446,32 @@ workflowContract = do
     ]) $ fail "workflow type mismatch accepted"
   results<-forM [False,True] $ \flag -> sequence
     [ verifyWorkflow (interpretFlow $ ResumeWorkflow $ traceValue flag) VNil
-        (scope "resume" $ ["check","recover","inspect","refresh","backup","observe","reconcile","draft"]
+        (scope "operator" $ ["check","recover","inspect","refresh","backup","observe","reconcile","draft"]
           <>if flag then ["restore","finish:draft"] else ["finish:no-draft"]) ()
     , verifyWorkflow (interpretFlow $ SigningWorkflow $ traceValue flag) (BackupCovered (PreparedPayout "payment") :& VNil)
         (scope "signing" ["inspect-signing",if flag then "reuse:saved" else "issue"]) (if flag then "saved" else "payment")
     , verifyWorkflow (interpretFlow $ BroadcastWorkflow $ traceValue flag) (BackupCovered (QueuedPayout "transaction") :& VNil)
         (scope "broadcast" ["inspect-broadcast",if flag then "send" else "record"]) ()
     , verifyWorkflow (interpretFlow $ ReplacementDraftWorkflow (traceValue flag) "parent" (good $ amount 2) "review") VNil
-        (scope "native" $ ["draft:parent:2:review"]<>if flag then [] else ["refresh:parent","reconcile","draft-sign"]) (if flag then 7 else 8)
+        (scope "operator" $ ["draft:parent:2:review"]<>if flag then [] else ["refresh:parent","reconcile","draft-sign"]) (if flag then 7 else 8)
     , verifyWorkflow (interpretFlow $ ReplacementSigningWorkflow (traceValue flag) 7) VNil
-        (scope "native" $ ["replacement:7"]<>if flag then [] else ["refresh:7","backup","observe","reconcile","replacement-sign"]) (if flag then "saved" else "new")
+        (scope "operator" $ ["replacement:7"]<>if flag then [] else ["refresh:7","backup","observe","reconcile","replacement-sign"]) (if flag then "saved" else "new")
+    , verifyWorkflow (interpretFlow $ RetryWorkflow (traceValue flag) "transaction" "review") VNil
+        (scope "operator" $ ["retry:transaction:review"]<>if flag then [] else ["refresh:transaction","expiry","reconcile","approve:review:proof:transaction"]) ()
+    , verifyWorkflow (interpretFlow $ CancellationWorkflow (traceValue flag) "payment" 3 "review") VNil
+        (scope "operator" $ ["cancel:payment"]<>if flag then [] else ["refresh:payment","reconcile","reread-and-validate","begin:3:review","release:payment","finish:payment"]) ()
     ]
   cycles<-forM [(enabled,candidates) | enabled<-[False,True],candidates<-[[],["first","second"]]] $ \(enabled,candidates) ->
     verifyWorkflow (interpretFlow $ CycleWorkflow $ TraceWorkflow enabled candidates) VNil
       (scope "cycle" $ ["recover","enabled"]<>if enabled then ["candidates"]<>map ("payout:"<>) candidates<>["owner"] else []) ()
   rebroadcast<-verifyWorkflow (interpretFlow $ RebroadcastWorkflow (traceValue False) "transaction" 9 "review") VNil
-    (scope "native" ["inspect:transaction:9:review","backup","send-saved"]) "transaction"
-  pure (and (concat results<>cycles<>[rebroadcast]))
+    (scope "operator" ["inspect:transaction:9:review","backup","send-saved"]) "transaction"
+  ownerFees<-forM [(configured,candidates,visited) | configured<-[False,True], (candidates,visited)<-
+    [([],[]),(["empty"],["empty"]),(["saved","later"],["saved"])
+    ,(["insufficient","saved","later"],["insufficient","saved"]),(["empty","declined"],["empty","declined"])]] $
+    \(configured,candidates,visited)->verifyWorkflow (interpretFlow $ OwnerFeesWorkflow $ TraceWorkflow configured candidates) VNil
+      (["fee-candidates"]<>if configured then map ("reserve:"<>) visited else []) ()
+  pure (and (concat results<>cycles<>ownerFees<>[rebroadcast]))
 
 -- Compare each complete path and every failure/cancellation prefix against a
 -- separate oracle. No continuation, scope exit or later effect may follow a fault.

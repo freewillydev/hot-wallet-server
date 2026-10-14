@@ -36,8 +36,13 @@ with explicit caller subsets and checkpoint states. The bounded workflows now
 share `Workflow.interpret`: construct `F.do` only after complete `eqT`/`Refl`, then
 match the workflow GADT to recover its exact capability context. Payout, cycle,
 resume, signing, broadcast and three native replacement/rebroadcast paths expose
-their orchestration there. Leave cohesive authorization/sign-or-send/verification
-primitives and collected-error recovery in Critical.hs.
+their orchestration there. Retry approval, preparation cancellation and owner-fee
+selection now join them; shared custody steps remove repeated scope/checkpoint/
+observation methods. Keep durable cancellation begin before unlocking and stop
+owner-fee selection after its first committed reservation. The only generic
+helpers are state-preserving conditional/traversal composition. Leave cohesive
+authorization/sign-or-send/verification primitives, per-candidate catches and
+collected-error recovery in Critical.hs.
 
 The granular step classes are internal compiler capabilities, not new public
 DomainCaps. Do not let request selectors omit whole-workflow failure scopes by

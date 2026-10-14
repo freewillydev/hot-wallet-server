@@ -133,9 +133,10 @@ checks the concrete capability instances. A selector can compose authorized
 high-level methods with `F.do`.
 
 **Build workflows inside `interpret`, after `eqT`/`Refl`; evaluate them separately.**
-`Workflow value before after result` in `Operation/Internal.hs` has eight closed
+`Workflow value before after result` in `Operation/Internal.hs` has eleven closed
 constructors: payout, cycle, resume, signing, broadcast, native rebroadcast,
-replacement draft and replacement signing. `CompileWorkflow` checks all four type
+replacement draft, replacement signing, retry approval, preparation cancellation
+and owner-fee selection. `CompileWorkflow` checks all four type
 indices before matching the constructor and using its capability dictionaries.
 Its injective Context retains that complete payload type. Its outcome is a pure
 indexed Flow; branches remain deferred continuations until earlier effects return.
@@ -143,7 +144,8 @@ The helper `workflow` only requests interpretation; the concrete compiler adapte
 reject a mismatch inside the existing gate.
 
 Public `DomainCaps` still grants only the original high-level methods. The granular
-`ResumeSteps`, `NativeSteps`, `SigningSteps`, `BroadcastSteps` and `CycleSteps` are
+`CustodySteps`, `ResumeSteps`, `NativeSteps`, `SigningSteps`, `BroadcastSteps`,
+`CycleSteps`, `RetrySteps`, `CancellationSteps` and `OwnerFeeSteps` are
 internal compiler capabilities, absent from that list and from its superclasses.
 A handler cannot select them to bypass a workflow's scope, checkpoint or branch.
 Their runtime evidence families have private constructors in `Critical.hs`.
@@ -156,9 +158,19 @@ signing or exact-byte sending, and validation/recording remain cohesive concrete
 primitives. `recoverPending` still collects recovery errors before reconciliation;
 it is intentionally not rewritten as a stop-on-first-error sequence.
 
+Shared `CustodySteps` removes duplicate operator scope/checkpoint/observation
+methods. Retry approval retains saved-result replay before its paused check;
+cancellation retains its paused check before replay. Its Flow refreshes and
+reconciles before a concrete reread/validation/durable begin, then releases only
+the saved inputs and finishes. `CancellationCommit` has a private constructor.
+Owner-fee selection visits candidates in saved priority order and stops after the
+first committed reservation; per-candidate freshness remains outside its narrow
+recoverable-error catch. `whenFlow` and `traverseFlow_` compose state-preserving
+branches and sequences; they cannot hide a change of checkpoint state or lift IO.
+
 Private scope instructions wrap the entire interpreted continuation, including
 cancellation between leaves, using the already-held gate. Signing pauses with
-`signing_requires_review`; resume/native/broadcast retain
+`signing_requires_review`; operator/broadcast retain
 `payment_requires_reconciliation`; cycle retains its specific BridgeError handling
 and custody-deferral rule. Observation-only denial occurs before these guards.
 Scopes do not roll back completed effects, authorize retries or create a second
@@ -185,7 +197,7 @@ methods as trace steps and exercises the same `Workflow.interpret` against an
 independent ordering oracle. Its `MethodStep` instance cannot replace the fixed
 production `Command` instance. This checks sequencing, not concrete IO; disposable
 PostgreSQL/process/HTTPS contracts supply scoped effect coverage. New branch tests
-cover all eight workflows and every error/cancellation prefix. Real operator
+cover all eleven workflows and every error/cancellation prefix. Real operator
 resume tests inject a synchronous boundary failure and later cancellation during
 observation recovery, checking pause and preservation of attempts, bytes, postings
 and balances without broadcast. This does not claim runtime fault injection at

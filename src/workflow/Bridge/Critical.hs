@@ -521,6 +521,10 @@ data instance BroadcastWork (WorkerCommand 'Critical result) = BroadcastWork Rec
 data instance RebroadcastWork (OperatorCommand 'Critical result) = RebroadcastWork RecordedAttempt [(RecordedAttempt,NativeSigned)] Int64
 data instance ReplacementDraftWork (OperatorCommand 'Critical result) = ReplacementDraftWork RecordedAttempt Amount Text
 data instance ReplacementSigningWork (OperatorCommand 'Critical result) = ReplacementSigningWork Int64 Text
+data instance RetryWork (OperatorCommand 'Critical result) = RetryWork RecordedAttempt SolanaSigned Text
+data instance CancellationWork (OperatorCommand 'Critical result) = CancellationWork Text Int Text (Maybe (Text,Text,Bool))
+data instance CancellationCommit (OperatorCommand 'Critical result) = CancellationCommit PreparedPayment Text Text [NP.Outpoint]
+data instance OwnerFeeWork (WorkerCommand 'Critical result) = OwnerFeeWork CustomerSettings C.OwnerFeeRecipients Asset
 
 instance OperatorOperations
 
@@ -534,8 +538,13 @@ instance Typeable result => OperatorService (OperatorCommand 'Critical result) w
   pauseService _ reason = operatorEffect True $ \(CriticalEnvironment _ _ _ _ _ _ writer) -> evalWrite writer (Pause reason)
   resumeService = operatorWorkflow . ResumeWorkflow
 
+instance CustodySteps (OperatorCommand 'Critical result) where
+  custodyScope _ = F.step . OperatorScope
+  checkpointCustody _ = operatorEffect False backupDecisions
+  observeCustody _ = operatorEffect False $ \environment -> evalWorker @'[WorkerObservation] environment observeChains
+  reconcileCustodyStep _ = operatorEffect False $ \environment -> evalWorker @'[WorkerObservation] environment reconcileCustody
+
 instance Typeable result => ResumeSteps (OperatorCommand 'Critical result) where
-  resumeScope _ = F.step . OperatorScope
   checkResume _ = operatorEffect False $ \(CriticalEnvironment rpc settings _ _ _ reader _) -> do
     state<-evalRead reader ReadState
     require (ledgerPaused state) "pause_before_operator_action"
@@ -546,9 +555,6 @@ instance Typeable result => ResumeSteps (OperatorCommand 'Critical result) where
     ResumeWork <$> mapM (evalRead reader . ReadAttempt) ids
   refreshResume _ (ResumeWork reviewed) = operatorEffect False $ \environment ->
     forM_ reviewed (refreshSource environment . recordedPayment)
-  checkpointResume _ = operatorEffect False backupDecisions
-  observeResume _ = operatorEffect False $ \environment -> evalWorker @'[WorkerObservation] environment observeChains
-  reconcileResume _ = operatorEffect False $ \environment -> evalWorker @'[WorkerObservation] environment reconcileCustody
   inspectResumeDraft _ = operatorEffect False $ \(CriticalEnvironment _ _ _ _ _ reader _) -> do
     nativeWork<-evalRead reader ReadNativeLockWork
     pure $ case nativeWork of
@@ -565,16 +571,23 @@ instance Typeable result => ResumeSteps (OperatorCommand 'Critical result) where
     evalWrite writer (ResumeLedger now [("Native",N.nativeCheckpointHash native),("Solana",tokenOrigin settings),("SolanaOperating",operatingOrigin settings)]
       reviewed ((\(ResumeDraft work)->work) <$> unsigned))
 
-instance OperatorRepair (OperatorCommand 'Critical result) where
+instance Typeable result => OperatorRepair (OperatorCommand 'Critical result) where
   repairCompletedOrder _ order = operatorEffect False $ \(CriticalEnvironment _ _ _ _ _ _ writer) -> do
     now<-floor <$> getPOSIXTime
     evalWrite writer (RepairCompletedOrderView now order)
-  retrySolanaPayment _ txid reason = operatorEffect False $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) -> guarded environment $ do
+  retrySolanaPayment value txid reason = operatorWorkflow (RetryWorkflow value txid reason)
+  cancelPreparation value identifier generation reason = operatorWorkflow (CancellationWorkflow value identifier generation reason)
+  refundDeposit _ receipt = operatorEffect False $ \(CriticalEnvironment _ _ _ _ _ _ writer) -> do
+    now<-floor <$> getPOSIXTime
+    evalWrite writer (AuthorizeRefund now receipt)
+
+instance RetrySteps (OperatorCommand 'Critical result) where
+  inspectRetry _ txid reason = operatorEffect False $ \(CriticalEnvironment rpc settings config _ _ reader _) -> do
     let native=nativeSettings settings
     require (not(T.null $ T.strip reason) && T.length reason<=512) "invalid_retry_approval"
     previous<-evalRead reader (ReadRetryApproval txid)
     case previous of
-      Just old->require (old==reason) "retry_approval_conflict"
+      Just old->require (old==reason) "retry_approval_conflict" >> pure Nothing
       Nothing->do
         state<-evalRead reader ReadState
         require (ledgerPaused state) "pause_before_operator_action"
@@ -584,41 +597,46 @@ instance OperatorRepair (OperatorCommand 'Critical result) where
         prepared<-evalRead reader (ReadRecordedPreparation txid)
         verifySignedAttempt (N.nativeCall rpc native) (N.profile native) config prepared (recordedSigned saved)
         signed<-decode (signedPolicy $ recordedSigned saved)
-        refreshSource environment (recordedPayment saved)
-        proof<-expiry environment signed >>= maybe (reject "solana_expiry_not_proven") pure
-        evalWorker @'[WorkerObservation] environment reconcileCustody
-        now<-floor <$> getPOSIXTime
-        evalWrite writer (ApproveSolanaRetry now saved reason proof)
-  cancelPreparation _ identifier generation reason = operatorEffect False $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) -> guarded environment $ do
-    let native=nativeSettings settings; solana=solanaSettings settings
+        pure (Just $ RetryWork saved signed reason)
+  refreshRetrySource _ (RetryWork saved _ _) = operatorEffect False $ \environment -> refreshSource environment (recordedPayment saved)
+  proveRetryExpired _ (RetryWork _ signed _) = operatorEffect False $ \environment ->
+    expiry environment signed >>= maybe (reject "solana_expiry_not_proven") pure
+  commitRetryApproval _ (RetryWork saved _ reason) proof = operatorEffect False $ \(CriticalEnvironment _ _ _ _ _ _ writer) -> do
+    now<-floor <$> getPOSIXTime
+    evalWrite writer (ApproveSolanaRetry now saved reason proof)
+
+instance CancellationSteps (OperatorCommand 'Critical result) where
+  inspectCancellation _ identifier generation reason = operatorEffect False $ \(CriticalEnvironment _ _ _ _ _ reader _) -> do
     require (generation>=0 && generation<8 && not(T.null $ T.strip reason) && T.length reason<=512) "invalid_preparation_cancellation"
     state<-evalRead reader ReadState
     require (ledgerPaused state) "pause_before_operator_action"
     previous<-evalRead reader (ReadCancellation identifier generation)
     forM_ previous $ \(old,_,_)->require (old==reason) "preparation_cancellation_conflict"
     case previous of
-      Just (_,_,True)->pure ()
-      _->do
-        unsigned<-evalRead reader (ReadUnsignedPreparation identifier)
-        require (preparedGeneration unsigned==generation) "preparation_generation_changed"
-        case paymentAsset(savedPayment $ preparedView unsigned) of
-          Native->N.nativeIdentity rpc native >> pure ()
-          Wrapped->S.solanaIdentity rpc solana >> pure ()
-          Sol->reject "invalid_payout_asset"
-        refreshSource environment identifier
-        evalWorker @'[WorkerObservation] environment reconcileCustody
-        prepared<-evalRead reader (ReadUnsignedPreparation identifier)
-        require (preparedGeneration prepared==generation) "preparation_generation_changed"
-        (points,cleanup)<-cancellationPlan (N.nativeCall rpc native) (N.profile native) config prepared
-        forM_ previous $ \(_,plan,_)->require (plan==cleanup) "preparation_cancellation_conflict"
-        now<-floor <$> getPOSIXTime
-        evalWrite writer (BeginCancellation prepared now reason cleanup)
-        when (paymentAsset(savedPayment $ preparedView prepared)==Native) $
-          releaseNativeInputLocks (N.nativeCall rpc native) points
-        evalWrite writer (FinishCancellation prepared reason cleanup)
-  refundDeposit _ receipt = operatorEffect False $ \(CriticalEnvironment _ _ _ _ _ _ writer) -> do
+      Just (_,_,True)->pure Nothing
+      _->pure (Just $ CancellationWork identifier generation reason previous)
+  refreshCancellationSource _ (CancellationWork identifier generation _ _) = operatorEffect False $ \environment@(CriticalEnvironment rpc settings _ _ _ reader _) -> do
+    unsigned<-evalRead reader (ReadUnsignedPreparation identifier)
+    require (preparedGeneration unsigned==generation) "preparation_generation_changed"
+    case paymentAsset(savedPayment $ preparedView unsigned) of
+      Native->N.nativeIdentity rpc (nativeSettings settings) >> pure ()
+      Wrapped->S.solanaIdentity rpc (solanaSettings settings) >> pure ()
+      Sol->reject "invalid_payout_asset"
+    refreshSource environment identifier
+  beginCancellation _ (CancellationWork identifier generation reason previous) = operatorEffect False $ \(CriticalEnvironment rpc settings config _ _ reader writer) -> do
+    let native=nativeSettings settings
+    prepared<-evalRead reader (ReadUnsignedPreparation identifier)
+    require (preparedGeneration prepared==generation) "preparation_generation_changed"
+    (points,cleanup)<-cancellationPlan (N.nativeCall rpc native) (N.profile native) config prepared
+    forM_ previous $ \(_,plan,_)->require (plan==cleanup) "preparation_cancellation_conflict"
     now<-floor <$> getPOSIXTime
-    evalWrite writer (AuthorizeRefund now receipt)
+    evalWrite writer (BeginCancellation prepared now reason cleanup)
+    pure (CancellationCommit prepared reason cleanup points)
+  releaseCancellation _ (CancellationCommit prepared _ _ points) = operatorEffect False $ \(CriticalEnvironment rpc settings _ _ _ _ _) ->
+    when (paymentAsset(savedPayment $ preparedView prepared)==Native) $
+      releaseNativeInputLocks (N.nativeCall rpc $ nativeSettings settings) points
+  finishCancellation _ (CancellationCommit prepared reason cleanup _) = operatorEffect False $ \(CriticalEnvironment _ _ _ _ _ _ writer) ->
+    evalWrite writer (FinishCancellation prepared reason cleanup)
 
 instance Typeable result => OperatorNative (OperatorCommand 'Critical result) where
   rebroadcastNative value txid anchor reason = operatorWorkflow (RebroadcastWorkflow value txid anchor reason)
@@ -628,10 +646,6 @@ instance Typeable result => OperatorNative (OperatorCommand 'Critical result) wh
     evalWrite writer (CancelReplacementDraft decision reason)
 
 instance Typeable result => NativeSteps (OperatorCommand 'Critical result) where
-  nativeScope _ = F.step . OperatorScope
-  checkpointNative _ = operatorEffect False backupDecisions
-  observeNative _ = operatorEffect False $ \environment -> evalWorker @'[WorkerObservation] environment observeChains
-  reconcileNative _ = operatorEffect False $ \environment -> evalWorker @'[WorkerObservation] environment reconcileCustody
   inspectRebroadcast _ txid anchor reason = operatorEffect False $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) -> do
     let native=nativeSettings settings
     require (NP.transactionId txid && anchor>0 && not(T.null $ T.strip reason) && T.length reason<=512) "invalid_native_rebroadcast_approval"
@@ -1029,32 +1043,26 @@ instance Typeable result => CycleSteps (WorkerCommand 'Critical result) where
     evalWrite writer (AdmitPayoutRounds now)
     evalRead reader PaymentCandidates
   cyclePayout value identifier = workerWorkflow (PayoutWorkflow value identifier)
-  cycleOwnerFees _ = workerEffect False $ \environment -> scheduleOwnerFees environment >> pure ()
-
-  -- Shared workflows take only the private resource context.
-  -- Refresh stale evidence after slow checkpoints; never extend quote/backup terms.
+  cycleOwnerFees = workerWorkflow . OwnerFeesWorkflow
 
 -- This optional reservation never signs. All resulting work uses the ordinary
 -- payout pipeline, and a commit ends this cycle so custody can be reconciled.
-scheduleOwnerFees :: CriticalEnvironment -> IO Bool
-scheduleOwnerFees environment@(CriticalEnvironment rpc settings config configured _ reader writer) =
-  case configured of
-    Just c | Just recipients<-ownerFeeRecipients c->do
-      priority<-evalRead reader ReadAutomaticFeePriority
-      nativeWork<-evalRead reader ReadNativeLockWork
-      -- Never contest active native inputs. Saved withdrawal history gives
-      -- the less recently served asset priority, including after restart.
-      go c recipients [asset | asset<-priority,asset/=Native || nativeWork==Nothing]
-    _->pure False
- where
-  go _ _ []=pure False
-  go c recipients (asset:rest)=do
+instance OwnerFeeSteps (WorkerCommand 'Critical result) where
+  ownerFeeCandidates _ = workerEffect False $ \(CriticalEnvironment _ _ _ configured _ reader _) ->
+    case configured of
+      Just c | Just recipients<-ownerFeeRecipients c->do
+        priority<-evalRead reader ReadAutomaticFeePriority
+        nativeWork<-evalRead reader ReadNativeLockWork
+        -- Never contest active native inputs. Saved history determines priority.
+        pure [OwnerFeeWork c recipients asset | asset<-priority,asset/=Native || nativeWork==Nothing]
+      _->pure []
+  reserveOwnerFee _ (OwnerFeeWork c recipients asset) = workerEffect False $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) -> do
     let policy=customerPolicy c
         threshold=if asset==Native then W.nativePayoutThreshold (payoutPolicy policy)
           else W.wrappedPayoutThreshold (payoutPolicy policy)
     candidate<-evalRead reader (ReadAutomaticFeeAmount asset threshold $ maximumWithdrawal $ admissionLimits policy)
     case candidate of
-      Nothing->go c recipients rest
+      Nothing->pure False
       Just quantity->do
         freshIntake environment
         outcome<-tryBridge $ do
@@ -1078,9 +1086,9 @@ scheduleOwnerFees environment@(CriticalEnvironment rpc settings config configure
           pure saved
         case outcome of
           Right (Just _)->pure True
-          Right Nothing->go c recipients rest
+          Right Nothing->pure False
           Left (BridgeError code) | code `elem` ["native_admission_funds_unavailable","native_fee_budget_exceeded",
-            "insufficient_operating_sol","insufficient_custody_tokens"]->go c recipients rest
+            "insufficient_operating_sol","insufficient_custody_tokens"]->pure False
           Left failure->throwIO failure
 
 checkpoint :: CriticalEnvironment -> Int64 -> LedgerState -> IO W.BackupReceipt

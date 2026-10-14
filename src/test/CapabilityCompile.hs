@@ -161,7 +161,36 @@ cannotSkipResumeScope = operator @'[OperatorService] recoverResume
 #endif
 #ifdef BAD_INTERNAL_NATIVE
 cannotSkipNativeScope :: Plan 'Operator ()
-cannotSkipNativeScope = operator @'[OperatorNative] checkpointNative
+cannotSkipNativeScope = operator @'[OperatorNative] checkpointCustody
+#endif
+
+#ifdef BAD_INTERNAL_RETRY
+cannotSkipRetryScope :: Plan 'Operator ()
+cannotSkipRetryScope = operator @'[OperatorRepair] (\cap -> commitRetryApproval cap undefined "proof")
+#endif
+#ifdef BAD_INTERNAL_CANCEL
+cannotSkipCancellation :: Plan 'Operator ()
+cannotSkipCancellation = operator @'[OperatorRepair] (\cap -> finishCancellation cap undefined)
+#endif
+#ifdef BAD_INTERNAL_CUSTODY_SELECT
+cannotSelectCustody :: Plan 'Operator ()
+cannotSelectCustody = operator @'[CustodySteps] checkpointCustody
+#endif
+#ifdef BAD_INTERNAL_REPAIR_SELECT
+cannotSelectRepair :: Plan 'Operator ()
+cannotSelectRepair = operator @'[CancellationSteps] (\_ -> F.pure ())
+#endif
+#ifdef BAD_INTERNAL_OWNER_SELECT
+cannotSelectOwnerFees :: SomeOperationAt Program 'Worker 'Critical ()
+cannotSelectOwnerFees = workerRequest @'[OwnerFeeSteps] (\_ -> F.pure ())
+#endif
+#ifdef BAD_INTERNAL_OWNER
+cannotSkipOwnerScheduling :: SomeOperationAt Program 'Worker 'Critical ()
+cannotSkipOwnerScheduling = workerRequest @'[WorkerCycle] (\cap -> ownerFeeCandidates cap F.>> F.pure ())
+#endif
+#ifdef BAD_TRAVERSE_STATE
+cannotTraverseChangingStates :: WorkerQueue value => value -> Method value '[SignedPayout] '[QueuedPayout] ()
+cannotTraverseChangingStates value = traverseFlow_ (const $ queuePayment value) [()]
 #endif
 #ifdef BAD_INTERNAL_CYCLE
 cannotSkipCycleScope :: SomeOperationAt Program 'Worker 'Critical ()

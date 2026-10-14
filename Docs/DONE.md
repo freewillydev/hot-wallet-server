@@ -43,6 +43,34 @@ source hashes and test scope are in [RESUME.md](RESUME.md) and the records below
 
 ## Historical verification records
 
+## Scoped repair and owner-fee Flow composition (2026-10-14)
+
+PASS local checks: build; full bridge suite (250 groups/15,609 cases, two expected
+mutation failures); positive/37 negative compile checks; six fresh PostgreSQL
+contracts (server, ledger, complete-draft resume, Devnet HTTPS, canonical HTTPS,
+active Native). Retry, cancellation and owner-fee decisions now compose inside
+post-Refl Workflow.interpret. Shared custody steps preserve the operator scope;
+only state-preserving conditional/traversal helpers were added. The high-level
+request capabilities, critical gate, private effects and financial ordering remain.
+
+The initial HTTPS run was interrupted by a PostgreSQL backend SIGKILL during
+COMMIT; its cause was not established. Preserve that failed run as evidence.
+The three remaining modes passed sequentially on fresh databases after recovery,
+with no source changes. Task cluster stopped. Trace tests cover all eleven forms
+and every failure/cancellation prefix; they do not inject faults in every concrete
+repair IO leaf. No live deployment, custody or production-approval change.
+
+Baseline `c96ba55`; production two files: 1,706 -> 1,765 (+59); changed tests two
+files: 642 -> 700 (+58). No new source files/dependencies. This makes orchestration
+explicit rather than reducing total lines. Patch SHA256
+`55696beaddd91f00b3922a7a08369d208acdb192a94fe4b2f0281974ad86904d`.
+Receipt `/tmp/hot-wallet-composition-receipt.json`, SHA256
+`c8d98adcd0fd8c44fed28dea899bc2af01721f94a6c0ae96a9b349cc57f9662a`, binds
+70 source/design/evidence artifacts. Fresh independent `flow_composition_verifier`
+PASS for this scoped source change: all70 artifact hashes and the frozen patch
+match; logs support the stated checks and stopped cluster. The review covers
+static equivalence and supplied local evidence, not live or production approval.
+
 ## Scoped workflow orchestration (2026-10-13)
 
 PASS: build, bridge suite (250 groups/15,609 cases and two expected mutation
