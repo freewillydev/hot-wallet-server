@@ -8,7 +8,7 @@ import qualified Bridge.Operation.Internal as Operation
 import Control.Operation (Capabilities,UniqueCapabilities,Subset)
 import Control.Operation.Flow (Flow,Values(..),runFlow)
 import qualified Control.Operation.Flow as F
-import Bridge.Domain (Asset(..),gross,paymentAsset,paymentId,units)
+import Bridge.Domain (Asset(..),Amount,gross,paymentAsset,paymentId,units)
 import Bridge.Identity (payURIFor,digest)
 import Bridge.Admission (checkSolanaPayoutWith)
 import Bridge.Order (createCustomerOrder)
@@ -457,8 +457,14 @@ instance Execution 'Customer 'Critical CustomerCommand where
 -- Private instruction constructors own IO; capability methods only build Flow.
 -- A composed Flow checks each leaf's original observation permission before IO,
 -- including leaves chosen by a value-dependent continuation, under the held gate.
-data instance Action 'Operator before after a = OperatorEffect Bool (CriticalEnvironment -> Values before -> IO (a,Values after))
-data instance Action 'Worker before after a = WorkerEffect Bool (CriticalEnvironment -> Values before -> IO (a,Values after))
+data instance Action 'Operator before after a where
+  OperatorEffect :: Bool -> (CriticalEnvironment -> Values before -> IO (a,Values after)) -> Action 'Operator before after a
+  OperatorScope :: Flow (Action 'Operator) before after a -> Action 'Operator before after a
+data instance Action 'Worker before after a where
+  WorkerEffect :: Bool -> (CriticalEnvironment -> Values before -> IO (a,Values after)) -> Action 'Worker before after a
+  SigningScope :: Flow (Action 'Worker) before after a -> Action 'Worker before after a
+  BroadcastScope :: Flow (Action 'Worker) before after a -> Action 'Worker before after a
+  CycleScope :: Flow (Action 'Worker) before before () -> Action 'Worker before before ()
 
 operatorEffect :: Bool -> (CriticalEnvironment -> IO a) -> Flow (Action 'Operator) state state a
 operatorEffect allowed action = F.step $ OperatorEffect allowed $ \environment values -> do
@@ -471,14 +477,50 @@ workerEffect allowed action = workerStep allowed $ \environment values -> do
 workerStep :: Bool -> (CriticalEnvironment -> Values before -> IO (a,Values after)) -> Flow (Action 'Worker) before after a
 workerStep allowed = F.step . WorkerEffect allowed
 
+-- A scope encloses the entire continuation, including cancellation between leaves.
+-- It uses the already-held critical gate, never a second evaluator entry point.
 runOperatorFlow :: CriticalEnvironment -> Flow (Action 'Operator) before after a -> Values before -> IO (a,Values after)
-runOperatorFlow environment = runFlow $ \(OperatorEffect allowed action) values -> do
-  require (allowed || paying environment) "observation_only"
-  action environment values
+runOperatorFlow environment = runFlow $ \instruction values -> case instruction of
+  OperatorEffect allowed action -> do
+    require (allowed || paying environment) "observation_only"
+    action environment values
+  OperatorScope flow -> do
+    require (paying environment) "observation_only"
+    guarded environment (runOperatorFlow environment flow values)
 runWorkerFlow :: CriticalEnvironment -> Flow (Action 'Worker) before after a -> Values before -> IO (a,Values after)
-runWorkerFlow environment = runFlow $ \(WorkerEffect allowed action) values -> do
-  require (allowed || paying environment) "observation_only"
-  action environment values
+runWorkerFlow environment@(CriticalEnvironment _ _ _ _ _ reader writer) = runFlow $ \instruction values -> case instruction of
+  WorkerEffect allowed action -> do
+    require (allowed || paying environment) "observation_only"
+    action environment values
+  SigningScope flow -> do
+    require (paying environment) "observation_only"
+    runWorkerFlow environment flow values `onException` evalWrite writer (Pause "signing_requires_review")
+  BroadcastScope flow -> do
+    require (paying environment) "observation_only"
+    guarded environment (runWorkerFlow environment flow values)
+  CycleScope flow -> runWorkerFlow environment flow values `catch` (\(BridgeError code) ->
+    if code=="custody_not_reconciled" then do
+      paused<-ledgerPaused <$> evalRead reader ReadState
+      when paused (reject code)
+      pure ((),values)
+    else evalWrite writer (Pause code) >> reject code)
+
+operatorWorkflow :: (Typeable value,Typeable before,Typeable after,Typeable a,MethodStep value ~ Action 'Operator)
+                 => Workflow value before after a -> Method value before after a
+operatorWorkflow = maybe (F.step $ OperatorEffect False $ \_ _ -> reject "operation_dictionary_mismatch") id . workflow
+workerWorkflow :: (Typeable value,Typeable before,Typeable after,Typeable a,MethodStep value ~ Action 'Worker)
+               => Workflow value before after a -> Method value before after a
+workerWorkflow = maybe (workerStep False $ \_ _ -> reject "operation_dictionary_mismatch") id . workflow
+
+-- Only the concrete interpreter constructs runtime evidence; interpretation owns
+-- its ordering and branches, while these values retain exact saved decisions.
+data instance ResumeWork (OperatorCommand 'Critical result) = ResumeWork [RecordedAttempt]
+data instance ResumeDraft (OperatorCommand 'Critical result) = ResumeDraft NativeLockWork
+data instance SigningWork (WorkerCommand 'Critical result) = SigningWork Text PreparedPayment
+data instance BroadcastWork (WorkerCommand 'Critical result) = BroadcastWork RecordedAttempt SigningReply RecordedAttempt PaymentObservation
+data instance RebroadcastWork (OperatorCommand 'Critical result) = RebroadcastWork RecordedAttempt [(RecordedAttempt,NativeSigned)] Int64
+data instance ReplacementDraftWork (OperatorCommand 'Critical result) = ReplacementDraftWork RecordedAttempt Amount Text
+data instance ReplacementSigningWork (OperatorCommand 'Critical result) = ReplacementSigningWork Int64 Text
 
 instance OperatorOperations
 
@@ -488,31 +530,40 @@ instance Execution 'Operator 'Critical OperatorCommand where
   evaluateOperation SignerEvaluation{} _=reject "signer_context_forbidden"
   evaluateOperation (WorkerEvaluation environment) (OperatorDSL workflow)=fst <$> runOperatorFlow environment workflow VNil
 
-instance OperatorService (OperatorCommand 'Critical result) where
+instance Typeable result => OperatorService (OperatorCommand 'Critical result) where
   pauseService _ reason = operatorEffect True $ \(CriticalEnvironment _ _ _ _ _ _ writer) -> evalWrite writer (Pause reason)
-  resumeService _ = operatorEffect False $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) -> guarded environment $ do
-    let native=nativeSettings settings
+  resumeService = operatorWorkflow . ResumeWorkflow
+
+instance Typeable result => ResumeSteps (OperatorCommand 'Critical result) where
+  resumeScope _ = F.step . OperatorScope
+  checkResume _ = operatorEffect False $ \(CriticalEnvironment rpc settings _ _ _ reader _) -> do
     state<-evalRead reader ReadState
     require (ledgerPaused state) "pause_before_operator_action"
-    N.verifyNativeBoundaryWith (N.nativeCall rpc native)
-    recoverPending environment
+    N.verifyNativeBoundaryWith (N.nativeCall rpc $ nativeSettings settings)
+  recoverResume _ = operatorEffect False recoverPending
+  inspectResume _ = operatorEffect False $ \(CriticalEnvironment _ _ _ _ _ reader _) -> do
     ids<-evalRead reader PendingAttempts
-    reviewed<-mapM (evalRead reader . ReadAttempt) ids
+    ResumeWork <$> mapM (evalRead reader . ReadAttempt) ids
+  refreshResume _ (ResumeWork reviewed) = operatorEffect False $ \environment ->
     forM_ reviewed (refreshSource environment . recordedPayment)
-    backupDecisions environment
-    evalWorker @'[WorkerObservation] environment observeChains
-    evalWorker @'[WorkerObservation] environment reconcileCustody
-    -- Revalidate unknown native signing outcomes without signing or changing
-    -- the saved generation. Resume commits only if this exact work remains.
+  checkpointResume _ = operatorEffect False backupDecisions
+  observeResume _ = operatorEffect False $ \environment -> evalWorker @'[WorkerObservation] environment observeChains
+  reconcileResume _ = operatorEffect False $ \environment -> evalWorker @'[WorkerObservation] environment reconcileCustody
+  inspectResumeDraft _ = operatorEffect False $ \(CriticalEnvironment _ _ _ _ _ reader _) -> do
     nativeWork<-evalRead reader ReadNativeLockWork
-    unsigned<-case nativeWork of
+    pure $ case nativeWork of
       Just work | null(lockAttempts work) && not(lockCancelling work)
-        && preparedDraft(lockPreparation work)/=Nothing->do
-          _<-restoreNativeWork (N.nativeCall rpc native) native config nativeWork
-          pure nativeWork
-      _->pure Nothing
+        && preparedDraft(lockPreparation work)/=Nothing -> Just (ResumeDraft work)
+      _ -> Nothing
+  restoreResumeDraft _ (ResumeDraft work) = operatorEffect False $ \(CriticalEnvironment rpc settings config _ _ _ _) -> do
+    let native=nativeSettings settings
+    _<-restoreNativeWork (N.nativeCall rpc native) native config (Just work)
+    pure ()
+  finishResume _ (ResumeWork reviewed) unsigned = operatorEffect False $ \(CriticalEnvironment _ settings _ _ _ _ writer) -> do
     now<-floor <$> getPOSIXTime
-    evalWrite writer (ResumeLedger now [("Native",N.nativeCheckpointHash native),("Solana",tokenOrigin settings),("SolanaOperating",operatingOrigin settings)] reviewed unsigned)
+    let native=nativeSettings settings
+    evalWrite writer (ResumeLedger now [("Native",N.nativeCheckpointHash native),("Solana",tokenOrigin settings),("SolanaOperating",operatingOrigin settings)]
+      reviewed ((\(ResumeDraft work)->work) <$> unsigned))
 
 instance OperatorRepair (OperatorCommand 'Critical result) where
   repairCompletedOrder _ order = operatorEffect False $ \(CriticalEnvironment _ _ _ _ _ _ writer) -> do
@@ -569,83 +620,94 @@ instance OperatorRepair (OperatorCommand 'Critical result) where
     now<-floor <$> getPOSIXTime
     evalWrite writer (AuthorizeRefund now receipt)
 
-instance OperatorNative (OperatorCommand 'Critical result) where
-  rebroadcastNative _ txid anchor reason = operatorEffect False $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) -> guarded environment $ do
+instance Typeable result => OperatorNative (OperatorCommand 'Critical result) where
+  rebroadcastNative value txid anchor reason = operatorWorkflow (RebroadcastWorkflow value txid anchor reason)
+  draftNativeReplacement value parent fee reason = operatorWorkflow (ReplacementDraftWorkflow value parent fee reason)
+  signNativeReplacement value decision = operatorWorkflow (ReplacementSigningWorkflow value decision)
+  cancelNativeReplacement _ decision reason = operatorEffect False $ \(CriticalEnvironment _ _ _ _ _ _ writer) ->
+    evalWrite writer (CancelReplacementDraft decision reason)
+
+instance Typeable result => NativeSteps (OperatorCommand 'Critical result) where
+  nativeScope _ = F.step . OperatorScope
+  checkpointNative _ = operatorEffect False backupDecisions
+  observeNative _ = operatorEffect False $ \environment -> evalWorker @'[WorkerObservation] environment observeChains
+  reconcileNative _ = operatorEffect False $ \environment -> evalWorker @'[WorkerObservation] environment reconcileCustody
+  inspectRebroadcast _ txid anchor reason = operatorEffect False $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) -> do
     let native=nativeSettings settings
     require (NP.transactionId txid && anchor>0 && not(T.null $ T.strip reason) && T.length reason<=512) "invalid_native_rebroadcast_approval"
     (saved,family,current)<-evalRead reader (ReadNativeRebroadcastContext txid)
     previous<-evalRead reader (ReadNativeRebroadcastDecision txid anchor reason)
     require (current==maybe anchor id previous) "native_rebroadcast_review_changed"
-    let missing=do
-          (actual,view)<-readSavedNativeFamily (N.nativeCall rpc native) native config reader (recordedPayment saved)
-          require (actual==family) "native_replacement_family_changed"
-          require (NP.familyActive view==Nothing) "native_rebroadcast_payment_not_missing"
-          pure view
-    before<-missing
+    before<-missingNativeFamily rpc native config reader saved family
     refreshSource environment (recordedPayment saved)
     block<-RPC.fieldValue "hash" (NP.familyPosition before) :: IO Text
     let proof=object ["transaction" .= txid,"bytesHash" .= digest(TE.encodeUtf8 $ signedBytes $ recordedSigned saved)
           ,"nodeBlock" .= block,"family" .= map (signedId.recordedSigned.fst) family,"noActiveFamilyPayment" .= True]
     approved<-maybe (evalWrite writer $ RecordNativeRebroadcast saved (map fst family) anchor reason proof) pure previous
-    backupDecisions environment
-    -- Backup may be slow. Recheck source and exact family immediately before
-    -- authorizing the saved bytes. An uncertain send never triggers a retry.
+    pure (RebroadcastWork saved family approved)
+  sendRebroadcast _ (RebroadcastWork saved family approved) = operatorEffect False $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) -> do
+    let native=nativeSettings settings; txid=signedId $ recordedSigned saved
+    -- Backup may be slow: source and family must be rechecked before authorization.
     refreshSource environment (recordedPayment saved)
-    _<-missing
+    _<-missingNativeFamily rpc native config reader saved family
     authorized<-evalWrite writer (AuthorizeNativeRebroadcast saved (map fst family) approved)
     actual<-N.nativeCall rpc native True "sendrawtransaction" [toJSON $ signedBytes $ recordedSigned authorized] >>= parseValue parseJSON
     require (actual==txid) "native_broadcast_identity_mismatch"
     pure txid
-  draftNativeReplacement _ parent fee reason = operatorEffect False $ \environment@(CriticalEnvironment _ _ config _ _ reader writer) -> guarded environment $ do
+  inspectReplacementDraft _ parent fee reason = operatorEffect False $ \(CriticalEnvironment _ _ _ _ _ reader _) -> do
     require (NP.transactionId parent && units fee>0 && not(T.null $ T.strip reason) && T.length reason<=512) "invalid_native_replacement_decision"
     state<-evalRead reader ReadState
     require (ledgerPaused state) "pause_before_operator_action"
     previous<-evalRead reader (ReadReplacementDecision parent fee reason)
     case previous of
-      Just (decision,cancelled)->require (not cancelled) "native_replacement_cancelled" >> pure decision
+      Just (decision,cancelled)->require (not cancelled) "native_replacement_cancelled" >> pure (Left decision)
       Nothing->do
         saved<-evalRead reader (ReadAttempt parent)
         require (recordedChain saved=="Native") "native_replacement_not_expected"
-        refreshSource environment (recordedPayment saved)
-        evalWorker @'[WorkerObservation] environment reconcileCustody
-        now<-floor <$> getPOSIXTime
-        family<-evalRead reader (ReadReplacementDraftContext now parent fee)
-        draft<-draftOutput <$> evaluateSigning environment (DraftSigning $ DraftReplacement (H.fingerprint config) parent fee)
-        either reject pure (NP.validateNativeReplacementDraft (map snd family) fee draft)
-        later<-floor <$> getPOSIXTime
-        evalWrite writer (SaveReplacementDraft later saved draft reason)
-  signNativeReplacement _ decision = operatorEffect False $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) -> guarded environment $ do
-    let native=nativeSettings settings
+        pure (Right $ ReplacementDraftWork saved fee reason)
+  refreshReplacementDraft _ (ReplacementDraftWork saved _ _) = operatorEffect False $ \environment -> refreshSource environment (recordedPayment saved)
+  issueReplacementDraft _ (ReplacementDraftWork saved fee reason) = operatorEffect False $ \environment@(CriticalEnvironment _ _ config _ _ reader writer) -> do
+    let parent=signedId $ recordedSigned saved
+    now<-floor <$> getPOSIXTime
+    family<-evalRead reader (ReadReplacementDraftContext now parent fee)
+    draft<-draftOutput <$> evaluateSigning environment (DraftSigning $ DraftReplacement (H.fingerprint config) parent fee)
+    either reject pure (NP.validateNativeReplacementDraft (map snd family) fee draft)
+    later<-floor <$> getPOSIXTime
+    evalWrite writer (SaveReplacementDraft later saved draft reason)
+  inspectReplacementSigning _ decision = operatorEffect False $ \(CriticalEnvironment _ _ _ _ _ reader _) -> do
     require (decision>0) "invalid_native_replacement_decision"
     state<-evalRead reader ReadState
     require (ledgerPaused state) "pause_before_operator_action"
     previous<-evalRead reader (ReadReplacementMember decision)
     case previous of
-      Just saved->pure (signedId $ recordedSigned saved)
-      Nothing->do
-        identifier<-evalRead reader (ReadReplacementPayment decision)
-        refreshSource environment identifier
-        backupDecisions environment
-        evalWorker @'[WorkerObservation] environment observeChains
-        evalWorker @'[WorkerObservation] environment reconcileCustody
-        now<-floor <$> getPOSIXTime
-        (family,draft)<-evalRead reader (ReadReplacementSigning now decision)
-        wire<-replacementOutput <$> evaluateSigning environment (ReplacementSigning $ SignReplacement (H.fingerprint config) decision)
-        signed<-decode (signedPolicy wire)
-        require (signedId wire==NP.nativeTxid(NP.signedNativeTransaction signed)
-          && signedBytes wire==NP.signedNativeBytes signed
-          && commonInput wire==commonInput(recordedSigned $ fst $ last family)) "native_replacement_signature_conflict"
-        either reject pure (NP.validateNativeFamily $ map snd family<>[signed])
-        require (NP.sameNativeTemplate (NP.draftTransaction draft) (NP.signedNativeTransaction signed)
-          && NP.draftFee draft==NP.signedNativeFee signed
-          && NP.sameNativePrevouts (NP.draftPrevouts draft) (NP.signedNativePrevouts signed)) "native_replacement_signed_template_changed"
-        actual<-N.nativeCall rpc native False "decoderawtransaction" [toJSON $ signedBytes wire] >>= either reject pure . NP.decodeNativeTx
-        require (actual==NP.signedNativeTransaction signed) "native_signed_bytes_mismatch"
-        later<-floor <$> getPOSIXTime
-        saved<-evalWrite writer (RecordReplacement later decision family signed)
-        pure (signedId $ recordedSigned saved)
-  cancelNativeReplacement _ decision reason = operatorEffect False $ \(CriticalEnvironment _ _ _ _ _ _ writer) ->
-    evalWrite writer (CancelReplacementDraft decision reason)
+      Just saved->pure (Left $ signedId $ recordedSigned saved)
+      Nothing->Right . ReplacementSigningWork decision <$> evalRead reader (ReadReplacementPayment decision)
+  refreshReplacementSigning _ (ReplacementSigningWork _ identifier) = operatorEffect False $ \environment -> refreshSource environment identifier
+  issueReplacementSigning _ (ReplacementSigningWork decision _) = operatorEffect False $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) -> do
+    let native=nativeSettings settings
+    now<-floor <$> getPOSIXTime
+    (family,draft)<-evalRead reader (ReadReplacementSigning now decision)
+    wire<-replacementOutput <$> evaluateSigning environment (ReplacementSigning $ SignReplacement (H.fingerprint config) decision)
+    signed<-decode (signedPolicy wire)
+    require (signedId wire==NP.nativeTxid(NP.signedNativeTransaction signed)
+      && signedBytes wire==NP.signedNativeBytes signed
+      && commonInput wire==commonInput(recordedSigned $ fst $ last family)) "native_replacement_signature_conflict"
+    either reject pure (NP.validateNativeFamily $ map snd family<>[signed])
+    require (NP.sameNativeTemplate (NP.draftTransaction draft) (NP.signedNativeTransaction signed)
+      && NP.draftFee draft==NP.signedNativeFee signed
+      && NP.sameNativePrevouts (NP.draftPrevouts draft) (NP.signedNativePrevouts signed)) "native_replacement_signed_template_changed"
+    actual<-N.nativeCall rpc native False "decoderawtransaction" [toJSON $ signedBytes wire] >>= either reject pure . NP.decodeNativeTx
+    require (actual==NP.signedNativeTransaction signed) "native_signed_bytes_mismatch"
+    later<-floor <$> getPOSIXTime
+    saved<-evalWrite writer (RecordReplacement later decision family signed)
+    pure (signedId $ recordedSigned saved)
+
+missingNativeFamily :: Manager -> N.NativeSettings -> H.SolanaPolicy -> Reader -> RecordedAttempt -> [(RecordedAttempt,NativeSigned)] -> IO NP.NativeFamilyView
+missingNativeFamily rpc native config reader saved family = do
+  (actual,view)<-readSavedNativeFamily (N.nativeCall rpc native) native config reader (recordedPayment saved)
+  require (actual==family) "native_replacement_family_changed"
+  require (NP.familyActive view==Nothing) "native_rebroadcast_payment_not_missing"
+  pure view
 
 instance OperatorSource (OperatorCommand 'Critical result) where
   coverLostSource _ receipt recovery capital earned reason = operatorEffect False $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) -> guarded environment $ do
@@ -880,36 +942,38 @@ instance WorkerPreparation (WorkerCommand 'Critical result) where
         (N.profile native) config reader writer identifier
       pure ((),PreparedPayout identifier :& VNil)
 
-instance WorkerSigning (WorkerCommand 'Critical result) where
-  signPreparedPayment _ = workerStep False $ \environment (BackupCovered (PreparedPayout identifier) :& VNil) -> do
-    txid <- run identifier environment
+instance Typeable result => WorkerSigning (WorkerCommand 'Critical result) where
+  signPreparedPayment = workerWorkflow . SigningWorkflow
+
+instance Typeable result => SigningSteps (WorkerCommand 'Critical result) where
+  signingScope _ = F.step . SigningScope
+  inspectSigning _ = workerStep False $ \(CriticalEnvironment _ _ _ _ _ reader _) (BackupCovered (PreparedPayout identifier) :& VNil) -> do
+    (_,saved,attempts)<-evalRead reader (ReadPaymentWork identifier)
+    prepared<-maybe (reject "payment_not_prepared") pure saved
+    previous<-case attempts of
+      []->pure Nothing
+      [txid]->pure (Just txid)
+      _->reject "payment_requires_recovery"
+    pure (previous,SigningWork identifier prepared :& VNil)
+  reuseSignature _ txid = workerStep False $ \(CriticalEnvironment rpc settings config _ _ reader _) (SigningWork identifier prepared :& VNil) -> do
+    let native=nativeSettings settings
+    recorded<-evalRead reader (ReadAttempt txid)
+    require (recordedPayment recorded==identifier && recordedGeneration recorded==preparedGeneration prepared) "payment_requires_recovery"
+    verifySignedAttempt (N.nativeCall rpc native) (N.profile native) config prepared (recordedSigned recorded)
     pure (txid,SignedPayout txid :& VNil)
-   where
-    run identifier environment@(CriticalEnvironment rpc settings config _ _ reader writer) = signing `onException` evalWrite writer (Pause "signing_requires_review")
-     where
-      native=nativeSettings settings
-      signing = do
-        (_,saved,attempts)<-evalRead reader (ReadPaymentWork identifier)
-        prepared<-maybe (reject "payment_not_prepared") pure saved
-        case attempts of
-          []->issue prepared
-          [txid]->do
-            recorded<-evalRead reader (ReadAttempt txid)
-            require (recordedPayment recorded==identifier && recordedGeneration recorded==preparedGeneration prepared) "payment_requires_recovery"
-            verifySignedAttempt (N.nativeCall rpc native) (N.profile native) config prepared (recordedSigned recorded)
-            pure txid
-          _->reject "payment_requires_recovery"
-      issue prepared = do
-        _<-resolveSigningPlan (N.profile native) config prepared
-        refreshSource environment identifier
-        freshIntake environment
-        now<-floor <$> getPOSIXTime
-        decision<-evalRead reader (ReadSigningDecision now identifier $ preparedGeneration prepared)
-        require (decision==prepared) "preparation_changed"
-        signed<-preparedOutput <$> evaluateSigning environment (PreparedSigning $ SignPrepared (H.fingerprint config) identifier $ preparedGeneration prepared)
-        verifySignedAttempt (N.nativeCall rpc native) (N.profile native) config prepared signed
-        recorded<-evalWrite writer (RecordAttempt prepared signed)
-        pure (signedId $ recordedSigned recorded)
+  issueSignature _ = workerStep False $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) (SigningWork identifier prepared :& VNil) -> do
+    let native=nativeSettings settings
+    _<-resolveSigningPlan (N.profile native) config prepared
+    refreshSource environment identifier
+    freshIntake environment
+    now<-floor <$> getPOSIXTime
+    decision<-evalRead reader (ReadSigningDecision now identifier $ preparedGeneration prepared)
+    require (decision==prepared) "preparation_changed"
+    signed<-preparedOutput <$> evaluateSigning environment (PreparedSigning $ SignPrepared (H.fingerprint config) identifier $ preparedGeneration prepared)
+    verifySignedAttempt (N.nativeCall rpc native) (N.profile native) config prepared signed
+    recorded<-evalWrite writer (RecordAttempt prepared signed)
+    let txid=signedId $ recordedSigned recorded
+    pure (txid,SignedPayout txid :& VNil)
 
 instance WorkerQueue (WorkerCommand 'Critical result) where
   queuePayment _ = workerStep False $ \environment@(CriticalEnvironment _ _ _ _ _ _ writer) (SignedPayout txid :& VNil) -> guarded environment $ do
@@ -920,54 +984,52 @@ instance WorkerQueue (WorkerCommand 'Critical result) where
     sequenceNo <- evalWrite writer (MarkBroadcast now txid)
     pure (sequenceNo,QueuedPayout txid :& VNil)
 
-instance WorkerBroadcast (WorkerCommand 'Critical result) where
-  broadcastPayment _ = workerStep False $ \environment@(CriticalEnvironment rpc settings _ _ _ _ writer) (BackupCovered (QueuedPayout txid) :& VNil) -> guarded environment $ do
-    let native=nativeSettings settings; solana=solanaSettings settings
+instance Typeable result => WorkerBroadcast (WorkerCommand 'Critical result) where
+  broadcastPayment = workerWorkflow . BroadcastWorkflow
+
+instance Typeable result => BroadcastSteps (WorkerCommand 'Critical result) where
+  broadcastScope _ = F.step . BroadcastScope
+  inspectBroadcast _ = workerStep False $ \environment (BackupCovered (QueuedPayout txid) :& VNil) -> do
     (recorded,reply)<-loadActive environment txid
     require (recordedState recorded=="broadcast_intent") "broadcast_intent_required"
     (observedAttempt,observed)<-observeAttempt environment recorded reply
-    case observed of
-      PaymentUnseen->do
-        refreshSource environment (recordedPayment recorded)
-        freshIntake environment
-        case reply of
-          NativeReply signed->checkNativeAcceptance (N.nativeCall rpc native) signed
-          SolanaReply signed->checkBlockhashForSend (S.solanaCall rpc solana) (solPlanRecent $ signedSolanaPlan signed)
-        now<-floor <$> getPOSIXTime
-        authorized<-evalWrite writer (AuthorizeSend now txid)
-        require (authorized==recorded) "saved_payment_changed"
-        actual<-case reply of
-          NativeReply _->N.nativeCall rpc native True "sendrawtransaction" [toJSON $ signedBytes $ recordedSigned authorized] >>= parseValue parseJSON
-          SolanaReply _->S.solanaCall rpc solana "sendTransaction" [toJSON $ signedBytes $ recordedSigned authorized,object
-            ["encoding" .= ("base64"::Text),"skipPreflight" .= False,"preflightCommitment" .= ("confirmed"::Text),"maxRetries" .= (0::Int)]] >>= parseValue parseJSON
-        require (actual==txid) "broadcast_identifier_mismatch"
-      _->recordOutcome environment observedAttempt observed
+    pure (case observed of PaymentUnseen->True; _->False,BroadcastWork recorded reply observedAttempt observed :& VNil)
+  sendUnseenPayment _ = workerStep False $ \environment@(CriticalEnvironment rpc settings _ _ _ _ writer) (BroadcastWork recorded reply _ observed :& VNil) -> do
+    require (case observed of PaymentUnseen->True; _->False) "payment_already_observed"
+    let native=nativeSettings settings; solana=solanaSettings settings; txid=signedId $ recordedSigned recorded
+    refreshSource environment (recordedPayment recorded)
+    freshIntake environment
+    case reply of
+      NativeReply signed->checkNativeAcceptance (N.nativeCall rpc native) signed
+      SolanaReply signed->checkBlockhashForSend (S.solanaCall rpc solana) (solPlanRecent $ signedSolanaPlan signed)
+    now<-floor <$> getPOSIXTime
+    authorized<-evalWrite writer (AuthorizeSend now txid)
+    require (authorized==recorded) "saved_payment_changed"
+    actual<-case reply of
+      NativeReply _->N.nativeCall rpc native True "sendrawtransaction" [toJSON $ signedBytes $ recordedSigned authorized] >>= parseValue parseJSON
+      SolanaReply _->S.solanaCall rpc solana "sendTransaction" [toJSON $ signedBytes $ recordedSigned authorized,object
+        ["encoding" .= ("base64"::Text),"skipPreflight" .= False,"preflightCommitment" .= ("confirmed"::Text),"maxRetries" .= (0::Int)]] >>= parseValue parseJSON
+    require (actual==txid) "broadcast_identifier_mismatch"
+    pure ((),VNil)
+  recordObservedPayment _ = workerStep False $ \environment (BroadcastWork _ _ winner observed :& VNil) -> do
+    recordOutcome environment winner observed
     pure ((),VNil)
 
-instance WorkerCycle (WorkerCommand 'Critical result) where
-  runWorkerCycle _ = workerEffect True run
-   where
-    run environment@(CriticalEnvironment _ _ _ _ _ reader writer) = cycleWork `catch` (\(BridgeError code)->
-      if code=="custody_not_reconciled" then do
-        paused<-ledgerPaused <$> evalRead reader ReadState
-        when paused (reject code)
-      else evalWrite writer (Pause code) >> reject code)
-     where
-      cycleWork = do
-        recoverPending environment
-        state<-evalRead reader ReadState
-        when (paying environment && not(ledgerPaused state)) $ do
-          now<-floor <$> getPOSIXTime
-          evalWrite writer (AdmitPayoutRounds now)
-          candidates<-evalRead reader PaymentCandidates
-          forM_ candidates $ \identifier -> do
-            workflow <- maybe (reject "operation_dictionary_mismatch") pure $
-              payoutFlow (WorkerAction (Proxy @'[WorkerCycle]) runWorkerCycle :: WorkerCommand 'Critical ()) identifier
-            runWorkerFlow environment workflow VNil
-          -- Existing payments get first use of capacity, but one active chain
-          -- must not prevent optional work on the other.
-          _<-scheduleOwnerFees environment
-          pure ()
+instance Typeable result => WorkerCycle (WorkerCommand 'Critical result) where
+  runWorkerCycle = workerWorkflow . CycleWorkflow
+
+instance Typeable result => CycleSteps (WorkerCommand 'Critical result) where
+  cycleScope _ = F.step . CycleScope
+  recoverCycle _ = workerEffect True recoverPending
+  cycleCanPay _ = workerEffect True $ \environment@(CriticalEnvironment _ _ _ _ _ reader _) -> do
+    state<-evalRead reader ReadState
+    pure (paying environment && not(ledgerPaused state))
+  cycleCandidates _ = workerEffect False $ \(CriticalEnvironment _ _ _ _ _ reader writer) -> do
+    now<-floor <$> getPOSIXTime
+    evalWrite writer (AdmitPayoutRounds now)
+    evalRead reader PaymentCandidates
+  cyclePayout value identifier = workerWorkflow (PayoutWorkflow value identifier)
+  cycleOwnerFees _ = workerEffect False $ \environment -> scheduleOwnerFees environment >> pure ()
 
   -- Shared workflows take only the private resource context.
   -- Refresh stale evidence after slow checkpoints; never extend quote/backup terms.

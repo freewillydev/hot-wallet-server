@@ -60,6 +60,20 @@ class OperatorService value where
   pauseService :: value -> Text -> Method value '[] '[] ()
   resumeService :: value -> Method value '[] '[] ()
 
+-- Internal workflow capability: deliberately absent from DomainCaps.
+class ResumeSteps value where
+  resumeScope :: value -> Method value before after a -> Method value before after a
+  checkResume :: value -> Method value '[] '[] ()
+  recoverResume :: value -> Method value '[] '[] ()
+  inspectResume :: value -> Method value '[] '[] (ResumeWork value)
+  refreshResume :: value -> ResumeWork value -> Method value '[] '[] ()
+  checkpointResume :: value -> Method value '[] '[] ()
+  observeResume :: value -> Method value '[] '[] ()
+  reconcileResume :: value -> Method value '[] '[] ()
+  inspectResumeDraft :: value -> Method value '[] '[] (Maybe (ResumeDraft value))
+  restoreResumeDraft :: value -> ResumeDraft value -> Method value '[] '[] ()
+  finishResume :: value -> ResumeWork value -> Maybe (ResumeDraft value) -> Method value '[] '[] ()
+
 class OperatorRepair value where
   repairCompletedOrder :: value -> Text -> Method value '[] '[] ()
   retrySolanaPayment :: value -> Text -> Text -> Method value '[] '[] ()
@@ -71,6 +85,21 @@ class OperatorNative value where
   draftNativeReplacement :: value -> Text -> Amount -> Text -> Method value '[] '[] Int64
   signNativeReplacement :: value -> Int64 -> Method value '[] '[] Text
   cancelNativeReplacement :: value -> Int64 -> Text -> Method value '[] '[] ()
+
+-- Internal workflow capability: deliberately absent from DomainCaps.
+class NativeSteps value where
+  nativeScope :: value -> Method value before after a -> Method value before after a
+  checkpointNative :: value -> Method value '[] '[] ()
+  observeNative :: value -> Method value '[] '[] ()
+  reconcileNative :: value -> Method value '[] '[] ()
+  inspectRebroadcast :: value -> Text -> Int64 -> Text -> Method value '[] '[] (RebroadcastWork value)
+  sendRebroadcast :: value -> RebroadcastWork value -> Method value '[] '[] Text
+  inspectReplacementDraft :: value -> Text -> Amount -> Text -> Method value '[] '[] (Either Int64 (ReplacementDraftWork value))
+  refreshReplacementDraft :: value -> ReplacementDraftWork value -> Method value '[] '[] ()
+  issueReplacementDraft :: value -> ReplacementDraftWork value -> Method value '[] '[] Int64
+  inspectReplacementSigning :: value -> Int64 -> Method value '[] '[] (Either Text (ReplacementSigningWork value))
+  refreshReplacementSigning :: value -> ReplacementSigningWork value -> Method value '[] '[] ()
+  issueReplacementSigning :: value -> ReplacementSigningWork value -> Method value '[] '[] Text
 
 class OperatorSource value where
   coverLostSource :: value -> Text -> Int64 -> Amount -> Amount -> Text -> Method value '[] '[] ()
@@ -148,14 +177,47 @@ class WorkerPreparation value where
 class WorkerSigning value where
   signPreparedPayment :: value -> Method value '[BackupCovered PreparedPayout] '[SignedPayout] Text
 
+-- Internal workflow capability: deliberately absent from DomainCaps.
+class SigningSteps value where
+  signingScope :: value -> Method value before after a -> Method value before after a
+  inspectSigning :: value -> Method value '[BackupCovered PreparedPayout] '[SigningWork value] (Maybe Text)
+  reuseSignature :: value -> Text -> Method value '[SigningWork value] '[SignedPayout] Text
+  issueSignature :: value -> Method value '[SigningWork value] '[SignedPayout] Text
+
 class WorkerQueue value where
   queuePayment :: value -> Method value '[SignedPayout] '[QueuedPayout] Int64
 
 class WorkerBroadcast value where
   broadcastPayment :: value -> Method value '[BackupCovered QueuedPayout] '[] ()
 
+-- Internal workflow capability: deliberately absent from DomainCaps.
+class BroadcastSteps value where
+  broadcastScope :: value -> Method value before after a -> Method value before after a
+  inspectBroadcast :: value -> Method value '[BackupCovered QueuedPayout] '[BroadcastWork value] Bool
+  sendUnseenPayment :: value -> Method value '[BroadcastWork value] '[] ()
+  recordObservedPayment :: value -> Method value '[BroadcastWork value] '[] ()
+
 class WorkerCycle value where
   runWorkerCycle :: value -> Method value '[] '[] ()
+
+-- Internal workflow capability: deliberately absent from DomainCaps.
+class CycleSteps value where
+  cycleScope :: value -> Method value before before () -> Method value before before ()
+  recoverCycle :: value -> Method value '[] '[] ()
+  cycleCanPay :: value -> Method value '[] '[] Bool
+  cycleCandidates :: value -> Method value '[] '[] [Text]
+  cyclePayout :: value -> Text -> Method value '[] '[] ()
+  cycleOwnerFees :: value -> Method value '[] '[] ()
+
+-- Runtime evidence stays opaque to the compiler and request selectors.
+-- Only the corresponding concrete capability implementation constructs it.
+data family ResumeWork value
+data family ResumeDraft value
+data family SigningWork value
+data family BroadcastWork value
+data family RebroadcastWork value
+data family ReplacementDraftWork value
+data family ReplacementSigningWork value
 
 -- Sequencing markers, not financial authority: every primitive still rechecks
 -- the ledger. Signing and sending require the preceding backup step in the Flow.
@@ -165,18 +227,29 @@ data QueuedPayout = QueuedPayout Text
 data BackupCovered state = BackupCovered state
 
 type PayoutCapabilities value = (WorkerObservation value, WorkerPreparation value, WorkerSigning value, WorkerRecovery value, WorkerBackup value, WorkerQueue value, WorkerBroadcast value)
-data PayoutWorkflow value = PayoutWorkflow value Text
+-- Each workflow constructor carries only the dictionaries its branch uses.
+-- Interpretation proves the complete payload type before exposing that context.
+data Workflow value (before :: [Type]) (after :: [Type]) result where
+  PayoutWorkflow :: PayoutCapabilities value => value -> Text -> Workflow value '[] '[] ()
+  CycleWorkflow :: CycleSteps value => value -> Workflow value '[] '[] ()
+  ResumeWorkflow :: ResumeSteps value => value -> Workflow value '[] '[] ()
+  SigningWorkflow :: SigningSteps value => value -> Workflow value '[BackupCovered PreparedPayout] '[SignedPayout] Text
+  BroadcastWorkflow :: BroadcastSteps value => value -> Workflow value '[BackupCovered QueuedPayout] '[] ()
+  RebroadcastWorkflow :: NativeSteps value => value -> Text -> Int64 -> Text -> Workflow value '[] '[] Text
+  ReplacementDraftWorkflow :: NativeSteps value => value -> Text -> Amount -> Text -> Workflow value '[] '[] Int64
+  ReplacementSigningWorkflow :: NativeSteps value => value -> Int64 -> Workflow value '[] '[] Text
 
-instance (Typeable value, caps ~ '[]) => Operation (PayoutWorkflow value) caps where
-  type Context (PayoutWorkflow value) = PayoutCapabilities value
-  type Outcome (PayoutWorkflow value) = Method value '[] '[] ()
-  data DSL (PayoutWorkflow value) where
-    CompilePayoutWorkflow :: Context (PayoutWorkflow value) => DSL (PayoutWorkflow value)
-  interpret (SomeOperation (payload :: actual)) CompilePayoutWorkflow =
-    case eqT @actual @(PayoutWorkflow value) of
+instance (Typeable value, Typeable before, Typeable after, Typeable result, caps ~ '[])
+    => Operation (Workflow value before after result) caps where
+  type Context (Workflow value before after result) = Typeable (Workflow value before after result)
+  type Outcome (Workflow value before after result) = Method value before after result
+  data DSL (Workflow value before after result) where
+    CompileWorkflow :: Context (Workflow value before after result) => DSL (Workflow value before after result)
+  interpret (SomeOperation (payload :: actual)) CompileWorkflow =
+    case eqT @actual @(Workflow value before after result) of
       Nothing -> Nothing
-      Just Refl -> case payload of
-        PayoutWorkflow value identifier -> Just $ F.do
+      Just Refl -> Just $ case payload of
+        PayoutWorkflow value identifier -> F.do
           attempts <- inspectPayout value identifier
           case attempts of
             [] -> F.do
@@ -188,10 +261,68 @@ instance (Typeable value, caps ~ '[]) => Operation (PayoutWorkflow value) caps w
           queuePayment value
           checkpointPending value
           broadcastPayment value
+        CycleWorkflow value -> cycleScope value $ F.do
+          recoverCycle value
+          enabled <- cycleCanPay value
+          if enabled then F.do
+            candidates <- cycleCandidates value
+            let pay [] = F.pure ()
+                pay (identifier:rest) = cyclePayout value identifier F.>> pay rest
+            pay candidates
+            cycleOwnerFees value
+          else F.pure ()
+        ResumeWorkflow value -> resumeScope value $ F.do
+          checkResume value
+          recoverResume value
+          reviewed <- inspectResume value
+          refreshResume value reviewed
+          checkpointResume value
+          observeResume value
+          reconcileResume value
+          draft <- inspectResumeDraft value
+          case draft of
+            Nothing -> F.pure ()
+            Just work -> restoreResumeDraft value work
+          finishResume value reviewed draft
+        SigningWorkflow value -> signingScope value $ F.do
+          saved <- inspectSigning value
+          case saved of
+            Nothing -> issueSignature value
+            Just txid -> reuseSignature value txid
+        BroadcastWorkflow value -> broadcastScope value $ F.do
+          unseen <- inspectBroadcast value
+          if unseen then sendUnseenPayment value else recordObservedPayment value
+        RebroadcastWorkflow value txid anchor reason -> nativeScope value $ F.do
+          work <- inspectRebroadcast value txid anchor reason
+          checkpointNative value
+          sendRebroadcast value work
+        ReplacementDraftWorkflow value parent fee reason -> nativeScope value $ F.do
+          previous <- inspectReplacementDraft value parent fee reason
+          case previous of
+            Left decision -> F.pure decision
+            Right work -> F.do
+              refreshReplacementDraft value work
+              reconcileNative value
+              issueReplacementDraft value work
+        ReplacementSigningWorkflow value decision -> nativeScope value $ F.do
+          previous <- inspectReplacementSigning value decision
+          case previous of
+            Left txid -> F.pure txid
+            Right work -> F.do
+              refreshReplacementSigning value work
+              checkpointNative value
+              observeNative value
+              reconcileNative value
+              issueReplacementSigning value work
 
-payoutFlow :: forall value. (Typeable value, PayoutCapabilities value) => value -> Text -> Maybe (Method value '[] '[] ())
-payoutFlow value identifier = interpret (SomeOperation $ PayoutWorkflow value identifier)
-  (CompilePayoutWorkflow :: DSL (PayoutWorkflow value))
+workflow :: forall value before after result.
+            (Typeable value, Typeable before, Typeable after, Typeable result)
+         => Workflow value before after result -> Maybe (Method value before after result)
+workflow payload = interpret (SomeOperation payload)
+  (CompileWorkflow :: Context (Workflow value before after result) => DSL (Workflow value before after result))
+
+payoutFlow :: (Typeable value, PayoutCapabilities value) => value -> Text -> Maybe (Method value '[] '[] ())
+payoutFlow value identifier = workflow (PayoutWorkflow value identifier)
 
 -- One closed payload GADT carries caller, severity and the exact result type.
 -- Family aliases retain the evaluator's caller -> family functional dependency.
@@ -321,8 +452,8 @@ workerRequest select = pending (WorkerAction (Proxy @selected) select)
 -- Pure HTTP/control assembly carries these closed instance requirements.
 type CustomerOperations = (Execution 'Customer 'Safe CustomerCommand, Execution 'Customer 'Critical CustomerCommand)
 class (Execution 'Operator 'Safe OperatorCommand, Execution 'Operator 'Critical OperatorCommand,
-       forall a. OperatorService (OperatorCommand 'Critical a),
+       forall a. Typeable a => OperatorService (OperatorCommand 'Critical a),
        forall a. OperatorRepair (OperatorCommand 'Critical a),
-       forall a. OperatorNative (OperatorCommand 'Critical a),
+       forall a. Typeable a => OperatorNative (OperatorCommand 'Critical a),
        forall a. OperatorSource (OperatorCommand 'Critical a),
        forall a. OperatorTreasury (OperatorCommand 'Critical a)) => OperatorOperations

@@ -43,6 +43,31 @@ source hashes and test scope are in [RESUME.md](RESUME.md) and the records below
 
 ## Historical verification records
 
+## Scoped workflow orchestration (2026-10-13)
+
+PASS: build, bridge suite (250 groups/15,609 cases and two expected mutation
+failures), positive/30 negative compile checks, six fresh PostgreSQL contracts
+(server, ledger, complete-draft resume, Devnet HTTPS, canonical HTTPS, active
+Native). Actual operator resume error and later observation cancellation pause
+without sends or changes to saved attempts/bytes, postings and balances. Trace
+contracts cover the eight workflow forms and every failure/cancellation prefix;
+they do not claim concrete IO fault injection at every signing/broadcast step.
+
+Workflow.interpret constructs orchestration after Refl; private scope instructions
+retain exception policies under the existing gate. Internal *Steps capabilities
+cannot be selected by request handlers. No API, dependency, schema or live changes.
+Baseline `3fe20b5`; production 1,513 -> 1,706 (+193) in two files; tests
+6,273 -> 6,480 (+207) in three files; no new source files.
+Patch SHA256 `42a8a85fbb73cef2b8e6abb7378a89df7c76996322bb009b457b3fbb35920631`.
+Receipt `/tmp/hot-wallet-orchestration-receipt.json`, SHA256
+`f280bcbdeb2ffded2c85fce11b6bb66b083fa4c34ed99ec8e13c0e0b2cb2d197`, binds
+57 source/design/evidence artifacts. Fresh independent `orchestration_verifier`:
+PASS for scoped publication, zero bound hash mismatches, source diff identical.
+It checked the intended rejection diagnostics and all six PG mode results without
+rerunning builds/services. Injected exceptions prove the stated boundaries, not
+exhaustive asynchronous scheduling or every production leaf. Task PostgreSQL
+stopped. Broader production gates above are unchanged.
+
 ## Scoped capability Flow methods (2026-10-13)
 
 PASS: build, full bridge suite (249 groups / 15,608 cases, two expected mutation

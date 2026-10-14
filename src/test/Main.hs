@@ -21,7 +21,7 @@ import Data.Aeson (eitherDecode,encode)
 import Data.Int (Int64)
 import qualified Data.ByteString.Lazy.Char8 as BL
 import Data.List (nub)
-import Data.Typeable (typeRep,eqT)
+import Data.Typeable (Typeable,typeRep,eqT)
 import Control.Operation
 import qualified Control.Operation.Flow as F
 import Control.Operation.Flow (Values(..),runFlow)
@@ -68,6 +68,7 @@ fullSuite = do
             ,all (isLeft . bearerHash) ["", "bearer "<>T.replicate 64 "0", "Bearer "<>T.replicate 64 "A", "Bearer "<>T.replicate 64 "0"<>" "]]
     , check "customer handlers preserve request, result type and severity" $ once $ property handlerContract
     , check "payout flow preserves new/resumed/family paths and stops after failure or cancellation" $ once $ ioProperty payoutFlowContract
+    , check "internal workflows preserve branches, results, failure scopes and cancellation prefixes" $ once $ ioProperty workflowContract
     , check "signer handler resolves an existential to a signer-only critical operation" $ once $ property $
         let prepared :<|> replacement :<|> draft :<|> checkpoint=signingServer ()
         in case (checkedOperation $ prepared ("deployment","payment",3),checkedOperation $ replacement ("deployment",7),checkedOperation $ draft ("deployment","parent",good $ amount 2),checkedOperation $ checkpoint ("deployment",9)) of
@@ -295,7 +296,7 @@ instance WorkerBroadcast TraceWorker where
 payoutFlowContract :: IO Bool
 payoutFlowContract = do
   let request = WorkerAction (Proxy @'[WorkerCycle]) runWorkerCycle :: WorkerCommand 'Critical ()
-  unless (case interpret (SomeOperation request) (CompilePayoutWorkflow :: DSL (PayoutWorkflow (WorkerCommand 'Critical ()))) of
+  unless (case interpret (SomeOperation request) (CompileWorkflow :: DSL (Workflow (WorkerCommand 'Critical ()) '[] '[] ())) of
     Nothing -> True; Just _ -> False) $ fail "payout workflow accepted a different payload"
   unless (case payoutFlow request "payment" of
     Just _ -> True; Nothing -> False) $ fail "production payout workflow did not compile"
@@ -339,3 +340,130 @@ payoutFlowContract = do
         Right ((),VNil) -> fault==0
         Left failure -> fault/=0 && if asynchronous then fromException failure==Just ThreadKilled
           else (fromException failure :: Maybe AsyncException)==Nothing))
+
+-- Exercise the actual post-Refl workflow compiler with an independent trace
+-- carrier. Internal steps are not selectable by production request handlers.
+data TraceWorkflow = TraceWorkflow Bool [Text]
+type instance MethodStep TraceWorkflow = WorkflowTrace
+data WorkflowTrace before after a where
+  WorkflowEvent :: Text -> (Values before -> (a,Values after)) -> WorkflowTrace before after a
+  WorkflowScope :: Text -> F.Flow WorkflowTrace before after a -> WorkflowTrace before after a
+
+event :: Text -> a -> F.Flow WorkflowTrace state state a
+event label result = F.step $ WorkflowEvent label (\values -> (result,values))
+scoped :: Text -> F.Flow WorkflowTrace before after a -> F.Flow WorkflowTrace before after a
+scoped label = F.step . WorkflowScope label
+
+data instance ResumeWork TraceWorkflow = TraceResumeWork
+data instance ResumeDraft TraceWorkflow = TraceResumeDraft
+data instance SigningWork TraceWorkflow = TraceSigningWork Text
+data instance BroadcastWork TraceWorkflow = TraceBroadcastWork Text
+data instance RebroadcastWork TraceWorkflow = TraceRebroadcastWork Text
+data instance ReplacementDraftWork TraceWorkflow = TraceReplacementDraft Text
+data instance ReplacementSigningWork TraceWorkflow = TraceReplacementSigning Int64
+
+instance ResumeSteps TraceWorkflow where
+  resumeScope _ = scoped "resume"
+  checkResume _ = event "check" ()
+  recoverResume _ = event "recover" ()
+  inspectResume _ = event "inspect" TraceResumeWork
+  refreshResume _ TraceResumeWork = event "refresh" ()
+  checkpointResume _ = event "backup" ()
+  observeResume _ = event "observe" ()
+  reconcileResume _ = event "reconcile" ()
+  inspectResumeDraft (TraceWorkflow draft _) = event "draft" (if draft then Just TraceResumeDraft else Nothing)
+  restoreResumeDraft _ TraceResumeDraft = event "restore" ()
+  finishResume _ TraceResumeWork draft = event (case draft of Nothing->"finish:no-draft"; Just TraceResumeDraft->"finish:draft") ()
+instance CycleSteps TraceWorkflow where
+  cycleScope _ = scoped "cycle"
+  recoverCycle _ = event "recover" ()
+  cycleCanPay (TraceWorkflow enabled _) = event "enabled" enabled
+  cycleCandidates (TraceWorkflow _ candidates) = event "candidates" candidates
+  cyclePayout _ identifier = event ("payout:"<>identifier) ()
+  cycleOwnerFees _ = event "owner" ()
+instance SigningSteps TraceWorkflow where
+  signingScope _ = scoped "signing"
+  inspectSigning (TraceWorkflow saved _) = F.step $ WorkflowEvent "inspect-signing" $ \(BackupCovered (PreparedPayout identifier) :& VNil) ->
+    (if saved then Just "saved" else Nothing,TraceSigningWork identifier :& VNil)
+  reuseSignature _ txid = F.step $ WorkflowEvent ("reuse:"<>txid) $ \(TraceSigningWork _ :& VNil) -> (txid,SignedPayout txid :& VNil)
+  issueSignature _ = F.step $ WorkflowEvent "issue" $ \(TraceSigningWork identifier :& VNil) -> (identifier,SignedPayout identifier :& VNil)
+instance BroadcastSteps TraceWorkflow where
+  broadcastScope _ = scoped "broadcast"
+  inspectBroadcast (TraceWorkflow unseen _) = F.step $ WorkflowEvent "inspect-broadcast" $ \(BackupCovered (QueuedPayout txid) :& VNil) ->
+    (unseen,TraceBroadcastWork txid :& VNil)
+  sendUnseenPayment _ = F.step $ WorkflowEvent "send" $ \(TraceBroadcastWork _ :& VNil) -> ((),VNil)
+  recordObservedPayment _ = F.step $ WorkflowEvent "record" $ \(TraceBroadcastWork _ :& VNil) -> ((),VNil)
+instance NativeSteps TraceWorkflow where
+  nativeScope _ = scoped "native"
+  checkpointNative _ = event "backup" ()
+  observeNative _ = event "observe" ()
+  reconcileNative _ = event "reconcile" ()
+  inspectRebroadcast _ txid anchor reason = event ("inspect:"<>txid<>":"<>T.pack(show anchor)<>":"<>reason) (TraceRebroadcastWork txid)
+  sendRebroadcast _ (TraceRebroadcastWork txid) = event "send-saved" txid
+  inspectReplacementDraft (TraceWorkflow saved _) parent fee reason = event ("draft:"<>parent<>":"<>T.pack(show $ units fee)<>":"<>reason)
+    (if saved then Left 7 else Right $ TraceReplacementDraft parent)
+  refreshReplacementDraft _ (TraceReplacementDraft parent) = event ("refresh:"<>parent) ()
+  issueReplacementDraft _ (TraceReplacementDraft _) = event "draft-sign" 8
+  inspectReplacementSigning (TraceWorkflow saved _) decision = event ("replacement:"<>T.pack(show decision))
+    (if saved then Left "saved" else Right $ TraceReplacementSigning decision)
+  refreshReplacementSigning _ (TraceReplacementSigning decision) = event ("refresh:"<>T.pack(show decision)) ()
+  issueReplacementSigning _ (TraceReplacementSigning _) = event "replacement-sign" "new"
+
+workflowContract :: IO Bool
+workflowContract = do
+  let traceValue flag = TraceWorkflow flag []
+      interpretFlow :: (Typeable before,Typeable after,Typeable a)
+                    => Workflow TraceWorkflow before after a -> F.Flow WorkflowTrace before after a
+      interpretFlow = maybe (error "workflow did not compile") id . workflow
+      scope label steps = ["begin:"<>label]<>steps<>["end:"<>label]
+  -- Same workflow grammar, but all four indices must match the selected DSL.
+  let actual=SomeOperation (ResumeWorkflow $ traceValue False)
+  unless (and
+    [ absent (interpret actual (CompileWorkflow :: DSL (Workflow TraceWorker '[] '[] ())))
+    , absent (interpret actual (CompileWorkflow :: DSL (Workflow TraceWorkflow '[Text] '[] ())))
+    , absent (interpret actual (CompileWorkflow :: DSL (Workflow TraceWorkflow '[] '[Text] ())))
+    , absent (interpret actual (CompileWorkflow :: DSL (Workflow TraceWorkflow '[] '[] Text)))
+    ]) $ fail "workflow type mismatch accepted"
+  results<-forM [False,True] $ \flag -> sequence
+    [ verifyWorkflow (interpretFlow $ ResumeWorkflow $ traceValue flag) VNil
+        (scope "resume" $ ["check","recover","inspect","refresh","backup","observe","reconcile","draft"]
+          <>if flag then ["restore","finish:draft"] else ["finish:no-draft"]) ()
+    , verifyWorkflow (interpretFlow $ SigningWorkflow $ traceValue flag) (BackupCovered (PreparedPayout "payment") :& VNil)
+        (scope "signing" ["inspect-signing",if flag then "reuse:saved" else "issue"]) (if flag then "saved" else "payment")
+    , verifyWorkflow (interpretFlow $ BroadcastWorkflow $ traceValue flag) (BackupCovered (QueuedPayout "transaction") :& VNil)
+        (scope "broadcast" ["inspect-broadcast",if flag then "send" else "record"]) ()
+    , verifyWorkflow (interpretFlow $ ReplacementDraftWorkflow (traceValue flag) "parent" (good $ amount 2) "review") VNil
+        (scope "native" $ ["draft:parent:2:review"]<>if flag then [] else ["refresh:parent","reconcile","draft-sign"]) (if flag then 7 else 8)
+    , verifyWorkflow (interpretFlow $ ReplacementSigningWorkflow (traceValue flag) 7) VNil
+        (scope "native" $ ["replacement:7"]<>if flag then [] else ["refresh:7","backup","observe","reconcile","replacement-sign"]) (if flag then "saved" else "new")
+    ]
+  cycles<-forM [(enabled,candidates) | enabled<-[False,True],candidates<-[[],["first","second"]]] $ \(enabled,candidates) ->
+    verifyWorkflow (interpretFlow $ CycleWorkflow $ TraceWorkflow enabled candidates) VNil
+      (scope "cycle" $ ["recover","enabled"]<>if enabled then ["candidates"]<>map ("payout:"<>) candidates<>["owner"] else []) ()
+  rebroadcast<-verifyWorkflow (interpretFlow $ RebroadcastWorkflow (traceValue False) "transaction" 9 "review") VNil
+    (scope "native" ["inspect:transaction:9:review","backup","send-saved"]) "transaction"
+  pure (and (concat results<>cycles<>[rebroadcast]))
+
+-- Compare each complete path and every failure/cancellation prefix against a
+-- separate oracle. No continuation, scope exit or later effect may follow a fault.
+verifyWorkflow :: Eq a => F.Flow WorkflowTrace before after a -> Values before -> [Text] -> a -> IO Bool
+verifyWorkflow flow initial expected expectedResult = and <$> forM
+  [(fault,asynchronous) | fault<-[0..length expected],asynchronous<-[False,True]] (\(fault,asynchronous) -> do
+    trace<-newIORef []
+    let record label=do
+          modifyIORef' trace (<>[label])
+          count<-length <$> readIORef trace
+          when (fault==count) $ if asynchronous then throwIO ThreadKilled else throwIO (userError "outcome unknown")
+        execute :: WorkflowTrace start end result -> Values start -> IO (result,Values end)
+        execute (WorkflowEvent label transition) values=record label >> pure (transition values)
+        execute (WorkflowScope label nested) values=do
+          record ("begin:"<>label)
+          result<-runFlow execute nested values
+          record ("end:"<>label)
+          pure result
+    result<-try @SomeException (runFlow execute flow initial)
+    actual<-readIORef trace
+    pure $ actual==take (if fault==0 then length expected else fault) expected && case result of
+      Right (value,_) -> fault==0 && value==expectedResult
+      Left failure -> fault/=0 && if asynchronous then fromException failure==Just ThreadKilled
+        else (fromException failure :: Maybe AsyncException)==Nothing)

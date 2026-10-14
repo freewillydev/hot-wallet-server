@@ -129,19 +129,40 @@ IO actions or supplies their environment. Its concrete runners check observation
 permission immediately before **each** executed leaf, under the existing critical
 gate; later leaves may depend on earlier results. Existing recovery/observation
 access and operator pause permissions are unchanged. `-Werror=missing-methods`
-checks the concrete capability instances. Independent operator commands remain
-single steps; a selector can compose genuinely ordered methods with `F.do`.
+checks the concrete capability instances. A selector can compose authorized
+high-level methods with `F.do`.
 
-The worker's bounded payout sequence uses `Control.Operation.Flow` from the pinned
-operation-capabilities 0.1.3.0. **Build the whole workflow inside `interpret`, after
-`eqT`/`Refl`; evaluate it separately.** `PayoutWorkflow` in `Operation/Internal.hs`
-implements that boundary: its `CompilePayoutWorkflow` constructor carries
-`PayoutCapabilities` (the union of its seven required worker groups), its payload
-equality proof precedes the `F.do`, and its outcome
-is the pure typed Flow. The wrapper declares no additional preparation capabilities.
-`payoutFlow` only requests interpretation and returns `Nothing` on mismatch. The
-worker rejects mismatch, then runs the resulting workflow under the held critical
-gate. Runtime-dependent branches remain deferred continuations of the compiled Flow.
+**Build workflows inside `interpret`, after `eqT`/`Refl`; evaluate them separately.**
+`Workflow value before after result` in `Operation/Internal.hs` has eight closed
+constructors: payout, cycle, resume, signing, broadcast, native rebroadcast,
+replacement draft and replacement signing. `CompileWorkflow` checks all four type
+indices before matching the constructor and using its capability dictionaries.
+Its injective Context retains that complete payload type. Its outcome is a pure
+indexed Flow; branches remain deferred continuations until earlier effects return.
+The helper `workflow` only requests interpretation; the concrete compiler adapters
+reject a mismatch inside the existing gate.
+
+Public `DomainCaps` still grants only the original high-level methods. The granular
+`ResumeSteps`, `NativeSteps`, `SigningSteps`, `BroadcastSteps` and `CycleSteps` are
+internal compiler capabilities, absent from that list and from its superclasses.
+A handler cannot select them to bypass a workflow's scope, checkpoint or branch.
+Their runtime evidence families have private constructors in `Critical.hs`.
+Concrete `Command` instances cannot be replaced by a trace carrier.
+
+`interpret` now exposes saved/new signing, observed/unseen broadcast, saved/new
+replacement decisions, resume's optional unsigned draft restoration and the worker
+cycle's recovery/admission/candidate/owner order. Final fresh authorization,
+signing or exact-byte sending, and validation/recording remain cohesive concrete
+primitives. `recoverPending` still collects recovery errors before reconciliation;
+it is intentionally not rewritten as a stop-on-first-error sequence.
+
+Private scope instructions wrap the entire interpreted continuation, including
+cancellation between leaves, using the already-held gate. Signing pauses with
+`signing_requires_review`; resume/native/broadcast retain
+`payment_requires_reconciliation`; cycle retains its specific BridgeError handling
+and custody-deferral rule. Observation-only denial occurs before these guards.
+Scopes do not roll back completed effects, authorize retries or create a second
+critical entry point.
 
 The flow calls the capability methods directly: inspect saved attempts, prepare /
 checkpoint / sign a new payment or select its saved transaction, then queue /
@@ -160,10 +181,15 @@ on actual request selectors, cross-caller capability selection, and preparation
 without backup capability, and signing/broadcast without the preceding checkpoint
 state. The flow contract checks production Flow compilation and mismatched
 whole-workflow rejection. A separate test carrier implements the same capability
-methods as trace steps and exercises the same `PayoutWorkflow.interpret` against an
+methods as trace steps and exercises the same `Workflow.interpret` against an
 independent ordering oracle. Its `MethodStep` instance cannot replace the fixed
 production `Command` instance. This checks sequencing, not concrete IO; disposable
-PostgreSQL/process/HTTPS contracts supply scoped effect coverage. Exceptions,
+PostgreSQL/process/HTTPS contracts supply scoped effect coverage. New branch tests
+cover all eight workflows and every error/cancellation prefix. Real operator
+resume tests inject a synchronous boundary failure and later cancellation during
+observation recovery, checking pause and preservation of attempts, bytes, postings
+and balances without broadcast. This does not claim runtime fault injection at
+every private signing/broadcast leaf. Exceptions,
 including cancellation and unknown signing or broadcast
 outcomes, stop the continuation. Completed effects are not rolled back; restart
 recovery uses the ledger and exact saved bytes. Never replay the Flow as an automatic

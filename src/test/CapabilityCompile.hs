@@ -140,3 +140,34 @@ prepareWithoutBackup value = F.do
   prepareOutgoing value
   checkpointPending value
 #endif
+
+-- Fine-grained steps exist only for compilation of protected workflows.
+-- Neither selecting them nor calling them through a public capability is allowed.
+#ifdef BAD_INTERNAL_SELECT
+cannotSelectInternal :: SomeOperationAt Program 'Worker 'Critical ()
+cannotSelectInternal = workerRequest @'[SigningSteps] (\_ -> F.pure ())
+#endif
+#ifdef BAD_INTERNAL_SIGN
+cannotSkipSigningScope :: SomeOperationAt Program 'Worker 'Critical ()
+cannotSkipSigningScope = workerRequest @'[WorkerSigning] (\cap -> issueSignature cap `seq` F.pure ())
+#endif
+#ifdef BAD_INTERNAL_BROADCAST
+cannotSkipBroadcastScope :: SomeOperationAt Program 'Worker 'Critical ()
+cannotSkipBroadcastScope = workerRequest @'[WorkerBroadcast] (\cap -> inspectBroadcast cap `seq` F.pure ())
+#endif
+#ifdef BAD_INTERNAL_RESUME
+cannotSkipResumeScope :: Plan 'Operator ()
+cannotSkipResumeScope = operator @'[OperatorService] recoverResume
+#endif
+#ifdef BAD_INTERNAL_NATIVE
+cannotSkipNativeScope :: Plan 'Operator ()
+cannotSkipNativeScope = operator @'[OperatorNative] checkpointNative
+#endif
+#ifdef BAD_INTERNAL_CYCLE
+cannotSkipCycleScope :: SomeOperationAt Program 'Worker 'Critical ()
+cannotSkipCycleScope = workerRequest @'[WorkerCycle] recoverCycle
+#endif
+#ifdef BAD_INTERNAL_WORKFLOW
+cannotAssembleInternalWorkflow :: Stage '[WorkerSigning]
+cannotAssembleInternalWorkflow = Stage (\cap -> SigningWorkflow cap `seq` Right cap)
+#endif

@@ -8,6 +8,21 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Implemented and checked
 
+- 2026-10-13: expanded post-Refl Workflow.interpret to cycle, resume, signing,
+  broadcast and three native workflows. Internal *Steps capabilities are excluded
+  from request DomainCaps; private whole-flow scopes preserve failure/cancellation
+  policies. Final authorization/sign-or-send/verification stays together. Build,
+  suite (250 groups/15,609 cases plus two expected mutation failures), positive/30
+  negative compile checks and all six fresh PG modes PASS. Actual operator resume
+  error/later observation cancellation preserve saved bytes, postings and balances
+  and pause without sending. Production two files: 1,513 -> 1,706 (+193); tests
+  three files: 6,273 -> 6,480 (+207). No new source files. This improves explicit
+  orchestration and auditability; it is not a source-size reduction. Receipt:
+  /tmp/hot-wallet-orchestration-receipt.json. Test cluster stopped; no live changes.
+  Fresh independent orchestration_verifier PASS for scoped publication: all 57
+  bound artifacts and intended negative diagnostics verified. Continue the existing
+  release checklist; these fixture results are not funded acceptance.
+
 - 2026-10-13: operator/worker methods now return indexed Flow directly through
   Method/MethodStep. Program holds balanced caller-specific Flows; private concrete
   runners check each leaf's observation permission under the held critical gate.

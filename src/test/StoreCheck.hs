@@ -18,7 +18,7 @@ import Crypto.Random (getRandomBytes)
 import Crypto.Error (CryptoFailable(..))
 import qualified Crypto.PubKey.Ed25519 as Ed
 import qualified Data.ByteArray as BA
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (threadDelay,myThreadId)
 import Control.Concurrent.Async (withAsync,wait,cancel,poll,mapConcurrently)
 import Control.Concurrent.MVar (newEmptyMVar,putMVar,takeMVar,tryPutMVar)
 import System.Timeout (timeout)
@@ -42,7 +42,7 @@ import qualified Bridge.Control as Control
 import Bridge.Critical
 import qualified Bridge.Operation.Internal as Op
 import qualified Network.Wai as Wai
-import Network.HTTP.Types (statusCode,status200,status500)
+import Network.HTTP.Types (statusCode,status200,status403,status500)
 import Bridge.Order
 import qualified Bridge.Fence as Fence
 import System.Directory (createDirectory,removeDirectoryRecursive,removeFile,findExecutable,listDirectory,renameFile,renameDirectory)
@@ -4702,7 +4702,11 @@ tlsMain=do
           "getFeeForMessage"->pure $ context $ Number 5000
           "simulateTransaction"->pure $ context $ object ["err" .= Null]
           _->pure Null -- Unavailable scan/custody replies must not abort the fixture server.
-        respond $ Wai.responseLBS status200 [("Content-Type","application/json")] (encode $ object ["jsonrpc" .= ("2.0"::T.Text),"id" .= requestId,"result" .= result])
+        let forbidden=null params && method `elem` ["walletprocesspsbt","signrawtransactionwithwallet","signmessage","dumpprivkey",
+              "dumpwallet","gethdkeys","listdescriptors","walletpassphrase","walletpassphrasechange","walletlock",
+              "encryptwallet","importprivkey","importwallet","backupwallet"]
+        respond $ if forbidden then Wai.responseLBS status403 [] "forbidden" else
+          Wai.responseLBS status200 [("Content-Type","application/json")] (encode $ object ["jsonrpc" .= ("2.0"::T.Text),"id" .= requestId,"result" .= result])
   bracket (PG.connect settings) PG.close $ \fixtures->do
     fixture fixtures (InitializeIdentity identity); fixture fixtures SeedIntake; fixture fixtures TLSFunds
     withReader settings {PG.connectUser=role} identity True $ \reader->
@@ -5102,6 +5106,50 @@ tlsMain=do
                 readIORef checkpoints >>= check . (==coveredRequests+1)
                 preserved
                 readIORef calls >>= check . null
+              -- Exercise the real outer scope: an error in the boundary check,
+              -- and cancellation later in observation (no nested guarded leaf),
+              -- must both pause and preserve all saved financial work.
+              forM_ [False,True] $ \asynchronous->do
+                injected<-newIORef (Nothing::Maybe Int)
+                operatorThread<-newIORef Nothing
+                identityProbes<-newIORef (0::Int)
+                (_,savedAttempts,savedPostings)<-fixture fixtures ArchiveRecords
+                savedBalances<-evalRead reader ReadBalances
+                writeIORef calls []
+                let fault request=do
+                      value<-case HTTP.requestBody request of
+                        HTTP.RequestBodyLBS bytes->either fail pure (eitherDecodeStrict' $ BL.toStrict bytes)
+                        _->fail "unexpected RPC body in resume scope contract"
+                      method<-fieldValue "method" value :: IO T.Text
+                      thread<-myThreadId
+                      let inject=do
+                            count<-fixture fixtures RecoveryPauseCount
+                            writeIORef injected (Just count)
+                            if asynchronous then throwIO ThreadKilled else reject "resume_probe_fault"
+                      when (method=="backupwallet") $
+                        if asynchronous then writeIORef operatorThread (Just thread) else inject
+                      owner<-readIORef operatorThread
+                      when (asynchronous && owner==Just thread && method=="getblockchaininfo") $ do
+                        count<-atomicModifyIORef' identityProbes (\n->(n+1,n+1))
+                        -- First identity probe is recoverNativeLocks (guarded).
+                        -- Second is observeOnce: only the outer resume scope
+                        -- protects asynchronous failure at this point.
+                        when (count==2) inject
+                      pure request {HTTP.secure=False,HTTP.host="127.0.0.1",HTTP.port=rpcPort}
+                bracket (newManager defaultManagerSettings {managerModifyRequest=fault}) closeManager $ \faulty->
+                  withWorkerProcess faulty reader writer (ObserverSettings configuredNative solana 1 "origin" "origin") config
+                    (Just $ CustomerSettings publicConfig store sdk Nothing) checkpointEndpoint $ \_ directory->do
+                      result<-try (Control.callControl directory $ object ["operation" .= ("resume"::T.Text)]) :: IO (Either SomeException Value)
+                      if asynchronous then check (case result of Left _->True; _->False)
+                        else check (case result of Right value->value==object ["error" .= ("native_signing_authority_not_separated"::T.Text)]; _->False)
+                priorPause<-readIORef injected >>= maybe (fail "resume scope fault was not reached") pure
+                fixture fixtures RecoveryPauseCount >>= check . (>priorPause)
+                evalRead reader ReadState >>= check . ledgerPaused
+                (_,currentAttempts,currentPostings)<-fixture fixtures ArchiveRecords
+                check (currentAttempts==savedAttempts && currentPostings==savedPostings)
+                evalRead reader ReadBalances >>= check . (==savedBalances)
+                readIORef calls >>= check . all (`notElem` ["sendTransaction","sendrawtransaction"])
+              putStrLn "PASS: actual resume Flow scope pauses on error and cancellation; saved attempts/bytes, postings and balances preserved; no sends"
         -- Retrying reopens the same intent. Proved expired signatures remain
         -- history, not a second live transaction or a native replacement family.
         unless canonical (fixture fixtures SeedCustodyHeads)

@@ -31,21 +31,28 @@ net line count including tests. These checks do not deploy or re-certify product
 Only extend Flow or IndexedRequest where it removes duplicated decisions or enforces
 a useful boundary; leave the already-small order, signer and recovery paths intact.
 
-Current follow-up supersedes the intermediate payout instruction wrapper: operator
-and worker capability methods themselves return indexed `Flow` values. Keep the
-cohesive capability groups and explicit request subsets; project dictionaries with
-`Restrict`/`withCapabilities` inside `interpret` after `Refl`, then prove the hidden
-carrier again before returning its associated Flow. Construct the complete payout
-`F.do` inside `PayoutWorkflow.interpret`, after its `Refl`, by calling those methods
-directly. Remove the redundant payout step/command dispatcher. Represent both
-checkpoint positions in the state types. Keep concrete instruction constructors
-private and check observation-mode permission before each leaf under the existing
-gate. Preserve all 31 financial method bodies, ordering and exception scopes.
-Verify actual restricted selectors, missing capabilities/checkpoints, all payout
-branch/failure prefixes, and affected PostgreSQL/process/HTTPS contracts. The trace
-carrier tests the interpreted workflow, not production IO. Independent operator
-commands remain single steps. Flow is neither transaction rollback nor automatic
-retry. Library guidance already requires post-Refl workflow construction.
+Current implementation uses capability methods returning indexed `Flow` values,
+with explicit caller subsets and checkpoint states. The bounded workflows now
+share `Workflow.interpret`: construct `F.do` only after complete `eqT`/`Refl`, then
+match the workflow GADT to recover its exact capability context. Payout, cycle,
+resume, signing, broadcast and three native replacement/rebroadcast paths expose
+their orchestration there. Leave cohesive authorization/sign-or-send/verification
+primitives and collected-error recovery in Critical.hs.
+
+The granular step classes are internal compiler capabilities, not new public
+DomainCaps. Do not let request selectors omit whole-workflow failure scopes by
+calling those steps directly. Private operator/signing/broadcast/cycle scope
+instructions protect the full continuation under the existing gate, including
+asynchronous cancellation. Preserve paused/read-only behavior, saved-result replay,
+post-backup freshness checks and exact saved bytes. Flow is neither rollback nor
+an automatic retry policy.
+
+Acceptance for this change: full bridge suite; restricted-selector compilation
+including rejection of internal steps and omitted checkpoint states; trace all
+workflow branches/results/error/cancellation prefixes; real operator-scope failure
+and cancellation; six fresh PostgreSQL/process/HTTPS contracts. Obtain a separate
+hash-bound review before source publication. These local fixtures do not change
+live deployment or certify outstanding production gates.
 
 Status: **117/120 steps verified (A–I, J105–111, J113–117, J120)**. Implementation and
 available acceptance are complete; external gates J112, J118 and J119 remain open.
