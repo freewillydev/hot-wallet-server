@@ -124,7 +124,23 @@ checks = do
           | point<-map nativeOutpoint $ nativeInputs tx]
       mempool method value=unconfirmed method value
   sequence
-    [ check "native admission previews actual policy without allocating locking signing or sending" $ once $ ioProperty $ do
+    [ check "fresh Signet funds without estimates while Betanet retains its estimator" $ once $ ioProperty $ do
+        results<-forM [L2LSignetDevnet,ECXBetanetDevnet,CanonicalBeta] $ \profile->do
+          (accepted,_)<-contract (\_ v->pure v) $ \call->do
+            let capture wallet method args=case (method,args) of
+                  ("walletcreatefundedpsbt",[_,_,_,Object options,Bool True])->do
+                    let fixed=KM.lookup "fee_rate" options==Just (Number 1)
+                          && not (any (`KM.member` options) ["conf_target","estimate_mode"])
+                        estimated=not (KM.member "fee_rate" options)
+                          && KM.lookup "conf_target" options==Just (toJSON $ planDepth plan)
+                          && KM.lookup "estimate_mode" options==Just (String "conservative")
+                    require (if profile==L2LSignetDevnet then fixed else estimated) "wrong_fee_policy"
+                    reject "fee_policy_captured"
+                  _->call wallet method args
+            rejects "fee_policy_captured" (fundNativeDraft capture plan {planProfile=profile})
+          pure accepted
+        pure (and results)
+    , check "native admission previews actual policy without allocating locking signing or sending" $ once $ ioProperty $ do
         (_,methods)<-contract (\_ v->pure v) $ \call->previewNativePayment call (planProfile plan) (planDepth plan) (planFeeLimit plan) (planRecipient plan) (planAmount plan)
         (empty,_)<-contract (\method value->pure $ if method=="listunspent" then toJSON ([]::[Value]) else value) $ \call->
           rejects "native_admission_funds_unavailable" (previewNativePayment call (planProfile plan) (planDepth plan) (planFeeLimit plan) (planRecipient plan) (planAmount plan))

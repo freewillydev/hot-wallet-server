@@ -159,10 +159,13 @@ fundNativeDraft call plan@NativePlan{..} = do
   funded <- call True "walletcreatefundedpsbt"
     [ toJSON ([]::[Value]),toJSON [object [Key.fromText planRecipient .= nativeNumber planAmount]]
     , toJSON (if planProfile==L2LSignetDevnet then 0::Int64 else 499999999)
-    , object ["add_inputs" .= True,"include_unsafe" .= False,"lockUnspents" .= False
+    , object $ ["add_inputs" .= True,"include_unsafe" .= False,"lockUnspents" .= False
       ,"replaceable" .= False,"minconf" .= planDepth,"changeAddress" .= planChange
-      ,"subtractFeeFromOutputs" .= ([]::[Int]),"conf_target" .= planDepth
-      ,"estimate_mode" .= ("conservative"::Text),"max_tx_weight" .= (40000::Int)]
+      ,"subtractFeeFromOutputs" .= ([]::[Int]),"max_tx_weight" .= (40000::Int)] <>
+      -- Fresh Signet nodes lack fee estimates. Use one base unit/vB there;
+      -- the saved absolute fee cap and mempool acceptance checks still apply.
+      if planProfile==L2LSignetDevnet then ["fee_rate" .= (1::Int)]
+      else ["conf_target" .= planDepth,"estimate_mode" .= ("conservative"::Text)]
     , Bool True ]
   psbt <- fieldValue "psbt" funded
   require (not (T.null psbt) && T.length psbt<=100000) "invalid_native_psbt"
