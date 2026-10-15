@@ -90,6 +90,10 @@ usage and configure S3 access logging or CloudTrail data events for deployment.
 
 Pruning limits retained block data; initial synchronization still takes time and
 additional disk space is needed for chainstate, the database and temporary work.
+Wrap/unwrap-only operation supports this pruned node and requires no Thunder,
+BitNames or enforcer service. `ECX_NODE_SYNC=full` selects synchronization from
+genesis; it does not disable pruning. Seed-only recovery of an existing wallet
+requires full historical blocks, as described below.
 
 Public HTTPS adds the certificate-chain and TLS-key paths. A missing `restic` on
 PATH adds a reviewed executable-path prompt. Certificate issuance/renewal and

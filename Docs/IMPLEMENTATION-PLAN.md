@@ -11,6 +11,20 @@ schema conversion/backfill and migration tests below are superseded. Fresh setup
 uses `src/schema.sql`; only schema 23 may run or be restored. Never reset an old
 ledger to make setup pass. `example.conf` is the sole configuration example.
 
+## Optional sidechain node policy (2026-10-15)
+
+Wrap/unwrap-only remains the default and supports the managed pruned ECX node
+(`prune=2000`), without Thunder, BitNames or an enforcer. Normal startup must not
+gain an archival-node requirement. Keep the existing full-history requirement for
+seed-only recovery and refuse missing history when needed for reconciliation.
+
+Thunder/BitNames fast withdrawals are a proposed optional extension, not an
+implemented mode. If enabled, provision or connect their nodes and a compatible
+enforcer with an unpruned ECX upstream. Apply those dependency checks only to
+enabled sidechain routes. Never silently disable pruning, replace existing node
+data or start an archival resynchronization for a wrap/unwrap-only installation.
+The current `ECX_NODE_SYNC=full` changes bootstrap method, not block retention.
+
 ## Current refactor: operation-capabilities handoff (2026-10-13)
 
 Apply the handoff to one complete, bounded payout workflow before extending it.
