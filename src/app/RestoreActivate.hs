@@ -55,8 +55,17 @@ activate=withFamily "/var/lib/ecx-bridge-upgrade/lifecycle" $ do
   require (paused && sequenceNo>=R.minimumSequence plan) "invalid_staged_ledger"
   wallet<-json(root</>"native-wallet.completed") >>= field "wallet"
   require (wallet==C.nativeWallet c) "restore_wallet_result_mismatch"
-  bundle<-SetupPaths.bundleRoot >>= maybe (reject "reviewed_release_required_for_recovery") pure
-  release<-Upgrade.verifyBundle bundle
+  toolBundle<-SetupPaths.bundleRoot >>= maybe (reject "reviewed_release_required_for_recovery") pure
+  toolRelease<-Upgrade.verifyBundle toolBundle
+  pinned<-doesFileExist(root</>"activation-release")
+  release<-if pinned then T.pack . B8.unpack <$> readPrivate(root</>"activation-release") else pure toolRelease
+  require (T.length release==64 && T.all (`elem` ("0123456789abcdef"::String)) release) "invalid_recovery_release"
+  -- A repaired recovery tool can finish an interrupted activation, but cannot
+  -- silently replace its pinned runtime. Upgrade normally after recovery.
+  let bundle=if release==toolRelease then toolBundle else "/opt/ecx-bridge/releases"</>T.unpack release
+  Upgrade.verifyBundle bundle >>= \actual->require (actual==release) "recovery_runtime_changed"
+  toolSchema<-B.readFile(toolBundle</>"schema.sha256")
+  B.readFile(bundle</>"schema.sha256") >>= \schema->require (schema==toolSchema) "recovery_tool_schema_mismatch"
   putStrLn "Activate this recovered server only after the old signer is permanently excluded. Wallet keys copied to another host remain capable of spending."
   answer<-R.prompt "Type SOURCE EXCLUDED to confirm old-host retirement and begin checked activation"
   require (answer=="SOURCE EXCLUDED") "restore_activation_cancelled"
@@ -79,6 +88,8 @@ activate=withFamily "/var/lib/ecx-bridge-upgrade/lifecycle" $ do
   -- The installer verifies the recovery journal and exact paused database before
   -- grants/adoption; it never invokes InitializeLedger in recover mode.
   checked "/bin/sh" [bundle</>"install","recover",material]
+  canonicalizePath "/opt/ecx-bridge/current" >>= Upgrade.verifyBundle >>= \actual->
+    require (actual==release) "recovery_runtime_changed"
   installed<-C.loadConfig worker
   require (C.fingerprint installed==R.identity plan) "restored_install_identity_mismatch"
   selected<-B8.unpack . B8.strip <$> readPrivate "/var/lib/ecx-bridge-install/database"
@@ -87,7 +98,7 @@ activate=withFamily "/var/lib/ecx-bridge-upgrade/lifecycle" $ do
   -- pause reason; retries inspect the exact paused ledger without reprovisioning.
   (code,out,_)<-readProcessWithExitCode "/usr/sbin/runuser"
     ["-u","postgres","--","/usr/bin/env","-i","PATH=/usr/bin:/bin","PGHOST=/var/run/postgresql","PGPORT=5432"
-    ,"PGUSER=postgres","PGDATABASE="<>database,binary,"check-restored-database",T.unpack(R.identity plan),show sequenceNo] ""
+    ,"PGUSER=postgres","PGDATABASE="<>database,executable,"check-restored-database",T.unpack(R.identity plan),show sequenceNo] ""
   require (code==ExitSuccess) "restored_sidechain_ledger_check_failed"
   restored<-either (const $ reject "invalid_restored_ledger_result") pure (eitherDecodeStrict' $ B8.pack out)
   addresses<-field "sidechainAddresses" restored

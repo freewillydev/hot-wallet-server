@@ -19,6 +19,7 @@ import Bridge.Recovery (CustodyRecovery(..),evalCustodyRecovery)
 import Bridge.Signer
 import Bridge.Store (Reader,withReader,withFencedWriter,StoreRestore(..),evalRestore,StoreSetup(..),evalSetup,BackupReceipt(..))
 import Control.Exception (bracket,catch)
+import Control.Monad (when)
 import Data.Aeson (Value(..),encode,object,(.=),eitherDecodeStrict')
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
