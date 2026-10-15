@@ -240,7 +240,7 @@ binary invocation needs `ecx_bridge_datadir` pointing to the server package.
 | `ECX_REBUILD_CUSTODY_ONLY=1` | With native/encrypted recovery mode and disposable DB; complete custody bundle |
 | `ECX_REBUILD_LIVE_OBSERVER_CONFIG=CONFIG` | Observation-only real-chain checks with restricted native credentials |
 
-All fresh contracts install `src/schema.sql` and initialize version 23 directly.
+All fresh contracts install `src/schema.sql` and initialize version 24 directly.
 Older or unknown schemas and backup manifests are rejected; there are no conversion
 test modes. `ECX_PROVISION_TEST=1 cabal --project-dir=build run ecx-store-check`
 owns a temporary private PostgreSQL cluster and tests provisioning, interruption,

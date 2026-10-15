@@ -421,7 +421,12 @@ decideFastOrder :: W.PolicySnapshot -> OrderLimits -> CostLimits -> W.OrderReque
 decideFastOrder policy limits costs request facts batches = do
   ensure (fastWithdrawal $ W.direction request) "invalid_immediate_route"
   saved<-sourcePolicy policy (sourceAsset $ W.direction request)
-  admitted<-decideOrderAt (W.sidechainFeeBps saved) limits costs request facts
+  -- Sidechains expose confirmed outputs, so first sighting can take an ECX block.
+  -- Allow an hour for inclusion and 30 minutes per confirmation; longer operator
+  -- windows win. This changes new fast quotes only, never saved order terms.
+  let sideLimits=limits {quoteSeconds=max 3600 (quoteSeconds limits)
+        ,graceSeconds=max (graceSeconds limits) (1800 * fromIntegral (W.sidechainDepth saved))}
+  admitted<-decideOrderAt (W.sidechainFeeBps saved) sideLimits costs request facts
   checkBatchCapacities batches
   let charged currency=sum [toInteger(units n) | (_,asset,n)<-admittedCosts admitted,asset==currency]
       reserve currency budget=budget {operatingHeld=operatingHeld budget+charged currency}

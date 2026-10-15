@@ -14,13 +14,19 @@ ordinary/payout PostgreSQL contracts, both sidechain restore contracts and bound
 TLC check pass. Live acceptance remains incomplete; see DONE.md.
 
 AWS ecx-dev authentication refreshed successfully. Isolated Ubuntu24.04 instance
-`i-039ef1f2e10f2a06a` in us-east-2 is building from a private uncommitted source
-snapshot. SSM build command `caff9975-6265-41a2-b989-3069550255b2`; log
+`i-039ef1f2e10f2a06a` in us-east-2 completed its native build and suite from a
+private source snapshot. SSM command `caff9975-6265-41a2-b989-3069550255b2`; log
 `/home/ubuntu/ecx-fast/build.log`. Full Signet node helper command
 `1107dbba-ab3d-41ac-b025-0ec4460a590f` passed with both services active.
 IMPORTANT: snapshot predates the final enforcer URL/license/docs corrections.
 Overlay final reviewed source and repackage before testing the installer. Host is
-c7i-flex.large/4GiB; use >=8GiB for stated installer acceptance after build completes.
+m7i-flex.large/8GiB with encrypted256GiB storage; filesystem growth verified.
+
+Published feature source:6f69118. New fast orders now allow at least3600s for
+inclusion and1800s per required ECX confirmation for grace. Saved/ordinary terms,
+fees and confirmation checks are unchanged. Local build, full suite and both
+fresh PostgreSQL sidechain contracts pass; separate timing-fix source review PASS.
+Logs:/tmp/ecx-fast-window-{build,tests,pg-Thunder,pg-BitNames}.log.
 
 Local test nodes: Core `/tmp/ecx-fast-signet` port29532; wallet-enabled enforcer
 `/tmp/ecx-fast-enforcer` gRPC50551/RPC50552; Thunder public6009/private6109;
@@ -31,7 +37,15 @@ One 100,000-unit Signet funding transaction was submitted to the new enforcer:
 Its intent and exact signed bytes are saved in `enforcer-funding.json` there.
 Do not create another funding payment: inspect the saved outcome and chain first.
 
-Next: finish Linux build; final source/package verification; fresh record install,
+Both25000-unit sidechain tester deposits were submitted; inspect the private
+saved results before any further transfer. New server SOL owner
+`p1CBvKSuGMxctdj1kRBNybzhfheDNLwhYM3xPnKYGmv` received0.02Devnet SOL;
+both independent providers verified finalized exact effects and5000-lamport fee.
+Signed intent:/tmp/ecx-fast-private/sol-funding.json. Distinct record-supplied
+wallets and a separate append-only backup account are prepared in the private
+fixture; authenticated backup and installation acceptance remain pending.
+
+Next: incremental final Linux build; source/package verification; fresh record install,
 repeat/reboot/isolation; real sidechain regular transfers to bridge orders, confirmed
 ECX payouts and independent funded restore. No automatic refund is implemented for
 wrong/late sidechain deposits; they remain review items. Fixed CI node artifacts

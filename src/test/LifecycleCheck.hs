@@ -499,6 +499,26 @@ checks = (++) <$> ((++) <$> payoutSafetyChecks <*> payoutGroupChecks) <*> sequen
              ,admittedCosts admitted===expectedCosts
              ,decideOrder customerLimits customerCosts request customerAdmission {availableFloat=n-charged-1}===Left "insufficient_inventory"
              ,decideOrder customerLimits customerCosts request customerAdmission {nativeOrderBudget=FeeBudget 9 0 0 (money 1000000000)}===Left "insufficient_fee_budget"]
+  , check "fast quotes allow block inclusion and depth-scaled grace without weakening source checks" $
+      forAll (elements [ThunderToNative,BitNamesToNative]) $ \direction -> forAll (chooseInt (6,1008)) $ \depth ->
+        let terms=PolicySnapshot 6 "finalized" "fixture"
+              [W.SidechainPolicy (sourceAsset direction) depth 100 (T.replicate 64 "a") (T.replicate 64 "b")]
+            limits=customerLimits {quoteSeconds=300,graceSeconds=1200}
+            admit settings=good $ decideFastOrder terms settings customerCosts (customerRequest direction 100) customerAdmission []
+            admitted=admit limits
+            original=customerPromotion direction 100 1
+            receipt=(promotionReceipt original) {W.depositSeenAt=700,W.depositConfirmations=depth}
+            facts=original {promotionOrder=(promotionOrder original) {W.deadline=admittedDeadline admitted,W.policy=terms}
+              ,promotionReceipt=receipt,promotionGrace=admittedGrace admitted}
+            promotes now value=case decidePromotion "fixture" now value of Right (Just _)->True; _->False
+        in conjoin [admittedDeadline admitted===3700,admittedGrace admitted===3700+1800*fromIntegral depth
+             ,net(admittedQuote admitted)===money 99,admittedCosts admitted===[("conversion",Native,money 10)]
+             ,property $ promotes 3700 facts,property $ promotes (admittedGrace admitted) facts
+             ,decidePromotion "fixture" (admittedGrace admitted+1) facts===Right Nothing
+             ,decidePromotion "fixture" 3700 facts {promotionReceipt=receipt {W.depositSeenAt=3701}}===Right Nothing
+             ,decidePromotion "fixture" 3700 facts {promotionReceipt=receipt {W.depositConfirmations=depth-1}}===Right Nothing
+             ,admittedDeadline(admit limits {quoteSeconds=7200,graceSeconds=2000000})===7300
+             ,admittedGrace(admit limits {quoteSeconds=7200,graceSeconds=2000000})===2007300]
   , check "swaps have no arbitrary size bounds while net, reserves and withdrawal caps remain enforced" $ once $
       let largest=toInteger(maxBound::Int64)
           accepted direction n=

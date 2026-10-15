@@ -97,6 +97,11 @@ requires full historical blocks, as described below.
 
 ### Sidechain fast withdrawals
 
+New fast-withdrawal orders allow at least one hour for confirmed inclusion, then
+30 minutes of confirmation grace per required ECX confirmation (three hours at
+depth6). Longer configured windows are retained. Slow blocks can still cause a
+manual-review outcome; normal swap deadlines and existing saved terms are unchanged.
+
 For a **fresh ECX Signet/Devnet installation**, wrap the existing `InstallConfig`
 record in the same private configuration file:
 

@@ -1919,7 +1919,7 @@ sidechainOrdersMain=do
   let settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
       chain asset=W.SidechainPolicy asset 6 100 (T.replicate 64 "a") (T.replicate 64 "b")
       terms=PaymentTerms (PolicySnapshot 6 "finalized" "contract" [chain Thunder,chain BitNames]) (CostLimits (money 10) (money 10) (money 10))
-      limits=OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)
+      limits=OrderLimits (money 1000) 300 1200 100 (money 100000) (money 100000)
       policy=StorePolicy terms limits "contract" True (W.PayoutPolicy (money 100) (money 100) 172800)
       check :: HasCallStack => Bool -> IO ()
       check ok=unless ok (fail $ "sidechain contract failed\n"<>prettyCallStack callStack)
@@ -1935,6 +1935,7 @@ sidechainOrdersMain=do
           let key="side-"<>T.pack(show asset)
               address=SolanaMessage.base58(BS.replicate 20 byte)
           oid<-evalWrite writer (CreateOrder 100 header $ W.OrderRequest direction (money 100) "native-recipient" "" Nothing key)
+          evalRead reader (ReadOrder header oid) >>= check . (==3700) . W.deadline
           fixture fixtures PayoutCohort >>= check . null
           sequenceNo<-evalWrite writer (ClaimSidechain 100 header oid)
           evalWrite writer (ClaimSidechain 100 header oid) >>= check . (==sequenceNo)
