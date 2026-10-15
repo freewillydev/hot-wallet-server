@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveAnyClass,ScopedTypeVariables #-}
 -- Thunder/BitNames are ECX sidechains. RPC data is evidence, never payout authority.
 module Bridge.Sidechain
-  ( SidechainSettings(..),SidechainOutput(..),validateSidechains,findSidechain
+  ( SidechainSettings(..),SidechainOutput(..),validateSidechains,findSidechain,localEnforcer,validatorEndpoint
   , sidechainCall,validatorCall,sidechainIdentityWith,sidechainHeadWith,readOutputsWith,verifyOutputWith
   , sidechainInstruction,decodeInstruction,outputId,validAddress,recoverAddressWith,verifySourceWith
   , sidechainWalletFile,readSidechainSeed,validateSidechainSeed
@@ -21,7 +21,7 @@ import Control.Monad (forM,forM_,when)
 import Data.Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base58 as B58
-import Data.List (nub,sort,(\\))
+import Data.List (nub,sort,intercalate,(\\))
 import Data.Maybe (catMaybes)
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Aeson.Key as K
@@ -46,24 +46,46 @@ data SidechainOutput = SidechainOutput
   deriving (Eq,Show)
 type Call = Text -> [Value] -> IO Value
 
+localEnforcer :: [SidechainSettings] -> Bool
+localEnforcer=any ((=="http://127.0.0.1:29550").sidechainValidatorRpc)
+
+-- BitNames currently supports plaintext gRPC only. Remote consensus evidence
+-- must come from operator-controlled infrastructure on a private network/tunnel.
+-- Literal IPv4 avoids DNS rebinding; never accept a public provider or credentials.
+validatorEndpoint :: String -> IO (String,Int)
+validatorEndpoint url=do
+  endpoint<-parseRequest url `catch` (\(_::HttpException)->reject "private_enforcer_endpoint_required")
+  let name=T.unpack(TE.decodeUtf8 $ host endpoint)
+      octets=traverse (readMaybe . T.unpack) (T.splitOn "." $ T.pack name) :: Maybe [Int]
+      private=case octets of
+        Just xs@[a,b,_,_] -> all (\n->n>=0 && n<=255) xs && name==intercalate "." (map show xs)
+          && (a==10 || a==172 && b>=16 && b<=31 || a==192 && b==168
+            || url=="http://127.0.0.1:29550")
+        _->False
+  require (private && port endpoint>1024 && port endpoint<=65535
+    && url=="http://"<>name<>":"<>show(port endpoint)) "private_enforcer_endpoint_required"
+  pure(name,port endpoint)
+
 validateSidechains :: Profile -> [SidechainSettings] -> IO ()
 validateSidechains profile settings = do
   require (length settings<=2 && length(nub assets)==length assets) "duplicate_sidechain"
   -- BitNames has no compatible betanet network in the pinned upstream build.
   require (null settings || profile==L2LSignetDevnet) "sidechains_require_ecx_signet"
+  require (length(nub $ map sidechainValidatorRpc settings)<=1) "one_enforcer_required"
+  validators<-mapM (validatorEndpoint . sidechainValidatorRpc) settings
   ports<-forM settings $ \setting->do
     let policy=sidechainPolicy setting; seed=sidechainSeedFile setting
     require (sidechainAsset policy `elem` [Thunder,BitNames] && sidechainDepth policy>=6
       && sidechainDepth policy<=1008 && sidechainFeeBps policy>=0 && sidechainFeeBps policy<10000
       && transactionId(sidechainCheckpoint policy) && transactionId(sidechainWalletIdentity policy)) "invalid_sidechain_policy"
     require (isAbsolute seed && normalise seed==seed) "absolute_sidechain_seed_path_required"
-    forM [sidechainRpc setting,sidechainPrivateRpc setting,sidechainValidatorRpc setting] $ \url->do
+    forM [sidechainRpc setting,sidechainPrivateRpc setting] $ \url->do
       endpoint<-parseRequest url
       require (not(secure endpoint) && host endpoint=="127.0.0.1" && path endpoint=="/"
         && BS.null(queryString endpoint) && null(requestHeaders endpoint)
         && port endpoint>1024 && port endpoint<=65535) "private_sidechain_rpc_required"
       pure(port endpoint)
-  let nodePorts=concatMap (take 2) ports; validatorPorts=map last ports
+  let nodePorts=concat ports; validatorPorts=[p | (h,p)<-validators,h=="127.0.0.1"]
   require (length(nub nodePorts)==length nodePorts && all (`notElem` nodePorts) validatorPorts) "sidechain_ports_overlap"
  where assets=map (sidechainAsset . sidechainPolicy) settings
 findSidechain :: [SidechainSettings] -> Asset -> IO SidechainSettings

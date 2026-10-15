@@ -1,6 +1,7 @@
 module ConfigureCheck (contract,walletProperty) where
 import qualified Bridge.Config as C
 import qualified NodeSetup
+import qualified Bridge.Sidechain as Side
 import qualified Bootstrap
 import qualified InstallConfig
 import qualified Token
@@ -282,6 +283,34 @@ importContract parent executable key=do
   require (tunnelReplay==ExitSuccess) "tunnel_replay_failed"
   importedKey<-B.readFile(output<>"-keys/solana.keypair.json")
   importedPhrase<-B.readFile(output<>"-keys/ecx-recovery.txt")
+  -- Both record forms use real key import, immutable retry and the same runtime
+  -- validation; only the local form grants an enforcer native RPC credentials.
+  forM_ [False,True] $ \remote->do
+    let name=if remote then "remote-sidechains" else "local-sidechains"
+        file=parent</>(name<>".conf"); destination=parent</>name
+        endpoint=if remote then "http://10.20.30.40:50051" else "http://127.0.0.1:29550"
+        signetFields=map (\(k,v)->(k,case k of
+          "ownerEcxXpub"->show $ encoded (B.pack [0x04,0x35,0x87,0xcf]<>B.drop 4 payload)
+          "assetMintAddress"->show ("Hqb82J658UeWXCdr6DA6Au2ChMzrhxoSd3vdXk2hkNqM"::String)
+          _->v)) fields
+        plan=(if remote then "RemoteEnforcerPlan" else "InstallPlan")<>
+          " { installNetwork=L2LSignetDevnet, installBridge="<>record signetFields<>
+          ", installSidechains=[SidechainInstall {sidechain=Thunder,sidechainSeedBip39=\"legal winner thank year wave sausage worth useful legal winner thank yellow\",fastWithdrawalFeeBps=100,ecxConfirmations=6},"<>
+          "SidechainInstall {sidechain=BitNames,sidechainSeedBip39=\"letter advice cage absurd amount doctor acoustic avoid letter advice cage above\",fastWithdrawalFeeBps=100,ecxConfirmations=6}]"<>
+          (if remote then ", trustedRemoteEnforcer="<>show endpoint else "")<>"}"
+    savePrivate file (B8.pack plan)
+    (installed,_,_)<-invoke file destination
+    require (installed==ExitSuccess) "sidechain_configuration_failed"
+    before<-mapM (readPrivate . (destination</>)) ["bootstrap.json","sources.json","native-rpc.conf"]
+    (repeated,_,_)<-invoke file destination
+    after<-mapM (readPrivate . (destination</>)) ["bootstrap.json","sources.json","native-rpc.conf"]
+    configured<-Bootstrap.setupConfig destination
+    credential<-doesFileExist(destination</>"native-enforcer.auth")
+    sources<-readPrivate(destination</>"sources.json") >>= either fail pure . eitherDecodeStrict' :: IO (KM.KeyMap Value)
+    require (repeated==ExitSuccess && before==after && credential==not remote
+      && KM.member "native-enforcer.auth" sources==not remote
+      && length(C.sidechains configured)==2 && all ((==endpoint).Side.sidechainValidatorRpc) (C.sidechains configured)
+      && NodeSetup.managedMode (C.profile configured) (C.sidechains configured)==(if remote then "signet-pruned" else "signet-full")) "sidechain_mode_or_custody_changed"
   generated<-mapM doesDirectoryExist [output<>"-solana-wallet",output<>"-ecx-wallet"]
   invalid<-forM (zip [0::Int ..]
     (map (replace "serverIp" . show) ([".","1.2.3","256.1.2.3","1.2.3.4.5","2001::db8::1","[::1]","::1%lo0"," 127.0.0.1","\f127.0.0.1","(127.0.0.1)","2130706433","0x7f000001"]::[String])

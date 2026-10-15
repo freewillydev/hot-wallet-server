@@ -6,6 +6,39 @@ Worktree: `/Users/lukekensik/Documents/Codex/hot-wallet-fast-withdrawals`, branc
 `codex/sidechain-fast-withdrawals`, base `c2ff01c`. Parent is the only writer.
 Do not deploy over the original checkout or funded server.
 
+Latest (Oct15, about20:00UTC): c509a99 fixes fresh Signet fee estimation by using
+1 base unit/vB only on Signet; fee caps/mempool checks remain. Local and Ubuntu
+build/full tests PASS; A checkpoint-upgrade f6c09557-1aea-4316-a805-b53b66a0c260
+passed at sequence6. Native receipt ce314eb4…:0 is allocated90000 float/10000
+operating; do not fund/allocate again. Both10000-unit customer deposits sent once:
+Thunder order6278a6e6… address3Yx9ekjoxjxwBMbcL8pU9VYPNWpW,
+tx0cbcd3784a9ecc05092b1af05deff9728199b8b8dcd22b9da613bc0f3f49d5b5;
+BitNames order5f3e2b89… address2LzZJqoafkoZKDMWq5ScLciDopvQ,
+tx44220b5b9fab7baae214299eef09e8a8bbdefc8f1d2da2721e4ecc7349da8580.
+Tokens/orders are private on A under /root/ecx-sidechain-fixture/orders;
+transfer intents/results in /tmp/ecx-fast-funding. Await inclusion/six confirmations.
+BitNames tester wallet watcher was restored by a stopped backup/restart; its
+upstream App Clone/Drop bug aborts the watcher after create_deposit. Do not call
+create_deposit again. Current local BitNames session50575, same keys/data.
+
+B aa6b771 repeat twice PASS,30 files unchanged, sequence2/backup2:
+86f7a0b6-44b0-4d65-81a2-599bda28db32. Reboot starts all services paused for
+reconciliation as designed. Checked installer resume verification is running
+c699d086-f66d-4c44-9270-873c8d7b9aba. B is now also a private validator fixture:
+root-managed socket proxy172.31.11.63:50051 to its existing local enforcer;
+SGsg-00baa39af812ae45e allows only client SGsg-000681bb3c04d7609.
+
+RemoteEnforcerPlan adds trustedRemoteEnforcer to the optional Signet record.
+It preserves old records, selects pruned local Core, omits local enforcer/native
+credentials, and preserves local sidechain wallets and readiness gating. Shared
+runtime endpoint survives backup/restore; no schema change. RFC1918 literal IPv4
+only; transport/remote consensus trust is explicit in INSTALL.md. Local build/full
+suite PASS(/tmp/ecx-fast-remote-{build,tests}.log), separate scoped source reviews
+PASS(sidechain_setup_fit/sidechain_rpc_contract); live remote acceptance pending.
+New empty remote fixture D i-0b89e40359666c810(172.31.1.83) is Ubuntu24.04,
+8GiB/encrypted256GiB/no ingress. Existing unfunded C retains its full node.
+Use D to verify pruned remote provisioning; preserve all funded custody.
+
 Implemented: optional Signet Thunder/BitNames receipts, configurable fees, confirmed
 immediate ECX payouts using existing signing/accounting, fifth address-allocation
 signer leaf, schema24 and format3 custody restore, optional full-node installation.

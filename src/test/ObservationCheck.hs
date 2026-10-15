@@ -561,7 +561,17 @@ sideRead asset rows=Side.readOutputsWith call asset [sideAddress 1]
   call _ _=fail "unexpected sidechain read"
 sidechainChecks :: IO [Result]
 sidechainChecks=sequence
-  [ check "sidechain UTXO kinds preserve money and distinct identities" $
+  [ check "enforcer endpoints require canonical private IPv4 without credentials or URI injection" $ once $ ioProperty $ do
+      allowed<-mapM Side.validatorEndpoint ["http://127.0.0.1:29550","http://10.2.3.4:50051","http://172.16.0.1:50051","http://192.168.1.1:50051"]
+      denied<-mapM (rejects "private_enforcer_endpoint_required" . Side.validatorEndpoint)
+        ["http://127.0.0.1:50051","http://127.0.0.2:29550","https://10.2.3.4:50051","http://8.8.8.8:50051","http://169.254.169.254:50051"
+        ,"http://172.15.0.1:50051","http://172.32.0.1:50051","http://192.169.1.1:50051"
+        ,"http://10.256.0.1:50051","http://10.02.3.4:50051","http://localhost:50051"
+        ,"http://10.2.3.4:50051/","http://10.2.3.4:50051#fragment","http://10.2.3.4:50051?key=secret"
+        ,"http://user:secret@10.2.3.4:50051","http://10.2.3.4:80","http://10.2.3.4:65536"
+        ,"http://10.2.3.4:50051\nother","http://10.2.3.4:%p"]
+      pure (length allowed==4 && and denied)
+  , check "sidechain UTXO kinds preserve money and distinct identities" $
       forAll (elements [Thunder,BitNames]) $ \asset->
       forAll (chooseInteger (1,1000000000000)) $ \n->ioProperty $ do
         let rows=[sideRow asset kind 1 n | kind<-["Regular","Coinbase","Deposit"]]

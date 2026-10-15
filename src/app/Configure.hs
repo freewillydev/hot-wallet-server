@@ -4,7 +4,7 @@ module Configure (configure,configureAdvanced,configureFile,start,startAdvanced,
 import qualified Bridge.Config as C
 import qualified Bridge.Wire as W
 import Bridge.Domain (Asset(..),parseCoins)
-import Bridge.Sidechain (SidechainSettings(..))
+import Bridge.Sidechain (SidechainSettings(..),localEnforcer)
 import qualified Bootstrap
 import qualified NodeSetup
 import qualified Upgrade
@@ -118,7 +118,8 @@ configureFile input output=do
     exists<-doesFileExist unlock
     when (not exists) $ getRandomBytes 32 >>= savePrivate unlock . B8.pack . T.unpack . base58
     verifyNativeUnlock unlock
-    (admin,worker,signer)<-NodeSetup.credentialsFor (not $ null $ I.installSidechains plan) directory
+    (admin,worker,signer)<-NodeSetup.credentialsFor
+      (not(null $ I.installSidechains plan) && I.enforcerEndpoint plan=="http://127.0.0.1:29550") directory
     let repository=directory</>"backup.repository"
         password=directory</>"backup.password"
         url=I.backupRepositoryUrl settings
@@ -139,7 +140,7 @@ configureFile input output=do
           phrase=T.pack(I.sidechainSeedBip39 chain)
           policy=W.SidechainPolicy asset (I.ecxConfirmations chain) (I.fastWithdrawalFeeBps chain) checkpoint (digest $ TE.encodeUtf8 phrase)
       publishSetup seed (TE.encodeUtf8 $ phrase<>"\n")
-      pure(SidechainSettings policy (endpoint port) (endpoint $ port+100) (endpoint 29550) seed)) (I.installSidechains plan)
+      pure(SidechainSettings policy (endpoint port) (endpoint $ port+100) (I.enforcerEndpoint plan) seed)) (I.installSidechains plan)
     let defaults=M.union (M.fromList
           ["profile" .= network,"deploymentId" .= String ("ecx-"<>T.take 16 owner)
           ,"nativeWallet" .= String ("ecx-bridge-"<>T.take 16 owner),"backupRequired" .= Bool True
@@ -158,7 +159,7 @@ configureFile input output=do
         sources=object [K.fromString name .= path | (name,path)<-
           [("solana.keypair.json",key),("native-worker.auth",worker),("native-signer.auth",signer)
           ,("native-unlock",unlock),("backup.repository",repository),("backup.password",password)]
-          <> [("native-enforcer.auth",directory</>"native-enforcer.auth") | not(null chains)]
+          <> [("native-enforcer.auth",directory</>"native-enforcer.auth") | localEnforcer chains]
           <> [(T.unpack(T.toLower $ T.pack $ show $ W.sidechainAsset $ sidechainPolicy chain)<>"-seed.txt",sidechainSeedFile chain) | chain<-chains]]
     config<-either (const $ reject "invalid_install_settings") pure (parseEither parseJSON $ Object defaults)
     C.validateSetupConfig config

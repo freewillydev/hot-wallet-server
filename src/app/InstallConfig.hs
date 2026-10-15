@@ -1,10 +1,11 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 -- Installation input is data, parsed by Read; it is never evaluated as Haskell.
 -- Deliberately no Show instance: the record contains credentials and private keys.
-module InstallConfig (InstallConfig(..),InstallPlan(..),SidechainInstall(..),readInstallPlan,readInstallConfig,validateInstallConfig,validateInstallPlan,updateSettings) where
+module InstallConfig (InstallConfig(..),InstallPlan(..),SidechainInstall(..),enforcerEndpoint,readInstallPlan,readInstallConfig,validateInstallConfig,validateInstallPlan,updateSettings) where
 import Bridge.AdminKey (readPrivate)
 import Bridge.Domain (Asset(..),parseCoins,units)
 import Bridge.Wire (Profile(..))
+import Bridge.Sidechain (validatorEndpoint)
 import Bridge.Error
 import Bridge.Identity (publicKey)
 import Bridge.RPC (independentHttps)
@@ -49,10 +50,18 @@ data InstallConfig = InstallConfig
 -- original record remains the canonical wrap/unwrap-only configuration.
 data InstallPlan = InstallPlan
   { installNetwork :: Profile, installBridge :: InstallConfig
-  , installSidechains :: [SidechainInstall] } deriving (Read,Eq)
+  , installSidechains :: [SidechainInstall] }
+  | RemoteEnforcerPlan
+  { installNetwork :: Profile, installBridge :: InstallConfig
+  , installSidechains :: [SidechainInstall], trustedRemoteEnforcer :: String }
+  deriving (Read,Eq)
 data SidechainInstall = SidechainInstall
   { sidechain :: Asset, sidechainSeedBip39 :: String
   , fastWithdrawalFeeBps :: Int, ecxConfirmations :: Int } deriving (Read,Eq)
+
+enforcerEndpoint :: InstallPlan -> String
+enforcerEndpoint RemoteEnforcerPlan{trustedRemoteEnforcer=url}=url
+enforcerEndpoint InstallPlan{}="http://127.0.0.1:29550"
 
 readInstallPlan :: FilePath -> IO (B.ByteString,InstallPlan)
 readInstallPlan file=do
@@ -70,7 +79,14 @@ readInstallConfig file=do
   pure(bytes,installBridge plan)
 
 validateInstallPlan :: InstallPlan -> IO B.ByteString
-validateInstallPlan (InstallPlan network settings chains)=do
+validateInstallPlan plan=do
+  let network=installNetwork plan; settings=installBridge plan; chains=installSidechains plan
+  case plan of
+    RemoteEnforcerPlan{}->do
+      require (not(null chains) && enforcerEndpoint plan/="http://127.0.0.1:29550") "remote_enforcer_requires_sidechains"
+      _<-validatorEndpoint(enforcerEndpoint plan)
+      pure ()
+    InstallPlan{}->pure ()
   require (network `elem` [CanonicalBeta,L2LSignetDevnet]) "unsupported_install_network"
   require (null chains || network==L2LSignetDevnet) "sidechains_require_ecx_signet"
   require (length chains<=2 && length(nub $ map sidechain chains)==length chains) "duplicate_sidechain"

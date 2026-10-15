@@ -152,9 +152,11 @@ if [ "$mode" = fresh ] || [ "$mode" = recover ]; then
     private_source "$source"
     [ "$source" = "$(jq -er --arg name "$name" '.sidechains[] | select((.sidechainPolicy.sidechainAsset | ascii_downcase)==$name) | .sidechainSeedFile' "$material/worker.json")" ] || fail 'sidechain seed reference differs'
   done
-  if [ -n "$side_names" ]; then
+  enforcer_source=
+  if jq -e 'any(.sidechains[]?; .sidechainValidatorRpc=="http://127.0.0.1:29550")' "$material/worker.json" >/dev/null; then
     source=$(source_file native-enforcer.auth) || fail 'missing restricted enforcer credential'
     private_source "$source"
+    enforcer_source=$source
   fi
   key_source=$(source_file solana.keypair.json) || fail 'missing key source'
   worker_source=$(source_file native-worker.auth) || fail 'missing worker credential source'
@@ -282,7 +284,7 @@ if [ "$mode" = fresh ] || [ "$mode" = recover ]; then
     install -o "$signer" -g "$signer" -m 0600 "$(source_file "$name-seed.txt")" "$state/signer/$name-seed.txt"
   done
   if [ -n "$side_names" ]; then
-    sh "$target/sidechains" "$config/worker/config.json" "$(source_file native-enforcer.auth)"
+    sh "$target/sidechains" "$config/worker/config.json" "$enforcer_source"
   fi
   install -o "$signer" -g "$signer" -m 0600 "$key_source" "$config/signer/solana.keypair.json"
   if [ -e "$unlock_source" ]; then

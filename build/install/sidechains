@@ -7,11 +7,29 @@ fail() { echo "Sidechain setup: $*" >&2; exit 1; }
 config=$1; auth=$2
 [ "$(uname -m)" = x86_64 ] || fail 'sidechain node binaries currently require x86_64'
 [ "$(jq -r .profile "$config")" = L2LSignetDevnet ] || fail 'ECX Signet required'
-[ "$(cat /opt/ecx-node/managed-profile)" = signet-full ] || fail 'unpruned managed Signet required'
-[ -f "$auth" ] && [ ! -L "$auth" ] && [ "$(stat -c '%u:%a:%h' "$auth")" = 0:600:1 ] || fail 'unsafe enforcer credential'
+validator=$(jq -er '[.sidechains[].sidechainValidatorRpc] | unique | select(length==1) | .[0]' "$config") || fail 'one enforcer endpoint required'
+# Haskell validates this too. Literal private IPv4 and explicit port only:
+# no DNS, credentials, URL escapes or shell/systemd substitution characters.
+printf '%s\n' "$validator" | awk '
+  /^http:\/\/[0-9.]+:[0-9]+$/ {
+    sub(/^http:\/\//, ""); split($0,p,":"); n=split(p[1],a,".");
+    valid=(n==4 && p[2]+0>1024 && p[2]+0<=65535 && p[2]==sprintf("%d",p[2]));
+    for(i=1;i<=4;i++) valid=valid && a[i]+0>=0 && a[i]+0<=255 && a[i]==sprintf("%d",a[i]);
+    if(valid && (a[1]==10 || a[1]==172 && a[2]>=16 && a[2]<=31 || a[1]==192 && a[2]==168 || $0=="127.0.0.1:29550")) ok=1;
+  } END { exit !ok }' || fail 'private enforcer endpoint required'
+remote=${validator#http://}; validator_host=${remote%:*}; validator_port=${remote##*:}
+local_enforcer=false; mode=signet-pruned
+if [ "$validator" = http://127.0.0.1:29550 ]; then
+  local_enforcer=true; mode=signet-full
+  [ -f "$auth" ] && [ ! -L "$auth" ] && [ "$(stat -c '%u:%a:%h' "$auth")" = 0:600:1 ] || fail 'unsafe enforcer credential'
+else
+  [ -z "$auth" ] || fail 'remote enforcer must not receive native credentials'
+  [ ! -e /etc/systemd/system/ecx-enforcer.service ] || fail 'existing local enforcer requires a fresh host for remote mode'
+fi
+[ "$(cat /opt/ecx-node/managed-profile)" = "$mode" ] || fail 'managed Signet pruning mode differs'
 jq -e '.nativeRpc=="http://127.0.0.1:28532" and (.sidechains | length>0 and length<=2)
   and ([.sidechains[].sidechainPolicy.sidechainAsset] | length==(unique|length))
-  and all(.sidechains[]; .sidechainValidatorRpc=="http://127.0.0.1:29550" and
+  and all(.sidechains[];
     (if .sidechainPolicy.sidechainAsset=="Thunder" then .sidechainRpc=="http://127.0.0.1:29609" and .sidechainPrivateRpc=="http://127.0.0.1:29709" and .sidechainSeedFile=="/var/lib/ecx-bridge/signer/thunder-seed.txt"
      elif .sidechainPolicy.sidechainAsset=="BitNames" then .sidechainRpc=="http://127.0.0.1:29602" and .sidechainPrivateRpc=="http://127.0.0.1:29702" and .sidechainSeedFile=="/var/lib/ecx-bridge/signer/bitnames-seed.txt" else false end))' "$config" >/dev/null || fail 'managed endpoints differ'
 names=$(jq -r '[.sidechains[].sidechainPolicy.sidechainAsset | ascii_downcase] | join(" ")' "$config")
@@ -53,8 +71,12 @@ fetch() {
   printf '%s/%s\n' "$directory" "$name"
 }
 release=https://github.com/freewillydev/hot-wallet-server/releases/download/sidechain-nodes-20261015
-enforcer=$(fetch enforcer https://nightly.link/LayerTwo-Labs/bip300301_enforcer/actions/runs/38394661412/bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip b8ba14c17df71a63c5bdf13a2b4e0560060badd563992b0ce4efad896ddc0af1 bip300301-enforcer-latest-x86_64-unknown-linux-gnu)
-for name in enforcer $names; do
+services=$names
+if [ "$local_enforcer" = true ]; then
+  enforcer=$(fetch enforcer https://nightly.link/LayerTwo-Labs/bip300301_enforcer/actions/runs/38394661412/bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip b8ba14c17df71a63c5bdf13a2b4e0560060badd563992b0ce4efad896ddc0af1 bip300301-enforcer-latest-x86_64-unknown-linux-gnu)
+  services="enforcer $names"
+fi
+for name in $services; do
   account=ecx$name; home=/var/lib/ecx-$name
   [ ! -L "$home" ] || fail 'node home symlink refused'
   getent passwd "$account" >/dev/null || useradd --system --user-group --home-dir "$home" --shell /usr/sbin/nologin "$account"
@@ -79,7 +101,8 @@ for name in $names; do
     printf 'add rule inet ecx_sidechain_rpc output oifname "lo" tcp sport %s meta skuid %s accept\nadd rule inet ecx_sidechain_rpc output oifname "lo" tcp sport %s drop\n' "$port" "$(id -u "ecx$name")" "$port" >> "$temporary/rules"
   done
 done
-for port in 29550 29551 29433; do
+ports=; [ "$local_enforcer" != true ] || ports='29550 29551 29433'
+for port in $ports; do
   account=ecxenforcer; [ "$port" != 29433 ] || account=ecxnode
   printf 'add rule inet ecx_sidechain_rpc output oifname "lo" tcp sport %s meta skuid %s accept\nadd rule inet ecx_sidechain_rpc output oifname "lo" tcp sport %s drop\n' "$port" "$(id -u "$account")" "$port" >> "$temporary/rules"
 done
@@ -133,15 +156,45 @@ done
 echo 'Enforcer synchronization incomplete; sidechain startup withheld.' >&2
 exit 1
 WAIT
-publish "$temporary/wait-enforcer" "$base/wait-enforcer" 755
-for name in enforcer $names; do
+dependency=ecx-enforcer.service
+if [ "$local_enforcer" = true ]; then
+  publish "$temporary/wait-enforcer" "$base/wait-enforcer" 755
+else
+  # Only restricted local credentials are used; none go to the remote validator.
+  sed -e 's|/var/lib/ecx-enforcer/native.auth|/etc/ecx-bridge/worker/native.auth|' \
+      -e "s|http://127.0.0.1:29550|$validator|" "$temporary/wait-enforcer" > "$temporary/wait-remote-enforcer"
+  publish "$temporary/wait-remote-enforcer" "$base/wait-remote-enforcer" 755
+  dependency=ecx-sidechain-ready.service
+  cat > "$temporary/remote-ready" <<UNIT
+[Unit]
+Description=Verify remote enforcer against local ECX before sidechain startup
+Requires=ecx-betanet.service
+After=network-online.target ecx-betanet.service ecx-node-rpc-guard.service ecx-sidechain-rpc-guard.service
+BindsTo=ecx-node-rpc-guard.service ecx-sidechain-rpc-guard.service
+PartOf=ecx-betanet.service ecx-node-rpc-guard.service ecx-sidechain-rpc-guard.service
+[Service]
+Type=oneshot
+User=ecxbridgew
+Group=ecxbridgew
+ExecStart=$base/wait-remote-enforcer
+RemainAfterExit=yes
+TimeoutStartSec=600
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+UNIT
+  publish "$temporary/remote-ready" /etc/systemd/system/ecx-sidechain-ready.service 644
+fi
+sidechain_dependency=$dependency
+for name in $services; do
   home=/var/lib/ecx-$name
   case "$name" in
     enforcer) binary=$enforcer; args="--data-dir=$home --node-rpc-addr=127.0.0.1:28532 --node-rpc-cookie-path=$home/native.auth --node-zmq-addr-sequence=tcp://127.0.0.1:29433 --serve-grpc-addr=127.0.0.1:29550 --serve-rpc-addr=127.0.0.1:29551 --bitcoin-core-expected-version=30 --log-level=INFO --max-log-files=2 --max-log-file-size-mb=10"; dependency=ecx-betanet.service;;
     thunder) binary=$(fetch thunder "$release/thunder-linux.zip" afc569292ab44ec3e3b39cc48bde632e70b9a7869f19b8607d1e3acec21cf8b3 thunder-0.18.1-x86_64-unknown-linux-gnu)
-      args="--headless --network=signet --datadir=$home --wallet-dir=$home/wallet --mnemonic-seed-phrase-path=$home/seed.txt --mainchain-grpc-url=http://127.0.0.1:29550 --rpc-addr=127.0.0.1:29609 --private-rpc-addr=127.0.0.1:29709 --log-level=INFO"; dependency=ecx-enforcer.service;;
+      args="--headless --network=signet --datadir=$home --wallet-dir=$home/wallet --mnemonic-seed-phrase-path=$home/seed.txt --mainchain-grpc-url=$validator --rpc-addr=127.0.0.1:29609 --private-rpc-addr=127.0.0.1:29709 --log-level=INFO"; dependency=$sidechain_dependency;;
     bitnames) binary=$(fetch bitnames https://nightly.link/freewillydev/plain-bitnames/actions/runs/38773898783/bitnames-0.17.2-x86_64-unknown-linux-gnu.zip 284d08626b4f504eb6524bb6402fe17c55d34a92be5694455db10b26d64c1a11 bitnames-0.17.2-x86_64-unknown-linux-gnu)
-      args="--headless --network=signet --datadir=$home --mnemonic-seed-phrase-path=$home/seed.txt --mainchain-grpc-host=127.0.0.1 --mainchain-grpc-port=29550 --rpc-addr=127.0.0.1:29602 --private-rpc-addr=127.0.0.1:29702 --log-level=INFO"; dependency=ecx-enforcer.service;;
+      args="--headless --network=signet --datadir=$home --mnemonic-seed-phrase-path=$home/seed.txt --mainchain-grpc-host=$validator_host --mainchain-grpc-port=$validator_port --rpc-addr=127.0.0.1:29602 --private-rpc-addr=127.0.0.1:29702 --log-level=INFO"; dependency=$sidechain_dependency;;
   esac
   cat > "$temporary/service" <<UNIT
 [Unit]
@@ -169,11 +222,13 @@ WantedBy=multi-user.target
 UNIT
   publish "$temporary/service" "/etc/systemd/system/ecx-$name.service" 644
 done
+if [ "$local_enforcer" = true ]; then
 ready=/etc/systemd/system/ecx-enforcer.service.d
 [ ! -L "$ready" ] || fail 'enforcer drop-in directory symlink refused'
 install -d -o root -g root -m 0755 "$ready"
 printf '[Service]\nExecStartPost=%s/wait-enforcer\nTimeoutStartSec=600\n' "$base" > "$temporary/enforcer-ready"
 publish "$temporary/enforcer-ready" "$ready/20-ready.conf" 644
+fi
 for service in ecx-bridge-worker ecx-bridge-signer; do
   directory=/etc/systemd/system/$service.service.d
   [ ! -L "$directory" ] || fail 'service drop-in directory symlink refused'
@@ -184,5 +239,5 @@ done
 systemctl daemon-reload
 systemctl enable --now ecx-sidechain-rpc-guard.service
 systemctl reload ecx-sidechain-rpc-guard.service
-for name in enforcer $names; do systemctl enable --now "ecx-$name.service"; done
+for name in $services; do systemctl enable --now "ecx-$name.service"; done
 echo 'Optional sidechain nodes started; intake remains gated on verified chain and custody observations.'

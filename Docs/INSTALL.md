@@ -129,6 +129,28 @@ The enforcer service waits for its verified tip to match the synced ECX node bef
 starting sidechains, including on reboot. A startup timeout stays closed; after
 connectivity/sync recovers, rerun the installer to retry dependent service startup.
 
+To use your **trusted remote enforcer**, change the outer constructor to
+`RemoteEnforcerPlan` and add `trustedRemoteEnforcer = "http://10.20.30.40:50051"`
+beside `installSidechains`. Use the enforcer's gRPC/Connect port, not its JSON-RPC
+port. Both sidechains use that one endpoint. The installer then uses a **pruned
+local ECX node**, omits the local enforcer and its native RPC credential, and keeps
+the sidechain nodes, keys and signer local. Existing `InstallPlan` records keep
+their original behavior. Select this mode on a fresh host; the installer refuses
+to silently change an existing node's pruning mode.
+
+Only canonical RFC1918 private IPv4 URLs with explicit ports are accepted remotely.
+Provide an operator-controlled,
+access-controlled private network or authenticated encrypted tunnel. BitNames
+currently requires plaintext HTTP at this endpoint: a private IP alone provides
+neither authentication nor encryption. Do not expose the enforcer to the public
+Internet or use an untrusted provider. Its commitment answers are trusted; local
+ECX still independently checks the chain, block hashes and confirmation depth.
+The remote machine needs a synced, unpruned ECX node and validator enforcer.
+Local pruning avoids retaining full block history; it does **not** eliminate local
+ECX synchronization. Preserve wallet and ledger backups: seed-only restoration
+can require full chain history. The installer checks matching synced tips before
+starting local sidechains; outages or wrong-chain responses keep payouts gated.
+
 Customers send a **regular sidechain transfer** to the order's unique address.
 After the configured ECX confirmations (minimum six), the existing ECX payment
 engine pays the amount minus the configured basis-point fee. These routes bypass

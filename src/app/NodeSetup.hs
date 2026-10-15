@@ -1,11 +1,12 @@
 -- One-time local node provisioning, never a worker/signer runtime capability.
-module NodeSetup (credentials,credentialsFor,checkConfig,serviceName,provision,persistRestoredWallet,signerPolicy,refreshSignerPolicy) where
+module NodeSetup (credentials,credentialsFor,checkConfig,serviceName,provision,managedMode,persistRestoredWallet,signerPolicy,refreshSignerPolicy) where
 import Bridge.AdminKey (savePrivate,readPrivate,withFamily)
 import Bridge.File (withHandle)
 import System.IO (hFlush)
 import qualified Bridge.Wire as W
 import Bridge.Error
 import Bridge.RPC (fieldValue)
+import Bridge.Sidechain (SidechainSettings,localEnforcer)
 import Bridge.SolanaMessage (base58)
 import Crypto.Random (getRandomBytes)
 import Crypto.MAC.HMAC (hmac,HMAC)
@@ -73,6 +74,10 @@ credentialsFor sidechains directory=do
 
 -- Preserve the node's existing configuration and authority defaults. Refuse
 -- complex include trees instead of silently changing another RPC user's rights.
+managedMode :: W.Profile -> [SidechainSettings] -> String
+managedMode W.L2LSignetDevnet chains=if localEnforcer chains then "signet-full" else "signet-pruned"
+managedMode _ _="betanet"
+
 provision :: FilePath -> IO ()
 provision directory=do
   setup<-decode =<< readPrivate (directory</>"setup.json")
@@ -93,8 +98,8 @@ provision directory=do
       let installer=if method=="bundle" then root</>"node" else root</>"build/install/node"
       profile<-fieldValue "profile" bootstrap :: IO W.Profile
       chains<-either (const $ reject "invalid_setup_json") pure
-        (parseEither (withObject "config" (\o->o .:? "sidechains" .!= ([]::[Value]))) bootstrap)
-      let mode=if profile==W.L2LSignetDevnet then (if null chains then "signet-pruned" else "signet-full") else "betanet"
+        (parseEither (withObject "config" (\o->o .:? "sidechains" .!= [])) bootstrap)
+      let mode=managedMode profile chains
       result<-rawSystem "/bin/sh" [installer,mode]
       require (result==ExitSuccess) "managed_node_install_failed_retry_start"
     checkConfig path

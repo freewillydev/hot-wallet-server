@@ -142,7 +142,7 @@ prepare bundle plan c=do
   _<-readPrivate repository; _<-readPrivate password
   -- Fresh restricted RPC credentials are generated; restored private keys are
   -- referenced, never regenerated or placed in prompts/logs.
-  (admin,workerAuth,signerAuth)<-NodeSetup.credentialsFor (not $ null $ C.sidechains c) material
+  (admin,workerAuth,signerAuth)<-NodeSetup.credentialsFor (Side.localEnforcer $ C.sidechains c) material
   seeds<-bracket newRpcManager closeManager $ \manager->evalCustodyRecovery manager c
     (RestoreSidechainSeeds (R.manifest plan) (R.minimumSequence plan) material)
   chains<-mapM (\chain->do
@@ -159,7 +159,7 @@ prepare bundle plan c=do
     ,"native-worker.auth" .= workerAuth,"native-signer.auth" .= signerAuth
     ,"backup.repository" .= repository,"backup.password" .= password]
     <>["native-unlock" .= (source</>"native-unlock") | encrypted]
-    <>["native-enforcer.auth" .= (material</>"native-enforcer.auth") | not(null chains)]
+    <>["native-enforcer.auth" .= (material</>"native-enforcer.auth") | Side.localEnforcer chains]
     <>[K.fromString name .= path | (name,path)<-seeds]
   save "setup.json" $ object ["existing" .= True,"restoredCustody" .= True,"method" .= String "bundle"
     ,"sourceRoot" .= bundle,"managedNode" .= False,"nodeConfig" .= String "/var/lib/ecx-betanet/bitcoin.conf"
