@@ -124,10 +124,11 @@ main=(getArgs >>= command) `catch` (\(BridgeError code)->
     c<-C.loadConfig path
     initialize (C.fingerprint c)
   command ["initialize-ledger","--fingerprint",identity]=initialize (T.pack identity)
-  command ["provision-restored-database",identity,sequenceText]=do
+  command [mode,identity,sequenceText] | mode `elem` ["provision-restored-database","check-restored-database"]=do
     sequenceNo<-maybe (reject "invalid_restore_policy") pure (readMaybe sequenceText)
     database<-databaseSettings
-    evalSetup database (ProvisionRestoredDatabase (T.pack identity) sequenceNo)
+    when (mode=="provision-restored-database") $
+      evalSetup database (ProvisionRestoredDatabase (T.pack identity) sequenceNo)
     addresses<-evalRestore database (ReadRestoredSidechainAddresses (T.pack identity) sequenceNo)
     LBS.putStrLn $ encode $ object ["paused" .= True,"sidechainAddresses" .= addresses]
   command ["provision-database"]=do

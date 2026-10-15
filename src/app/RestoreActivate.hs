@@ -83,9 +83,11 @@ activate=withFamily "/var/lib/ecx-bridge-upgrade/lifecycle" $ do
   require (C.fingerprint installed==R.identity plan) "restored_install_identity_mismatch"
   selected<-B8.unpack . B8.strip <$> readPrivate "/var/lib/ecx-bridge-install/database"
   require (selected==database) "restored_install_database_mismatch"
+  -- Installation already granted roles. A failed start can change the diagnostic
+  -- pause reason; retries inspect the exact paused ledger without reprovisioning.
   (code,out,_)<-readProcessWithExitCode "/usr/sbin/runuser"
     ["-u","postgres","--","/usr/bin/env","-i","PATH=/usr/bin:/bin","PGHOST=/var/run/postgresql","PGPORT=5432"
-    ,"PGUSER=postgres","PGDATABASE="<>database,binary,"provision-restored-database",T.unpack(R.identity plan),show sequenceNo] ""
+    ,"PGUSER=postgres","PGDATABASE="<>database,binary,"check-restored-database",T.unpack(R.identity plan),show sequenceNo] ""
   require (code==ExitSuccess) "restored_sidechain_ledger_check_failed"
   restored<-either (const $ reject "invalid_restored_ledger_result") pure (eitherDecodeStrict' $ B8.pack out)
   addresses<-field "sidechainAddresses" restored

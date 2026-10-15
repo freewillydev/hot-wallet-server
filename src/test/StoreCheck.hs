@@ -1979,8 +1979,15 @@ sidechainOrdersMain=do
         fixture fixtures FinancialRecords >>= check . (==before)
         expectStore "worker_already_running" $ evalRestore settings (ReadRestoredSidechainAddresses "contract" 0)
       sequenceNo<-ledgerSequence <$> evalRead reader ReadState
+      expectStore "ledger_profile_or_schema_mismatch" $ evalRestore settings (ReadRestoredSidechainAddresses "wrong" sequenceNo)
       expectStore "restored_sequence_mismatch" $ evalRestore settings (ReadRestoredSidechainAddresses "contract" $ sequenceNo+1)
+      fixture fixtures (SetPause False)
+      expectStore "restored_sequence_mismatch" $ evalRestore settings (ReadRestoredSidechainAddresses "contract" sequenceNo)
+      fixture fixtures (SetPause True)
+      -- A failed activation changes the pause reason, not the saved custody.
+      beforeInspection<-fixture fixtures FinancialRecords
       restored<-evalRestore settings (ReadRestoredSidechainAddresses "contract" sequenceNo)
+      fixture fixtures FinancialRecords >>= check . (==beforeInspection)
       let (_,selectedAsset,byte)=route
       check (restored==[(asset,[SolanaMessage.base58(BS.replicate 20 byte) | asset==selectedAsset]) | asset<-[Thunder,BitNames]])
   putStrLn "PASS: sidechain claims, restart completion, immutable replay, immediate ECX payouts and retained normal batching"
