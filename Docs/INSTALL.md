@@ -125,6 +125,9 @@ Omit either sidechain entry to leave that route disabled. The default record in
 The sidechain plan installs an unpruned ECX Signet node, an enforcer and the selected
 nodes under separate service users. It never converts an existing node's network
 or pruning mode and never generates missing configuration-supplied wallet keys.
+The enforcer service waits for its verified tip to match the synced ECX node before
+starting sidechains, including on reboot. A startup timeout stays closed; after
+connectivity/sync recovers, rerun the installer to retry dependent service startup.
 
 Customers send a **regular sidechain transfer** to the order's unique address.
 After the configured ECX confirmations (minimum six), the existing ECX payment

@@ -108,6 +108,32 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 UNIT
 publish "$temporary/guard" /etc/systemd/system/ecx-sidechain-rpc-guard.service 644
+# After= alone orders processes, not chain synchronization. Upstream peers do
+# not retry the same advertised tip when its mainchain ancestors were missing.
+cat > "$temporary/wait-enforcer" <<'WAIT'
+#!/bin/sh
+set -eu
+credential=$(cat /var/lib/ecx-enforcer/native.auth)
+case "$credential" in ''|*[!a-zA-Z0-9_:]*) exit 1;; esac
+remaining=120
+while [ "$remaining" -gt 0 ]; do
+  native=$(printf 'user = "%s"\n' "$credential" | curl -q --config - --noproxy '*' --silent --fail --max-time 5 \
+    -H 'Content-Type: application/json' --data '{"jsonrpc":"2.0","id":1,"method":"getblockchaininfo","params":[]}' \
+    http://127.0.0.1:28532 | jq -er '.result | select(.initialblockdownload==false) | .bestblockhash | select(test("^[0-9a-f]{64}$"))') || native=
+  validator=$(curl -q --noproxy '*' --silent --fail --max-time 5 -H 'Content-Type: application/json' \
+    -H 'Connect-Protocol-Version: 1' --data '{}' http://127.0.0.1:29550/cusf.mainchain.v1.ValidatorService/GetChainTip \
+    | jq -er '.blockHeaderInfo.blockHash.hex | select(test("^[0-9a-f]{64}$"))') || validator=
+  if [ -n "$native" ] && [ "$native" = "$validator" ]; then
+    echo 'Enforcer synchronized with ECX; sidechain nodes may start.'
+    exit 0
+  fi
+  remaining=$((remaining - 1))
+  sleep 2
+done
+echo 'Enforcer synchronization incomplete; sidechain startup withheld.' >&2
+exit 1
+WAIT
+publish "$temporary/wait-enforcer" "$base/wait-enforcer" 755
 for name in enforcer $names; do
   home=/var/lib/ecx-$name
   case "$name" in
@@ -143,6 +169,11 @@ WantedBy=multi-user.target
 UNIT
   publish "$temporary/service" "/etc/systemd/system/ecx-$name.service" 644
 done
+ready=/etc/systemd/system/ecx-enforcer.service.d
+[ ! -L "$ready" ] || fail 'enforcer drop-in directory symlink refused'
+install -d -o root -g root -m 0755 "$ready"
+printf '[Service]\nExecStartPost=%s/wait-enforcer\nTimeoutStartSec=600\n' "$base" > "$temporary/enforcer-ready"
+publish "$temporary/enforcer-ready" "$ready/20-ready.conf" 644
 for service in ecx-bridge-worker ecx-bridge-signer; do
   directory=/etc/systemd/system/$service.service.d
   [ ! -L "$directory" ] || fail 'service drop-in directory symlink refused'

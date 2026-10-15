@@ -585,6 +585,14 @@ sidechainChecks=sequence
           ,("stale","sidechain_mainchain_behind"),("missing","sidechain_source_not_found"),("no-commitment","sidechain_commitment_missing")
           ,("coinbase","invalid_sidechain_source")]
         pure (valid==(sideHash 'e',6) && shallow==(sideHash 'e',5) && orphan==(sideHash 'e',0) && refused)
+  , check "sidechain readiness binds the captured tip and rejects changes or wrong commitments" $ once $ ioProperty $
+      fmap and $ forM [Thunder,BitNames] $ \asset->do
+        valid<-sideProof asset "head-valid"
+        refused<-and <$> mapM (\(mode,code)->rejects code $ sideProof asset ("head-"<>mode))
+          [("changing-tip","sidechain_tip_changed"),("orphan","sidechain_tip_not_active")
+          ,("slot","sidechain_slot_commitment_mismatch"),("active","sidechain_commitment_changed")
+          ,("stale","sidechain_mainchain_behind"),("no-commitment","sidechain_commitment_missing")]
+        pure (valid==(sideHash 'e',6) && refused)
   , check "sidechain allocation restores prefix and recovers lost reply without duplication" $
       forAll (chooseInt (0,20)) $ \count->forAll (chooseInt (0,count)) $ \prefix->ioProperty $ do
         let known=map sideAddress [1..count]; next=sideAddress(count+1)
@@ -599,12 +607,14 @@ sidechainChecks=sequence
         pure (result==next && replayCount==count-prefix+1 && interrupted && recovered==next && generated==1 && rejected && unexpectedCalls==0)
   ]
 sideProof :: Asset -> Text -> IO (Text,Int)
-sideProof asset mode=do
+sideProof asset scenario=do
+  let mode=maybe scenario id (T.stripPrefix "head-" scenario)
   reads<-newIORef (0::Int)
   let expected=Side.SidechainOutput (if mode=="coinbase" then "Coinbase" else "Regular") (sideHash 'a') 1 (sideAddress 1) (amt 41)
-      block=do n<-readIORef reads; pure $ sideHash $ if mode=="reorg" && n>=2 then 'f' else 'e'
+      block=do n<-readIORef reads; pure $ sideHash $ if mode `elem` ["reorg","changing-tip"] && n>=2 then 'f' else 'e'
       tx=object ["outputs" .= [sideBody asset 1 0,sideBody asset (if mode=="address" then 2 else 1) (if mode=="amount" then 42 else 41)]]
       call method args=case (method,args) of
+        ("get_best_sidechain_block_hash",[])->modifyIORef' reads (+1) >> (toJSON <$> block)
         ("get_transaction",[String key]) | key==sideHash 'a'->do
           modifyIORef' reads (+1); b<-block
           pure $ if mode=="missing" then Null else if asset==Thunder then object ["tx" .= tx,"block_hash" .= b] else tx
@@ -629,7 +639,11 @@ sideProof asset mode=do
           require (payload==object ["blockHash" .= object ["hex" .= sideHash 'c'],"sidechainId" .= (if asset==Thunder then 9 else 2::Int),"maxAncestors" .= (0::Int)]) "fixture_wrong_slot_request"
           pure $ object ["commitment" .= object ["commitment" .= object ["hex" .= sideHash (if mode=="slot" then 'f' else 'e')]]]
         _->fail "unexpected validator RPC"
-  Side.verifyOutputWith native validator call asset expected
+  if "head-" `T.isPrefixOf` scenario then do
+    (main,tip)<-Side.sidechainHeadWith native validator call asset
+    require (main==sideHash 'b' && tip==sideHash 'e') "fixture_wrong_head"
+    pure(tip,6)
+  else Side.verifyOutputWith native validator call asset expected
 allocationFixture :: [Text] -> Bool -> IO ((Text -> [Value] -> IO Value),IO Int)
 allocationFixture initial loseReply=do
   wallet<-newIORef initial; calls<-newIORef (0::Int); lose<-newIORef loseReply

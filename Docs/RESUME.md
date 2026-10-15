@@ -36,7 +36,22 @@ private before-images under `/root/ecx-sidechain-fixture/enforcer-policy-before`
 SSM `4d149a4e-2120-4f0c-9b2b-cd9d3201b227`. Core/enforcer/sidechains started.
 This repaired fixture is NOT final clean-install acceptance. Worker/signer remain
 stopped and ledger paused at sequence0 until readiness/initial SOL accounting.
-Do not fund other inventory before initial accounting completes.
+Initial SOL accounting subsequently completed (sequence2, backup coverage2).
+Both sidechains synchronized after restart. The run exposed an upstream startup
+race (advertised ancestors unavailable before enforcer sync); the installer now
+waits for matching synced native/enforcer tips. A captured-tip inclusion check
+also removes a cross-RPC tip sampling race, retaining exact active-chain/slot proof.
+Local build/full suite and independent source reviews PASS for these changes.
+Source tests:/tmp/ecx-fast-head-{build,tests}.log. Long startup timeouts stay closed;
+retry installation after connectivity recovers. No long-outage recovery claim.
+
+100000 ECX Signet base units were sent once to the verified fresh native wallet:
+ce314eb4a739ff768b6428e1f83a21ddb18b4200ae15ac7127bd8ffd7a86f934 (fee141).
+Exact intent/signed bytes and pre-send wallet backup are in /tmp/ecx-fast-funding.
+Wait six confirmations, then explicitly allocate90000 float/10000 operating.
+Second independent clean-install host i-0ab448ea43ef6d9b3 (172.31.11.63) is fresh
+Ubuntu24.04,8GiB/256GiB, no ingress; distinct supplied keys/record are private in
+/tmp/ecx-fast-clean-private. It has no installed bridge or funds yet.
 
 Published timing fix cc79aed: new fast orders allow at least3600s for inclusion
 and1800s per required ECX confirmation for grace. Saved/ordinary terms, fees and

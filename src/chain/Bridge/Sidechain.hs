@@ -135,12 +135,23 @@ sidechainHeadWith :: NativeRPC -> (Text -> Value -> IO Value) -> Call -> Asset -
 sidechainHeadWith native validator call asset=do
   main<-sidechainIdentityWith native validator
   tip<-call "get_best_sidechain_block_hash" [] >>= parseValue parseJSON
-  commitment<-call "get_best_mainchain_block_hash" [] >>= parseValue parseJSON
-  require (transactionId tip && transactionId commitment) "sidechain_not_synced"
-  depth<-activeDepth native commitment
+  require (transactionId tip) "sidechain_not_synced"
+  depth<-commitmentDepth native validator call asset tip
   require (depth>0) "sidechain_tip_not_active"
-  checkCommitment validator asset tip commitment
+  again<-call "get_best_sidechain_block_hash" [] >>= parseValue parseJSON
+  require (again==tip) "sidechain_tip_changed"
   pure(main,tip)
+
+-- Ask for inclusions of the captured block, never a separately sampled live tip.
+commitmentDepth :: NativeRPC -> (Text -> Value -> IO Value) -> Call -> Asset -> Text -> IO Int
+commitmentDepth native validator call asset block=do
+  commitments<-call "get_bmm_inclusions" [toJSON block] >>= parseValue parseJSON :: IO [Text]
+  require (not(null commitments) && length commitments<=1000 && all transactionId commitments) "sidechain_commitment_missing"
+  depths<-forM commitments $ \commitment->do
+    depth<-activeDepth native commitment
+    when (depth>0) $ checkCommitment validator asset block commitment
+    pure depth
+  pure(maximum (0:depths))
 
 checkCommitment :: (Text -> Value -> IO Value) -> Asset -> Text -> Text -> IO ()
 checkCommitment validator asset block commitment=do
@@ -215,13 +226,7 @@ verifyOutputWith native validator call asset expected=do
           call "get_transaction_info" [toJSON txid] >>= fieldValue "txin" >>= fieldValue "block_hash"
   block<-inclusion
   require (transactionId block) "sidechain_source_unconfirmed"
-  commitments<-call "get_bmm_inclusions" [toJSON block] >>= parseValue parseJSON :: IO [Text]
-  require (not(null commitments) && length commitments<=1000 && all transactionId commitments) "sidechain_commitment_missing"
-  depths<-forM commitments $ \commitment->do
-    depth<-activeDepth native commitment
-    when (depth>0) $ checkCommitment validator asset block commitment
-    pure depth
-  let depth=maximum (0:depths)
+  depth<-commitmentDepth native validator call asset block
   unspent<-readOutputsWith call asset [outputAddress expected]
   require (expected `elem` unspent) "sidechain_source_spent"
   again<-inclusion
