@@ -421,11 +421,16 @@ From `sudo ecx-bridge`, choose **Backup and recovery**. Download/verify an exact
 snapshot with an independently retained minimum sequence, then select **Restore
 verified custody to staging**. Supply a root-private target configuration and the
 verified `custody.json`. The packaged launcher installs local PostgreSQL; guided
-recovery installs the pinned ECX node if absent: pruned for wrap/unwrap, full Signet
-for configured sidechains. Node
+recovery installs the pinned ECX node if absent: pruned for wrap/unwrap or a trusted
+remote enforcer, full Signet when running a local enforcer. Node
 synchronization must finish before restoration. The original native wallet name
 must be unused. The guide never
 reinitializes a ledger or regenerates recovered keys.
+
+Interrupted activation keeps its original runtime release pinned. A repaired,
+verified recovery bundle with the same schema can finish that activation; it
+checks the paused ledger without repeating initial database provisioning. Upgrade
+the runtime through the ordinary checkpointed upgrade after recovery completes.
 
 Only the native backup is staged privately for `ecxnode`; only the ledger archive
 is staged privately for `postgres`. The complete bundle and Solana/unlock secrets

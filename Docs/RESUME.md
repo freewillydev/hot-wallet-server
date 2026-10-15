@@ -6,6 +6,78 @@ Worktree: `/Users/lukekensik/Documents/Codex/hot-wallet-fast-withdrawals`, branc
 `codex/sidechain-fast-withdrawals`, base `c2ff01c`. Parent is the only writer.
 Do not deploy over the original checkout or funded server.
 
+Latest continuation (Oct15,20:40UTC): implementation **8db5910** is pushed.
+Remote-enforcer setup, funded restore of pending deposits, normal upgrade, outage,
+reconnect and reboot/checked resume PASS on D. Fresh separate verifier
+sidechain_setup_fit PASS for this scope: a0eb9b6f-74c6-418b-9bde-da17070b04ff
+checked installed bytes, keys, private RPC access, journals and startup ordering;
+6c245bdb-a826-4311-bd8c-9eb83611af08 corrected only its mistyped final nft table
+read and passed. No product changes. A/C independently confirmed stopped.
+Both original orders still await six ECX confirmations; no replacement payments.
+At20:40UTC D was synced at18515, pruned=true, five healthy scanners, sequence12 /
+backup12. Both saved orders had no payout in the preceding read
+(72595288-101c-4080-be2b-af0897bb4c53).
+
+Local full suite, both real-PG sidechain recovery contracts and strict provisioning
+contract pass: /tmp/ecx-fast-recovery-tests.log, /tmp/ecx-retry-{Thunder,BitNames}-pg.log,
+/tmp/ecx-fast-retry-provision.log. Ubuntu build/full suite/package command
+82b0a765-3876-4397-b914-fb2a771c627c PASS. Private S3 object
+sidechain-20261015/8db5910/ecx-bridge.run has SHA256
+0bb7a72ea33b7a352e4cbe1dde92c23ec02b5bddeabad6a2399aeb08f4b7f655.
+Installed runtime manifest digest:
+5aaba602b8fb31038417ccac3f5916b4dc3fd8e60b64b46b8842f9c0ce3a1b7c.
+
+**D i-0b89e40359666c810 is the sole active funded custody.** Remote enforcer is
+B172.31.11.63:50051; B and the independent backup host remain running. A
+i-039ef1f2e10f2a06a is RETIRED at sequence12 and EC2 STOPPED; its worker/signer
+remain disabled. It was briefly restarted only to compile the repair, then stopped
+again before D activation. C i-052b7932763ea8c59 is stopped/unfunded. Local test
+nodes, temporary PostgreSQL and build processes are stopped.
+
+Funded restore A→D used the SAME custody/orders. Final checkpoint command
+7105aedc-29a9-4752-a463-49efd0bd168d:
+snapshot dbd1e35b7afdb3505ae95cd72b3d5251dc838d36c8ddf422161580f5b2358c03,
+custody manifest hash9a4f9c2d37d8906a4422462611b93d26d9e10375d529c796485abc501a8c2609.
+Source retirement67d9cf1d-295d-4c53-8705-163367258a63. Both deposits were recorded
+at1792094413, depth1, before saved deadlines; no obligations/intents/attempts yet.
+
+D has verified recovery bundles under /opt/ecx-bridge-bootstrap;
+/root/ecx-remote-fixture/retry-bundle-path selects the repaired tool. Root-private transport/target.json
+changes only source worker configuration's two validator URLs. Recovered snapshot
+and manifest path are in recovered.json. Guided staging71a27b4c-37ae-4c9c-b3c8-1bff098366f7
+PASS: database ecx_restore_dd197578c1db6b22f7c4d672411aeca6, original native wallet.
+All44 tables compared; financial tables identical. Comparison saved in
+staged-ledger-comparison.json. Activation fcc1f96d-36ca-4de3-87c6-f9794158d5db
+stopped safely while BitNames synced. Retry then exposed an overly strict repeated
+initial-provision check after startup changed the pause reason. The fix uses the
+existing read-only restored-ledger check on retry; initial provisioning remains
+strict. It preserves the original activation runtime pin and journals, verifies a
+repaired recovery tool and matching schema, then permits ordinary upgrade only
+after completed activation. Wrong identity/sequence, unpaused or busy ledgers
+still refuse; separate source review PASS.
+
+Repaired activation91f174ea-498e-4c58-b7e5-1608059b1923 PASS with the original
+runtime pin; ordinary checkpointed upgrade de3ba4e1-b06b-4d9b-ad0c-7b50cfa7cd76
+then installed8db5910. Both keep sequence12/backup12 and protected-file hashes.
+Completion marker exists; activation/upgrade pending and services.blocked are absent.
+Setup path: /var/lib/ecx-bridge-restore/setup. Never delete journals or blindly retry
+after sequence advance. No replacement order/deposit. D has backup CA and narrowly
+granted8443 access. Temporary S3 transport was deleted after verified download.
+
+Remote proxy outage f1822faf-2cb2-49e1-9873-77443ed70128 lasted90s with automatic
+restoration. Both sidechain validators failed; worker paused, new intake unavailable,
+explicit resume refused, sequence12 unchanged. Correct saved-evidence assertion
+f1b6f95d-2ac4-4729-a827-db0c95a0405b PASS. The first harness wrongly checked
+static intakeEnabled instead of dynamic availability.available; no product change.
+Reconnect962990d8-fade-4e0d-b89b-087fd50cc579 PASS after five healthy scans.
+Actual reboot e6b03105-3787-48b9-a11b-f46601056dfe PASS: boot ID changed,
+startup paused for reconciliation, normal start performed checked resume, protected
+hashes unchanged. Private evidence: /root/ecx-remote-fixture, including
+protected-before-upgrade.sha256, reboot-{initial,final}.json and reboot-start.log.
+
+The following paragraphs retain earlier provisioning evidence; current A/D custody
+and activation state is the continuation above.
+
 Latest (Oct15, about20:00UTC): c509a99 fixes fresh Signet fee estimation by using
 1 base unit/vB only on Signet; fee caps/mempool checks remain. Local and Ubuntu
 build/full tests PASS; A checkpoint-upgrade f6c09557-1aea-4316-a805-b53b66a0c260
