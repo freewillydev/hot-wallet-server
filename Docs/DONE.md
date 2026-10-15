@@ -14,7 +14,7 @@ for its named versions, not acceptance of this candidate.
 | Five exclusive signer paths | PASS: TLC `/tmp/ecx-fast-tlc.log`, 184,219 generated / 90,201 distinct states, depth13. This is a bounded model check, not a proof of all application behavior. |
 | Separate source review | PASS: read-only `sidechain_ledger_fit`; final installer-helper hash `ab2e309534b74bfb55b06f316a79d046160e6908d8f9ee51d4763c121414a1f5`. Scope is source publication. |
 | Upstream compatibility | PASS: fixed BitNames Linux build and both formerly rejected historical Signet transactions; local real-node RPC shapes checked. |
-| Fresh Ubuntu installation, repeat/reboot and isolation | PENDING: clean cc79aed build/package and installed schema24/ATA passed; enforcer getchainstates403 required a narrow fixture repair. Corrected clean-install/repeat/reboot acceptance remains required. |
+| Fresh Ubuntu installation, repeat/reboot and isolation | PENDING: d7f925e fresh installation on untouched B and isolation checks pass; all30 custody/configuration files preserved. An installed repeat exposed an unnecessary resume call; source fix passes local build/full suite and separate review. Ubuntu validation of that fix, repeats and reboot remain required. |
 | Funded fast withdrawals and exact payout accounting | PENDING: both sidechain testers have25000-unit confirmed deposit UTXOs; neither new route has completed a funded bridge payout. |
 | Funded extended-custody restore | PENDING: fixture restoration passes, live independent restore remains required. |
 | Durable optional-node distribution | PENDING: pinned CI artifacts are retrievable now but have retention limits; BitNames/enforcer redistribution permissions are not established. |

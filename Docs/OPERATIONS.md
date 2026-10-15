@@ -378,7 +378,7 @@ credentials plus native/key access. Destinations must be new private locations:
 | --- | --- |
 | `backup-native-wallet CONFIG DESTINATION` | Archive the native wallet and its manifest |
 | `restore-native-wallet CONFIG MANIFEST` | Restore into an unused configured wallet name |
-| `backup-custody CONFIG KEYFILE DIRECTORY` | Export ledger, native wallet, Solana key and configuration |
+| `backup-custody CONFIG KEYFILE DIRECTORY` | Export ledger, native wallet, Solana key, configured sidechain custody and configuration |
 | `check-custody CONFIG MANIFEST MINIMUM_SEQUENCE` | Inspect bundle identity and integrity offline |
 | `upload-custody CONFIG BACKUP_CONFIG MANIFEST MINIMUM_SEQUENCE` | Upload, retrieve and verify the complete encrypted bundle |
 | `recover-custody CONFIG BACKUP_CONFIG SNAPSHOT DIRECTORY MINIMUM_SEQUENCE` | Retrieve a verified bundle into new private staging |
@@ -404,9 +404,11 @@ running application's `PGDATABASE` or resume service.
 Completion manifests bind the exact files and are written last. Bundles preserve
 financial history and keys, not old RPC cookies/TLS credentials. Encrypted native
 wallet exports require `nativeUnlockFile` even if the wallet is already unlocked;
-format 2 binds a copied `native-unlock` file. Export checks the secret against the
-wallet before and after backup. After relocation, point the restored signer's
-`nativeUnlockFile` to that protected copied file. Unencrypted bundles retain format 1.
+format 2 binds a copied `native-unlock` file. Configured sidechains use format 3,
+which also binds each sidechain's seed and address history. Export checks the native
+unlock secret against the wallet before and after backup. After relocation, point
+the restored signer's `nativeUnlockFile` to that protected copied file. Without
+sidechains, unencrypted bundles retain format 1 and encrypted bundles use format 2.
 Offline inspection never unlocks a wallet.
 
 ## Guided recovery
@@ -419,7 +421,8 @@ From `sudo ecx-bridge`, choose **Backup and recovery**. Download/verify an exact
 snapshot with an independently retained minimum sequence, then select **Restore
 verified custody to staging**. Supply a root-private target configuration and the
 verified `custody.json`. The packaged launcher installs local PostgreSQL; guided
-CanonicalBeta recovery installs the pinned pruned ECX node if absent. Node
+recovery installs the pinned ECX node if absent: pruned for wrap/unwrap, full Signet
+for configured sidechains. Node
 synchronization must finish before restoration. The original native wallet name
 must be unused. The guide never
 reinitializes a ledger or regenerates recovered keys.
@@ -458,7 +461,7 @@ replace service accounts, overwrite a native wallet or drop a database.
 4. Restore the ledger and native wallet without overwriting existing destinations.
    Configure restored Solana/unlock material with separate signer permissions and
    fresh transport/RPC credentials. Retain financial identity while changing only
-   reviewed operational paths. Only schema-22 archives can be restored. Restoration creates a new private
+   reviewed operational paths. Only schema-24 archives can be restored. Restoration creates a new private
    database and invalidates custody readiness. Unsupported schemas are refused;
    retain their original ledger and backups for a separately reviewed procedure.
 5. Point the destination at the verified staged database, adopt the minimum sequence

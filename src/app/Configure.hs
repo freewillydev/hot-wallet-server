@@ -728,7 +728,7 @@ startUnlocked path=do
       require exists "installed_tls_missing_updated_package_required"
   when completed $ NodeSetup.refreshSignerPolicy directory
   execute "systemctl" ["start","ecx-bridge-signer","ecx-bridge-worker"]
-  putStrLn "Services started paused. Checking readiness before enabling orders."
+  putStrLn "Services started. Checking saved state and readiness."
   let operatorArgs=if uid==0 then ["-u","ecxbridgew","--",binary,"operator",config]
                    else ["-u","ecxbridgew",binary,"operator",config]
       operator=readProcessWithExitCode (if uid==0 then "runuser" else "sudo") operatorArgs
@@ -749,15 +749,19 @@ startUnlocked path=do
       Just command->do
         (code,_,_)<-operator (T.unpack $ TE.decodeUtf8 $ L.toStrict $ encode command)
         require (code==ExitSuccess) "initial_funding_not_ready_check_operator_status_then_rerun_start"
-  (result,_,failure)<-readProcessWithExitCode (if uid==0 then "runuser" else "sudo")
-    (if uid==0 then ["-u","ecxbridgew","--",binary,"operator",config]
-     else ["-u","ecxbridgew",binary,"operator",config]) "{\"operation\":\"resume\"}"
-  if result==ExitSuccess then putStrLn "Bridge ready; customer orders enabled."
+  (statusCode,output,_)<-operator "{\"operation\":\"status\"}"
+  require (statusCode==ExitSuccess) "worker_status_unavailable"
+  state<-either (const $ reject "invalid_operator_status") pure (eitherDecodeStrict' $ B8.pack output)
+  -- Resume is a checked transition from paused custody, not a running-server probe.
+  if not(W.paused state) then putStrLn "Bridge already running; existing state retained."
     else do
-      case eitherDecodeStrict' (B8.pack failure) of
-        Right (Object err) | Just (String reason)<-M.lookup "error" err->putStrLn ("Readiness refused: "<>T.unpack reason)
-        _->putStrLn "Readiness check failed; inspect operator status and service logs."
-      reject "bridge_paused_complete_prerequisites_then_rerun_start"
+      (result,_,failure)<-operator "{\"operation\":\"resume\"}"
+      if result==ExitSuccess then putStrLn "Bridge ready; customer orders enabled."
+        else do
+          case eitherDecodeStrict' (B8.pack failure) of
+            Right (Object err) | Just (String reason)<-M.lookup "error" err->putStrLn ("Readiness refused: "<>T.unpack reason)
+            _->putStrLn "Readiness check failed; inspect operator status and service logs."
+          reject "bridge_paused_complete_prerequisites_then_rerun_start"
  where
   binary="/opt/ecx-bridge/current/bin/ecx-bridge"
   config="/etc/ecx-bridge/worker/config.json"

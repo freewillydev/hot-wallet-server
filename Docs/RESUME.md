@@ -34,8 +34,8 @@ upstream source review found no other missing read RPC. The isolated fixture's
 three generated policy copies were repaired exactly, preserving credentials and
 private before-images under `/root/ecx-sidechain-fixture/enforcer-policy-before`;
 SSM `4d149a4e-2120-4f0c-9b2b-cd9d3201b227`. Core/enforcer/sidechains started.
-This repaired fixture is NOT final clean-install acceptance. Worker/signer remain
-stopped and ledger paused at sequence0 until readiness/initial SOL accounting.
+This repaired fixture is NOT final clean-install acceptance. Worker/signer were
+kept stopped at sequence0 until readiness/initial SOL accounting.
 Initial SOL accounting subsequently completed (sequence2, backup coverage2).
 Both sidechains synchronized after restart. The run exposed an upstream startup
 race (advertised ancestors unavailable before enforcer sync); the installer now
@@ -49,9 +49,43 @@ retry installation after connectivity recovers. No long-outage recovery claim.
 ce314eb4a739ff768b6428e1f83a21ddb18b4200ae15ac7127bd8ffd7a86f934 (fee141).
 Exact intent/signed bytes and pre-send wallet backup are in /tmp/ecx-fast-funding.
 Wait six confirmations, then explicitly allocate90000 float/10000 operating.
+Final candidate d7f925e passed the Ubuntu native build, full suite and packaging:
+SSM f8db85db-c8aa-4802-9a6f-94d5f383a35b; /home/ubuntu/ecx-fast/sync-build.log.
+Installer candidate/sync-fixed/ecx-bridge-ubuntu-24.04-x86_64.run SHA256:
+324456b829c4ad50add08ec47cf4659ca7b6bcd16898d14bd4b7456c08612dc9.
+Fixture A checkpointed upgrade passed (SSM2ac65a62-3700-4987-a8e7-1389ea856a7f):
+existing custody retained, all nodes active, five scans healthy, orders enabled,
+ledger/backup sequence2. Its native reserve transfer had2 confirmations at18:51UTC.
+
 Second independent clean-install host i-0ab448ea43ef6d9b3 (172.31.11.63) is fresh
 Ubuntu24.04,8GiB/256GiB, no ingress; distinct supplied keys/record are private in
-/tmp/ecx-fast-clean-private. It has no installed bridge or funds yet.
+/tmp/ecx-fast-clean-private. Owner9mHs4CVjNyuSXa3vYWz7ybTvdCNLwXNK4T7sp3ohtVNB
+received one0.02DevnetSOL funding transfer, independently finalized by Alchemy and
+public Devnet: kaPfP9tr3S6syt3Vt2MnwuWpA4mC8M7bTq7jrCSLNBgMBTAMWL1Z1EJ97fukHDzWWQzS2yt2GUA77ham3MFuG56.
+Separate append-only backup account ecx-fast-clean-20261015 is initialized.
+Untouched-host install cf5f2012-9c46-47c8-9104-105fc507c45b stopped with saved
+ATA creation pending. Both providers subsequently verified finalized slot511444744:
+5sehX1FaXJUfPtFgnWoC9ibddnD2q3AGv8Fc17xmThFiSc4EwDXTomSk8oMzC5vBpQoUxFaLz42Vy88Nt9WSbpJQ.
+After sidechain sync, unchanged install d5ed8336-5c91-4fbd-9e24-80745bdf5137
+passed: orders enabled, five healthy scans, ledger/backup sequence2; all30 private
+configuration/custody files and saved ATA bytes unchanged. No provisioning repair
+on B. Isolation checks469630e7-b695-4a3c-976a-b074a835f712 passed: supplied keys
+match service keys, worker cannot read custody, signer alone accesses sidechain
+private RPC, enforcer getchainstates allowed and invalidateblock denied.
+The subsequent repeat49398e2f-1ae8-4cd0-84df-3fac54839f49 exposed start calling
+resume on an already-running ledger (pause_before_operator_action). B is now
+paused at sequence2/backup2; custody is preserved. Configure now reads typed status
+and calls guarded resume only if paused. Local build/full suite and separate exact
+source review PASS (/tmp/ecx-fast-repeat-{build,tests}.log; sidechain_setup_fit).
+Rebuild Ubuntu once, checkpoint-upgrade B, then repeat twice and reboot; these are
+still pending. Do not claim the source fix alone proves installed repeat safety.
+
+Independent restore destination i-052b7932763ea8c59 (172.31.12.174) has the verified
+d7f925e bundle, PostgreSQL/runtime prerequisites and a synced full Signet node
+(height18505, IBDfalse). Backup CA trust installed. It has no bridge ledger or
+custody yet. Refresh its bundle before restoring; preserve both A and B.
+Two owned native payout destinations are saved in private
+/tmp/ecx-fast-funding/payout-recipients.json; no customer orders/transfers yet.
 
 Published timing fix cc79aed: new fast orders allow at least3600s for inclusion
 and1800s per required ECX confirmation for grace. Saved/ordinary terms, fees and
@@ -76,8 +110,8 @@ Signed intent:/tmp/ecx-fast-private/sol-funding.json. Distinct record-supplied
 wallets and a separate append-only backup account are prepared in the private
 fixture. Backup initialization passed; funded checkpoint/restore and installation acceptance remain pending.
 
-Next: finish initial accounting on the repaired fixture; rebuild final policy fix; fresh record install,
-repeat/reboot/isolation; real sidechain regular transfers to bridge orders, confirmed
+Next: validate the repeat-start fix on Ubuntu, repeat/reboot;
+real sidechain regular transfers to bridge orders, confirmed
 ECX payouts and independent funded restore. No automatic refund is implemented for
 wrong/late sidechain deposits; they remain review items. Fixed CI node artifacts
 expire eventually; durable redistribution of BitNames/enforcer remains unresolved.
