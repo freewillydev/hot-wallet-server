@@ -173,7 +173,7 @@ refreshSignerPolicy directory=do
     when legacy $ provision directory
 
 enforcerMethods :: String
-enforcerMethods="getblockchaininfo,getnetworkinfo,getblockhash,getblockheader,getblock,getbestblockhash,getblockcount,getzmqnotifications,getmempoolinfo,getmempoolentry,getrawmempool,getrawtransaction,gettxout,getindexinfo,getconnectioncount,getblocktemplate"
+enforcerMethods="getblockchaininfo,getchainstates,getnetworkinfo,getblockhash,getblockheader,getblock,getbestblockhash,getblockcount,getzmqnotifications,getmempoolinfo,getmempoolentry,getrawmempool,getrawtransaction,gettxout,getindexinfo,getconnectioncount,getblocktemplate"
 
 readMethods,workerMethods,signerMethods,adminMethods :: String
 readMethods="getblockchaininfo,getblockhash,getblockheader,getnetworkinfo,getconnectioncount,getwalletinfo,getbalances,getaddressinfo,gettransaction,gettxout,gettxspendingprevout,getmempoolentry,listsinceblock,listunspent,listlockunspent,decodepsbt,decoderawtransaction,decodescript,estimatesmartfee,getmempoolinfo"

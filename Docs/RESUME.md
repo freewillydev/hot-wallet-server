@@ -13,19 +13,35 @@ Normal wrap/unwrap-only setup stays pruned. Source review, native build, full su
 ordinary/payout PostgreSQL contracts, both sidechain restore contracts and bounded
 TLC check pass. Live acceptance remains incomplete; see DONE.md.
 
-AWS ecx-dev authentication refreshed successfully. Isolated Ubuntu24.04 instance
-`i-039ef1f2e10f2a06a` in us-east-2 completed its native build and suite from a
-private source snapshot. SSM command `caff9975-6265-41a2-b989-3069550255b2`; log
-`/home/ubuntu/ecx-fast/build.log`. Full Signet node helper command
-`1107dbba-ab3d-41ac-b025-0ec4460a590f` passed with both services active.
-IMPORTANT: snapshot predates the final enforcer URL/license/docs corrections.
-Overlay final reviewed source and repackage before testing the installer. Host is
-m7i-flex.large/8GiB with encrypted256GiB storage; filesystem growth verified.
+AWS ecx-dev authentication is refreshed. Isolated Ubuntu24.04 instance
+`i-039ef1f2e10f2a06a` in us-east-2 is m7i-flex.large/8GiB with encrypted256GiB
+storage. Clean source cc79aed native build, full suite and final package passed:
+SSM `c0916dec-cff4-4872-af04-ae1a2b09f5cd`,
+`/home/ubuntu/ecx-fast/final-build.log`; candidate under `candidate/final`.
 
-Published feature source:6f69118. New fast orders now allow at least3600s for
-inclusion and1800s per required ECX confirmation for grace. Saved/ordinary terms,
-fees and confirmation checks are unchanged. Local build, full suite and both
-fresh PostgreSQL sidechain contracts pass; separate timing-fix source review PASS.
+Fresh installation reached schema24, supplied wallets, independent append-only
+backup initialization and a finalized ATA transaction. OnFinality lacked required
+Devnet mint history, so BEFORE setup binding its verifier was replaced by public
+Devnet after independent history checks. Actual record is root-only
+`/root/hot-wallet/server.conf`; local original record is now stale. ATA attempt
+`FadoQTZo1nCgQMyCYsnm9QzcgLCaYPyynNo7Rm9Gwiw82jZKbFyZkSopLPsWvVXbZw4py4YDU6QznoNPeEYqWcp`
+is finalized, unchanged on retry; never create a replacement.
+
+Actual startup then exposed a missing enforcer read RPC: getchainstates. Narrow
+source correction and generated-policy regression pass the local build/full suite
+(`/tmp/ecx-fast-policy-{build,tests}.log`) and independent source review. Pinned
+upstream source review found no other missing read RPC. The isolated fixture's
+three generated policy copies were repaired exactly, preserving credentials and
+private before-images under `/root/ecx-sidechain-fixture/enforcer-policy-before`;
+SSM `4d149a4e-2120-4f0c-9b2b-cd9d3201b227`. Core/enforcer/sidechains started.
+This repaired fixture is NOT final clean-install acceptance. Worker/signer remain
+stopped and ledger paused at sequence0 until readiness/initial SOL accounting.
+Do not fund other inventory before initial accounting completes.
+
+Published timing fix cc79aed: new fast orders allow at least3600s for inclusion
+and1800s per required ECX confirmation for grace. Saved/ordinary terms, fees and
+confirmation checks are unchanged. Local build, full suite and both fresh PG
+sidechain contracts pass; separate timing-fix source review PASS.
 Logs:/tmp/ecx-fast-window-{build,tests,pg-Thunder,pg-BitNames}.log.
 
 Local test nodes: Core `/tmp/ecx-fast-signet` port29532; wallet-enabled enforcer
@@ -43,9 +59,9 @@ saved results before any further transfer. New server SOL owner
 both independent providers verified finalized exact effects and5000-lamport fee.
 Signed intent:/tmp/ecx-fast-private/sol-funding.json. Distinct record-supplied
 wallets and a separate append-only backup account are prepared in the private
-fixture; authenticated backup and installation acceptance remain pending.
+fixture. Backup initialization passed; funded checkpoint/restore and installation acceptance remain pending.
 
-Next: incremental final Linux build; source/package verification; fresh record install,
+Next: finish initial accounting on the repaired fixture; rebuild final policy fix; fresh record install,
 repeat/reboot/isolation; real sidechain regular transfers to bridge orders, confirmed
 ECX payouts and independent funded restore. No automatic refund is implemented for
 wrong/late sidechain deposits; they remain review items. Fixed CI node artifacts

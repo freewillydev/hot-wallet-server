@@ -683,11 +683,18 @@ withNativeReplacementContract action=do
 -- test above enforces it on adapter calls, not just on a copied method list.
 generatedSignerMethods :: IO [Text]
 generatedSignerMethods=bracket temporary removeDirectoryRecursive $ \directory->do
-  (_,_,signer)<-NodeSetup.credentials directory
+  (_,_,signer)<-NodeSetup.credentialsFor True directory
   credentialBytes<-readPrivate signer
   ruleBytes<-readPrivate(directory</>"native-rpc.conf")
   let credential=TE.decodeUtf8 credentialBytes
       rules=T.lines $ TE.decodeUtf8 ruleBytes
+  enforcer<-T.takeWhile (/=':') . TE.decodeUtf8 <$> readPrivate(directory</>"native-enforcer.auth")
+  case [T.splitOn "," methods | line<-rules,Just methods<-[T.stripPrefix ("rpcwhitelist="<>enforcer<>":") line]] of
+    [methods]->require (all (`elem` methods) ["getchainstates","getblockhash","getblockheader","getblock","getblocktemplate"]
+      && all (`notElem` methods) ["invalidateblock","reconsiderblock","sendrawtransaction","submitblock"
+        ,"walletprocesspsbt","getnewaddress","createwallet","importdescriptors","dumpprivkey"])
+      "enforcer_read_policy_contract_failed"
+    _->fail "generated enforcer policy missing or duplicated"
   let username=T.takeWhile (/=':') credential
       prefix="rpcwhitelist="<>username<>":"
   case [T.splitOn "," methods | line<-rules,Just methods<-[T.stripPrefix prefix line]] of
