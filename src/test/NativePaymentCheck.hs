@@ -109,7 +109,7 @@ checks = do
   outgoing<-either reject pure (payment "refund:order" funding $ planRecipient plan)
   let encoded value=TE.decodeUtf8 (BL.toStrict $ encode value)
       config=H.SolanaPolicy "unused-native-test" "workflow" "" "" "" (amt 1) (amt 0)
-      terms=W.PaymentTerms (W.PolicySnapshot (planDepth plan) "finalized" "workflow") (W.CostLimits (planFeeLimit plan) (amt 1) (amt 0))
+      terms=W.PaymentTerms (W.PolicySnapshot (planDepth plan) "finalized" "workflow" []) (W.CostLimits (planFeeLimit plan) (amt 1) (amt 0))
       prepared=PreparedPayment (PaymentView outgoing terms PaymentPaying) 0 (encoded plan) (Just $ encoded draft) (planFeeLimit plan)
       boundSigned=NativeSigned raw tx plan previous fee
       observe call=do

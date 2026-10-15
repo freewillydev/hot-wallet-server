@@ -1,0 +1,157 @@
+#!/bin/sh
+# Internal, fixed-purpose optional Signet node provisioning. No wallet generation.
+set -eu
+umask 077
+fail() { echo "Sidechain setup: $*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] && [ "$#" = 2 ] || fail 'root, validated configuration and restricted node credential required'
+config=$1; auth=$2
+[ "$(uname -m)" = x86_64 ] || fail 'sidechain node binaries currently require x86_64'
+[ "$(jq -r .profile "$config")" = L2LSignetDevnet ] || fail 'ECX Signet required'
+[ "$(cat /opt/ecx-node/managed-profile)" = signet-full ] || fail 'unpruned managed Signet required'
+[ -f "$auth" ] && [ ! -L "$auth" ] && [ "$(stat -c '%u:%a:%h' "$auth")" = 0:600:1 ] || fail 'unsafe enforcer credential'
+jq -e '.nativeRpc=="http://127.0.0.1:28532" and (.sidechains | length>0 and length<=2)
+  and ([.sidechains[].sidechainPolicy.sidechainAsset] | length==(unique|length))
+  and all(.sidechains[]; .sidechainValidatorRpc=="http://127.0.0.1:29550" and
+    (if .sidechainPolicy.sidechainAsset=="Thunder" then .sidechainRpc=="http://127.0.0.1:29609" and .sidechainPrivateRpc=="http://127.0.0.1:29709" and .sidechainSeedFile=="/var/lib/ecx-bridge/signer/thunder-seed.txt"
+     elif .sidechainPolicy.sidechainAsset=="BitNames" then .sidechainRpc=="http://127.0.0.1:29602" and .sidechainPrivateRpc=="http://127.0.0.1:29702" and .sidechainSeedFile=="/var/lib/ecx-bridge/signer/bitnames-seed.txt" else false end))' "$config" >/dev/null || fail 'managed endpoints differ'
+names=$(jq -r '[.sidechains[].sidechainPolicy.sidechainAsset | ascii_downcase] | join(" ")' "$config")
+exec 7>/run/lock/ecx-sidechains-install.lock
+flock -n 7 || fail 'another installation is running'
+base=/opt/ecx-sidechains
+[ ! -L "$base" ] || fail 'binary directory symlink refused'
+install -d -o root -g root -m 0755 "$base"
+[ "$(stat -c '%u:%a' "$base")" = 0:755 ] || fail 'unsafe binary directory'
+temporary=$(mktemp -d /etc/.ecx-sidechains-XXXXXXXX)
+binaries=$(mktemp -d "$base/.install-XXXXXXXX")
+trap 'rm -rf -- "$temporary" "$binaries"' EXIT
+trap 'exit 1' HUP INT TERM
+publish() {
+  if [ -e "$2" ] || [ -L "$2" ]; then
+    [ -f "$2" ] && [ ! -L "$2" ] && [ "$(stat -c '%u:%a:%h' "$2")" = "0:$3:1" ] && cmp -s "$1" "$2" || fail "existing managed file differs: $2"
+  else
+    chmod "$3" "$1"
+    mv -T -- "$1" "$2"
+  fi
+}
+# Source provenance and upstream Actions artifact digests are retained in Docs/INSTALL.md.
+fetch() {
+  name=$1; url=$2; checksum=$3; member=$4
+  directory=$base/$checksum
+  if [ ! -e "$directory" ]; then
+    curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 --connect-timeout 20 --max-time 600 "$url" -o "$binaries/download"
+    printf '%s  %s\n' "$checksum" "$binaries/download" | sha256sum --check --status || fail 'node download checksum mismatch'
+    mkdir "$binaries/binary"
+    if [ "$member" = raw ]; then cp "$binaries/download" "$binaries/binary/$name"; else unzip -p "$binaries/download" "$member" > "$binaries/binary/$name"; fi
+    [ -s "$binaries/binary/$name" ] || fail 'missing node executable'
+    chmod 755 "$binaries/binary" "$binaries/binary/$name"
+    (cd "$binaries/binary" && sha256sum "$name" > manifest.sha256)
+    chmod 644 "$binaries/binary/manifest.sha256"
+    mv "$binaries/binary" "$directory"
+  fi
+  [ ! -L "$directory" ] && [ "$(stat -c '%u:%a' "$directory")" = 0:755 ] || fail 'unsafe installed binary directory'
+  (cd "$directory" && sha256sum -c manifest.sha256 >/dev/null) || fail 'installed binary changed'
+  printf '%s/%s\n' "$directory" "$name"
+}
+release=https://github.com/freewillydev/hot-wallet-server/releases/download/sidechain-nodes-20261015
+enforcer=$(fetch enforcer https://nightly.link/LayerTwo-Labs/bip300301_enforcer/actions/runs/38394661412/bip300301-enforcer-latest-x86_64-unknown-linux-gnu.zip b8ba14c17df71a63c5bdf13a2b4e0560060badd563992b0ce4efad896ddc0af1 bip300301-enforcer-latest-x86_64-unknown-linux-gnu)
+for name in enforcer $names; do
+  account=ecx$name; home=/var/lib/ecx-$name
+  [ ! -L "$home" ] || fail 'node home symlink refused'
+  getent passwd "$account" >/dev/null || useradd --system --user-group --home-dir "$home" --shell /usr/sbin/nologin "$account"
+  [ "$(getent passwd "$account" | cut -d: -f1,6,7)" = "$account:$home:/usr/sbin/nologin" ] && [ "$(id -Gn "$account")" = "$account" ] || fail 'node service identity changed'
+  install -d -o "$account" -g "$account" -m 0700 "$home"
+  if [ "$name" = enforcer ]; then source=$auth; destination=$home/native.auth
+  else source=/var/lib/ecx-bridge/signer/$name-seed.txt; destination=$home/seed.txt; fi
+  if [ -e "$destination" ] || [ -L "$destination" ]; then
+    [ -f "$destination" ] && [ ! -L "$destination" ] && [ "$(stat -c '%u:%a:%h' "$destination")" = "$(id -u "$account"):600:1" ] && cmp -s "$source" "$destination" || fail 'existing wallet/credential differs; no overwrite permitted'
+  else install -o "$account" -g "$account" -m 0600 "$source" "$destination"; fi
+done
+# Enforce wallet isolation and authenticate all local RPC servers by socket UID.
+cat > "$temporary/rules" <<'RULES'
+add table inet ecx_sidechain_rpc
+flush table inet ecx_sidechain_rpc
+add chain inet ecx_sidechain_rpc output { type filter hook output priority -151; policy accept; }
+RULES
+for name in $names; do
+  if [ "$name" = thunder ]; then public=29609; private=29709; else public=29602; private=29702; fi
+  printf 'add rule inet ecx_sidechain_rpc output oifname "lo" tcp dport %s meta skuid { 0, %s } accept\nadd rule inet ecx_sidechain_rpc output oifname "lo" tcp dport %s drop\n' "$private" "$(id -u ecxbridges)" "$private" >> "$temporary/rules"
+  for port in "$public" "$private"; do
+    printf 'add rule inet ecx_sidechain_rpc output oifname "lo" tcp sport %s meta skuid %s accept\nadd rule inet ecx_sidechain_rpc output oifname "lo" tcp sport %s drop\n' "$port" "$(id -u "ecx$name")" "$port" >> "$temporary/rules"
+  done
+done
+for port in 29550 29551 29433; do
+  account=ecxenforcer; [ "$port" != 29433 ] || account=ecxnode
+  printf 'add rule inet ecx_sidechain_rpc output oifname "lo" tcp sport %s meta skuid %s accept\nadd rule inet ecx_sidechain_rpc output oifname "lo" tcp sport %s drop\n' "$port" "$(id -u "$account")" "$port" >> "$temporary/rules"
+done
+publish "$temporary/rules" /etc/ecx-sidechain-rpc.nft 600
+[ -f /etc/nftables.conf ] && [ ! -L /etc/nftables.conf ] && [ "$(stat -c '%u:%h' /etc/nftables.conf)" = 0:1 ] || fail 'unsafe nftables configuration'
+[ "$(tail -1 /etc/nftables.conf)" = 'include "/etc/ecx-node-rpc.nft"' ] || fail 'native RPC guard must be last'
+if ! grep -Fq '/etc/ecx-sidechain-rpc.nft' /etc/nftables.conf; then
+  sed '$i include "/etc/ecx-sidechain-rpc.nft"' /etc/nftables.conf > "$temporary/nftables"
+  nft --check --file "$temporary/nftables"
+  chmod 644 "$temporary/nftables"
+  mv -T "$temporary/nftables" /etc/nftables.conf
+else
+  [ "$(grep -Fc '/etc/ecx-sidechain-rpc.nft' /etc/nftables.conf)" = 1 ] || fail 'duplicate sidechain guard'
+fi
+cat > "$temporary/guard" <<'UNIT'
+[Unit]
+Description=Isolate ECX sidechain RPC capabilities
+After=nftables.service ecx-node-rpc-guard.service
+PartOf=nftables.service
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/nft -f /etc/ecx-sidechain-rpc.nft
+ExecReload=/usr/sbin/nft -f /etc/ecx-sidechain-rpc.nft
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+UNIT
+publish "$temporary/guard" /etc/systemd/system/ecx-sidechain-rpc-guard.service 644
+for name in enforcer $names; do
+  home=/var/lib/ecx-$name
+  case "$name" in
+    enforcer) binary=$enforcer; args="--data-dir=$home --node-rpc-addr=127.0.0.1:28532 --node-rpc-cookie-path=$home/native.auth --node-zmq-addr-sequence=tcp://127.0.0.1:29433 --serve-grpc-addr=127.0.0.1:29550 --serve-rpc-addr=127.0.0.1:29551 --bitcoin-core-expected-version=30 --log-level=INFO --max-log-files=2 --max-log-file-size-mb=10"; dependency=ecx-betanet.service;;
+    thunder) binary=$(fetch thunder "$release/thunder-linux.zip" afc569292ab44ec3e3b39cc48bde632e70b9a7869f19b8607d1e3acec21cf8b3 thunder-0.18.1-x86_64-unknown-linux-gnu)
+      args="--headless --network=signet --datadir=$home --wallet-dir=$home/wallet --mnemonic-seed-phrase-path=$home/seed.txt --mainchain-grpc-url=http://127.0.0.1:29550 --rpc-addr=127.0.0.1:29609 --private-rpc-addr=127.0.0.1:29709 --log-level=INFO"; dependency=ecx-enforcer.service;;
+    bitnames) binary=$(fetch bitnames https://nightly.link/freewillydev/plain-bitnames/actions/runs/38773898783/bitnames-0.17.2-x86_64-unknown-linux-gnu.zip 284d08626b4f504eb6524bb6402fe17c55d34a92be5694455db10b26d64c1a11 bitnames-0.17.2-x86_64-unknown-linux-gnu)
+      args="--headless --network=signet --datadir=$home --mnemonic-seed-phrase-path=$home/seed.txt --mainchain-grpc-host=127.0.0.1 --mainchain-grpc-port=29550 --rpc-addr=127.0.0.1:29602 --private-rpc-addr=127.0.0.1:29702 --log-level=INFO"; dependency=ecx-enforcer.service;;
+  esac
+  cat > "$temporary/service" <<UNIT
+[Unit]
+Description=ECX Signet $name
+Requires=$dependency
+After=network-online.target $dependency
+BindsTo=ecx-sidechain-rpc-guard.service ecx-node-rpc-guard.service
+After=ecx-sidechain-rpc-guard.service ecx-node-rpc-guard.service
+PartOf=ecx-sidechain-rpc-guard.service ecx-node-rpc-guard.service
+[Service]
+User=ecx$name
+Group=ecx$name
+ExecStart=$binary $args
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=120
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=$home
+[Install]
+WantedBy=multi-user.target
+UNIT
+  publish "$temporary/service" "/etc/systemd/system/ecx-$name.service" 644
+done
+for service in ecx-bridge-worker ecx-bridge-signer; do
+  directory=/etc/systemd/system/$service.service.d
+  [ ! -L "$directory" ] || fail 'service drop-in directory symlink refused'
+  install -d -o root -g root -m 0755 "$directory"
+  printf '[Unit]\nBindsTo=ecx-sidechain-rpc-guard.service\nAfter=ecx-sidechain-rpc-guard.service\nPartOf=ecx-sidechain-rpc-guard.service\n' > "$temporary/dropin"
+  publish "$temporary/dropin" "$directory/21-sidechain-guard.conf" 644
+done
+systemctl daemon-reload
+systemctl enable --now ecx-sidechain-rpc-guard.service
+systemctl reload ecx-sidechain-rpc-guard.service
+for name in enforcer $names; do systemctl enable --now "ecx-$name.service"; done
+echo 'Optional sidechain nodes started; intake remains gated on verified chain and custody observations.'

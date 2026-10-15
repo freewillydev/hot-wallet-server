@@ -17,8 +17,18 @@ data OrderRequest = OrderRequest
   , refund :: !Text, sourceOwner :: !(Maybe Text), idempotencyKey :: !Text
   } deriving stock (Eq, Show, Generic) deriving anyclass (ToJSON)
 instance FromJSON OrderRequest where parseJSON = genericParseJSON defaultOptions { rejectUnknownFields = True }
-data PolicySnapshot = PolicySnapshot { nativeDepth :: !Int, solanaCommitment :: !Text, deploymentFingerprint :: !Text }
-  deriving stock (Eq, Show, Generic) deriving anyclass (ToJSON, FromJSON)
+-- Public chain/custody identity and saved quote terms; never node credentials.
+data SidechainPolicy = SidechainPolicy
+  { sidechainAsset :: !Asset, sidechainDepth :: !Int, sidechainFeeBps :: !Int
+  , sidechainCheckpoint :: !Text, sidechainWalletIdentity :: !Text }
+  deriving stock (Eq,Show,Read,Generic) deriving anyclass (ToJSON,FromJSON)
+data PolicySnapshot = PolicySnapshot
+  { nativeDepth :: !Int, solanaCommitment :: !Text, deploymentFingerprint :: !Text
+  , sidechainPolicies :: ![SidechainPolicy] }
+  deriving stock (Eq, Show, Generic) deriving anyclass (ToJSON)
+instance FromJSON PolicySnapshot where
+  parseJSON=withObject "policy" $ \o->PolicySnapshot <$> o .: "nativeDepth"
+    <*> o .: "solanaCommitment" <*> o .: "deploymentFingerprint" <*> o .:? "sidechainPolicies" .!= []
 data OrderView = OrderView
   { orderId :: !Text, request :: !OrderRequest, quote :: !Quote, status :: !Text
   , deadline :: !Int64, depositInstruction :: !(Maybe Text), payoutTx :: !(Maybe Text), policy :: !PolicySnapshot
@@ -34,7 +44,7 @@ instance FromJSON PayoutPolicy where
   parseJSON = genericParseJSON defaultOptions { rejectUnknownFields = True }
 defaultPayoutPolicy :: PayoutPolicy
 defaultPayoutPolicy = either (error . T.unpack) (\n -> PayoutPolicy n n 172800) (amount 100000)
-data Profile = L2LSignetDevnet | ECXBetanetDevnet | CanonicalBeta deriving (Eq, Show, Generic, ToJSON, FromJSON)
+data Profile = L2LSignetDevnet | ECXBetanetDevnet | CanonicalBeta deriving (Eq, Show, Read, Generic, ToJSON, FromJSON)
 
 data InterfaceConfig = InterfaceConfig
   { supportUrl :: !(Maybe Text), jupiterUrl :: !(Maybe Text)

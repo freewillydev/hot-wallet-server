@@ -32,3 +32,7 @@ Requires Ubuntu 24.04 x86_64, 8 GB RAM and a 256 GB SSD.
 
 [Verification records](Docs/DONE.md) ·
 [Updates and installation details](Docs/INSTALL.md) · [Operations](Docs/OPERATIONS.md)
+
+Optional Thunder/BitNames → ECX fast withdrawals use the same installer and config.
+The current implementation is for [ECX Signet testing](Docs/INSTALL.md#sidechain-fast-withdrawals),
+with a configurable 1% fee and payment after confirmations.

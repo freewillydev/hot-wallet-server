@@ -212,7 +212,7 @@ Both evaluators use the private `Executable` view to recover a payload-free
 `ExecutionProof` of the constructor's combined constraints. Authorization and
 evaluation receive the same compiled program; worker/operator selectors are not
 run again. Safe evaluation calls `authorizeOperation` then `evaluateOperation`.
-Critical evaluation authorizes, then matches the four `SigningDSL`
+Critical evaluation authorizes, then matches the five `SigningDSL`
 leaves in a signer context, keeping each read/sign/recheck or checkpoint sequence
 inside its held gate; all other cases call `evaluateOperation`. The signer instance's
 method constructs only the worker's HTTPS client and refuses local signer execution.
@@ -284,9 +284,10 @@ before/after signing, and never broadcasts.
 | `/sign-replacement` | `SignReplacement` | `ReplacementResult` |
 | `/draft-replacement` | `DraftReplacement` | `DraftResult` |
 | `/checkpoint-custody` | `CheckpointCustody` | `CheckpointResult` |
+| `/allocate-sidechain-address` | `AllocateSidechainAddress` | `AddressResult` |
 
 `data family Result severity op` is injective in both indices. Leaf GADTs fix the
-result before the command family is hidden existentially. Four disjoint JSON fields
+result before the command family is hidden existentially. Five disjoint JSON fields
 and strict decoders preserve response identity. Retries may repeat the same saved
 result; uniqueness means non-interchangeable constructor paths, not fresh values.
 
@@ -327,10 +328,10 @@ row before reading decision facts; safe/signing reads use READ ONLY / REPEATABLE
 READ snapshots. The fence advances before commit;
 stale/wrong-identity/retired state is refused. Unexpected database failures fence the
 connection; policy failures permit reuse only after successful rollback. Startup
-pauses intake. Runtime reads/writes and backup/restore accept only schema 23.
+pauses intake. Runtime reads/writes and backup/restore accept only schema 24.
 Fresh setup installs `src/schema.sql` in one transaction with its installation
 receipt. The closed initializer refuses residual financial rows and records the
-identity with intake paused. Existing matching schema-23 ledgers are preserved;
+identity with intake paused. Existing matching schema-24 ledgers are preserved;
 older or unknown versions are rejected. Worker privileges remain DML only.
 
 Amounts are canonical base-unit decimal strings. Both conversion assets have eight
@@ -654,7 +655,7 @@ missing ledger with a new empty ledger for existing custody. See
 
 ## Entry points and compatibility contracts
 
-These are the current external contracts retained across the schema-23 refactor.
+These are the current external contracts retained across the schema-24 refactor.
 Names below are source constructors/commands. No older-schema conversion is supported.
 
 ### Customer, worker and signer
@@ -683,14 +684,28 @@ set before resuming. The normal worker reuses that generation and PSBT. Resume
 neither signs nor cancels it; missing attempts alone never establish that no
 signature was produced. Changed or spent inputs keep the service paused.
 
-The four signer leaves and result constructors are listed above. Their payloads
+The five signer leaves and result constructors are listed above. Their payloads
 are respectively `(deployment,payment,generation)`, `(deployment,decision)`,
-`(deployment,parent,fee)` and `(deployment,minimumSequence)`. A request names saved
+`(deployment,parent,fee)`, `(deployment,minimumSequence)` and
+`(deployment,order,minimumSequence)`. A request names saved
 work, never arbitrary transaction bytes. `runProcess` contains the only
 `evalCritical` call; `Critical.hs` contains the only generated signer client.
 `SigningTransportCheck` verifies HTTP authentication/result identity;
 `StoreCheck.tlsMain` verifies actual HTTPS and changed-during-signing refusal.
 The latter mode is separate from the default PostgreSQL suite.
+
+Optional Signet fast withdrawals add a receiving adapter for Thunder and BitNames;
+they use the existing Native payment engine. `AllocateSidechainAddress` is the
+fifth authenticated signer path, producing only `AddressResult`. The worker saves
+an allocation claim before asking the signer. Allocation recovery compares the
+saved address set, reconstructs the derivation prefix and refuses ambiguous extra
+addresses. The observer
+binds a regular transfer's exact output, amount, address, sidechain block and active
+ECX commitment to the order. Fast routes alone bypass customer payout rounds;
+their ECX obligations still reserve the same shared liquidity. Wrong or late
+sidechain deposits enter manual review, with no automatic sidechain send path.
+Restoration compares the backed-up seeds/address lists with the paused, locked
+ledger at the exact requested sequence before services can be activated.
 
 ### Operator and administration inventory
 
@@ -806,7 +821,7 @@ Solana reference and original conversion payout-link precedence.
 Retain strict configuration fields/fingerprint (`Config.hs`), private setup
 source-file references (`Configure.hs`). Preserve saved `PaymentTerms`, `SignedAttempt`,
 native/Solana draft/message bytes, ATA attempt/parent formats, custody archive
-formats 1/2 and schema-23 backup manifests. Exact keys, decoder bounds and rejected
+formats 1/2/3 and schema-24 backup manifests. Exact keys, decoder bounds and rejected
 unknown fields remain owned by their existing codecs; no new compatibility codec.
 
 Policy/conflict (`*_conflict`, `*_invalid`, `*_required`) means no successful
@@ -960,7 +975,7 @@ schema creation and receipt publication commit together. A foreign or nonempty
 unrecognized database is refused. Repeated initialization of a matching current
 ledger preserves it; otherwise it refuses without resetting financial data.
 
-Backup manifests must name schema 23 before archive reads or restore database
+Backup manifests must name schema 24 before archive reads or restore database
 creation. Restore creates a new private database, checks the restored identity and
 sequence, pauses intake and invalidates custody readiness. It neither converts an
 old schema nor adopts a fence or starts signing. Current-schema signed bytes,
@@ -1100,7 +1115,7 @@ Changing configuration cannot shorten a previously committed positive interval.
 All eligible members join the same round; later arrivals wait for a later round.
 Observation, settlement and recovery of already admitted work continue normally.
 
-Schema 23 stores immutable payout_rounds and payout_members. Deferred guards check
+Schema 24 stores immutable payout_rounds and payout_members. Deferred guards check
 member count, net total, asset, complete cohort membership, saved threshold/policy
 and preceding interval at commit; refunds cannot be members. Assignment rejects
 full or sealed cohorts, and new round members must be ready when inserted.

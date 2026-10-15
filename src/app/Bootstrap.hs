@@ -75,8 +75,8 @@ setupConfig directory=do
   if pending then do
     c<-readRecord (directory</>"bootstrap.json")
     C.validateSetupConfig c
-    require (C.profile c==CanonicalBeta && C.mint c==canonicalMint
-      && T.null(C.solanaHistoryStart c) && T.null(C.solanaOperatingHistoryStart c)) "fresh_canonical_setup_required"
+    require (C.profile c `elem` [CanonicalBeta,L2LSignetDevnet]
+      && T.null(C.solanaHistoryStart c) && T.null(C.solanaOperatingHistoryStart c)) "fresh_setup_required"
     pure c
   else C.loadConfig (directory</>"signer.json")
 
@@ -88,15 +88,18 @@ preflight directory=do
   when pending $ setupConfig directory >>= evalSetup . CheckProviders
 
 checkHistoryWith :: (T.Text -> [Value] -> IO Value) -> IO ()
-checkHistoryWith call=do
-  rows<-call "getSignaturesForAddress" [toJSON canonicalMint,object ["limit" .= (1::Int),"commitment" .= String "finalized"]] >>= parseValue parseJSON :: IO [Value]
+checkHistoryWith=checkMintHistoryWith canonicalMint
+
+checkMintHistoryWith :: T.Text -> (T.Text -> [Value] -> IO Value) -> IO ()
+checkMintHistoryWith mint call=do
+  rows<-call "getSignaturesForAddress" [toJSON mint,object ["limit" .= (1::Int),"commitment" .= String "finalized"]] >>= parseValue parseJSON :: IO [Value]
   signature<-case rows of [row]->fieldValue "signature" row; _->reject "rpc_required_history_unavailable"
   tx<-call "getTransaction" [toJSON(signature::T.Text),object ["encoding" .= String "json","commitment" .= String "finalized","maxSupportedTransactionVersion" .= (1::Int)]]
   require (tx/=Null) "rpc_required_history_unavailable"
   keys<-either reject pure (transactionKeys tx)
   transaction<-fieldValue "transaction" tx
   signatures<-fieldValue "signatures" transaction :: IO [T.Text]
-  require (canonicalMint `elem` keys && take 1 signatures==[signature]) "rpc_required_history_mismatch"
+  require (mint `elem` keys && take 1 signatures==[signature]) "rpc_required_history_mismatch"
 
 -- Seal the full setup before node mutation, not just before Solana signing.
 bind :: FilePath -> IO ()
@@ -123,7 +126,7 @@ complete directory=do
     key<-fieldValue "solana.keypair.json" sources
     verifySigningKey (C.custodyOwner c) key
     setupSdk<-SetupPaths.sdkPath
-    expected<-TO.runSafe (TO.Request $ Token.AssociatedAddress setupSdk (C.custodyOwner c) canonicalMint)
+    expected<-TO.runSafe (TO.Request $ Token.AssociatedAddress setupSdk (C.custodyOwner c) (C.mint c))
     require (C.custodyAta c==expected) "bootstrap_ata_mismatch"
     bind directory
     let completed=directory</>"bootstrap-complete.json"
@@ -153,8 +156,8 @@ evalSetup (CheckProviders c)=bracket newRpcManager closeManager $ \manager->do
     let call=rpc manager url Nothing
     result<-timeout 60000000 $ do
       genesis<-call "getGenesisHash" [] >>= parseValue parseJSON
-      require (genesis==S.solanaGenesis CanonicalBeta) "wrong_solana_genesis"
-      checkHistoryWith call
+      require (genesis==S.solanaGenesis (C.profile c)) "wrong_solana_genesis"
+      checkMintHistoryWith (C.mint c) call
     require (result==Just ()) "rpc_preflight_timeout"
   putStrLn "Both RPC providers support the required history reads. Custody and funding checks still follow."
 evalSetup (FundCustody directory c key)=bracket newRpcManager closeManager $ \manager->do
@@ -164,17 +167,18 @@ evalSetup (FundCustody directory c key)=bracket newRpcManager closeManager $ \ma
       call url=rpc manager url Nothing
       options=object ["commitment" .= String "finalized","encoding" .= String "jsonParsed"]
       account url address=call url "getAccountInfo" [toJSON address,options] >>= fieldValue "value"
+      network=if C.profile c==CanonicalBeta then TN.Mainnet else TN.Devnet
       owner=C.custodyOwner c
       ata=C.custodyAta c
       fee=fromIntegral(units $ C.maxSolFee c)::Word64
   forM_ endpoints $ \url->do
     genesis<-call url "getGenesisHash" [] >>= parseValue parseJSON
-    require (genesis==S.solanaGenesis CanonicalBeta) "wrong_solana_genesis"
-    mint<-account url canonicalMint
+    require (genesis==S.solanaGenesis (C.profile c)) "wrong_solana_genesis"
+    mint<-account url (C.mint c)
     _<-parseValue (S.inspectMint $ Just 8) mint
     pure ()
   putStrLn $ "Fund SOL fees at: "<>T.unpack owner
-  putStrLn $ "After initial startup, fund canonical wrapped ECX inventory at owner: "<>T.unpack owner<>" (ATA "<>T.unpack ata<>")"
+  putStrLn $ "After initial startup, fund wrapped ECX inventory at owner: "<>T.unpack owner<>" (ATA "<>T.unpack ata<>")"
   putStrLn "For fresh setup, send one operator-owned SOL funding transfer first; add ECX/wrapped inventory after initial accounting."
   putStrLn "Suggested SOL funding: 0.01 SOL. Startup never buys or mints wrapped ECX."
   let attempt=directory</>"ata-creation.json"
@@ -195,28 +199,28 @@ evalSetup (FundCustody directory c key)=bracket newRpcManager closeManager $ \ma
   when creating $ do
     rent<-call (C.solanaRpc c) "getMinimumBalanceForRentExemption" [toJSON (165::Int),object ["commitment" .= String "finalized"]] >>= parseValue parseJSON
     require (rent>0 && rent<=fromIntegral(units $ C.maxSolAccountRent c)) "bootstrap_rent_exceeds_limit"
-    recent<-TO.runSafe (TO.Request $ TN.RecentBlockhash TN.Mainnet (C.solanaRpc c))
-    let request=Token.Associated owner canonicalMint ata owner rent recent
+    recent<-TO.runSafe (TO.Request $ TN.RecentBlockhash network (C.solanaRpc c))
+    let request=Token.Associated owner (C.mint c) ata owner rent recent
     setupSdk<-SetupPaths.sdkPath
     unsigned<-TO.runSafe (TO.Request $ Token.Prepare setupSdk request)
-    _<-TO.runCritical (TO.Request $ TN.Sign setupSdk TN.Mainnet (C.solanaRpc c) fee request unsigned key attempt)
+    _<-TO.runCritical (TO.Request $ TN.Sign setupSdk network (C.solanaRpc c) fee request unsigned key attempt)
     pure ()
   hasAttempt<-doesFileExist attempt
   when hasAttempt $ do
     archived<-readRecord attempt :: IO Token.Saved
     case Token.savedRequest archived of
       Token.Associated payer mint address holder rent _->require
-        (payer==owner && holder==owner && mint==canonicalMint && address==ata
+        (payer==owner && holder==owner && mint==(C.mint c) && address==ata
           && rent>0 && rent<=fromIntegral(units $ C.maxSolAccountRent c)) "bootstrap_attempt_identity_changed"
     -- Submit rechecks the saved signature/status and sends identical bytes only.
-    result<-TO.runCritical (TO.Request $ TN.Submit TN.Mainnet (C.solanaRpc c) fee attempt)
+    result<-TO.runCritical (TO.Request $ TN.Submit network (C.solanaRpc c) fee attempt)
     status<-fieldValue "status" result :: IO T.Text
     require (status/="failed") "ata_creation_failed_requires_reviewed_token_recovery"
     require (status=="finalized") "ata_creation_pending_rerun_start_no_new_transaction"
-    otherStatus<-TO.runSafe (TO.Request $ TN.InspectSaved TN.Mainnet verifier attempt)
+    otherStatus<-TO.runSafe (TO.Request $ TN.InspectSaved network verifier attempt)
     require (otherStatus==AS.Finalized) "ata_verifier_pending_rerun_start"
   _<-S.solanaIdentity manager (C.solanaSettings c)
-  forM_ endpoints $ \url->account url ata >>= either reject (const $ pure ()) . S.inspectTokenAccount canonicalMint owner
+  forM_ endpoints $ \url->account url ata >>= either reject (const $ pure ()) . S.inspectTokenAccount (C.mint c) owner
   operating<-agreedOrigin endpoints (\url->call url) owner
   token<-agreedOrigin endpoints (\url->call url) ata
   forM_ [(owner,operating),(ata,token)] $ \(address,origin)->forM_ endpoints $ \url->do

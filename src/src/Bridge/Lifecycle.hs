@@ -8,7 +8,8 @@ module Bridge.Lifecycle
   , PreparationAdmission(..), PreparationFacts(..), PreparationDecision(..), decidePreparation, checkPreparationInput
   , SendFacts(..), QueueDecision(..), decideQueue, decideSend, checkSendPayment
   , checkIntake, checkScans, checkCustody, checkFeeBudget, checkFeeReallocation
-  , OrderLimits(..), OrderAdmissionFacts(..), OrderAdmission(..), quoteOrder, decideOrder
+  , OrderLimits(..), OrderAdmissionFacts(..), OrderAdmission(..), quoteOrder, quoteOrderFor, decideOrder, decideFastOrder
+  , sourceDepth, sourcePolicy, checkProvisioning
   , orderCostReservations, shouldExpireQuote
   , AllocationClaim(..), InstructionFacts(..), InstructionChange(..)
   , decideNativeClaim, checkNativeAllocation, checkSolanaBinding, decideInstruction, decideInstructionIssue
@@ -357,11 +358,31 @@ data OrderAdmission = OrderAdmission
   , admittedCosts :: [(Text,Asset,Amount)] } deriving (Eq,Show)
 
 quoteOrder :: W.OrderRequest -> Either Text Quote
-quoteOrder request = do
-  ensure (W.sourceOwner request==Nothing && (W.direction request/=WrappedToNative || T.null(W.refund request))) "invalid_connection_free_order"
+quoteOrder = quoteOrderAt 100
+quoteOrderFor :: W.PolicySnapshot -> W.OrderRequest -> Either Text Quote
+quoteOrderFor policy request = do
+  bps<-if fastWithdrawal (W.direction request)
+    then W.sidechainFeeBps <$> sourcePolicy policy (sourceAsset $ W.direction request)
+    else pure 100
+  quoteOrderAt bps request
+sourcePolicy :: W.PolicySnapshot -> Asset -> Either Text W.SidechainPolicy
+sourcePolicy policy asset = case filter ((==asset) . W.sidechainAsset) (W.sidechainPolicies policy) of
+  [saved] | asset `elem` [Thunder,BitNames], W.sidechainDepth saved>=6 && W.sidechainDepth saved<=1008
+    , W.sidechainFeeBps saved>=0 && W.sidechainFeeBps saved<10000
+    , all (\t->T.length t==64 && T.all (`elem` ("0123456789abcdef"::String)) t)
+        [W.sidechainCheckpoint saved,W.sidechainWalletIdentity saved] -> Right saved
+  _ -> Left "sidechain_not_configured"
+sourceDepth :: W.PolicySnapshot -> Asset -> Either Text Int
+sourceDepth policy asset = case asset of
+  Native -> Right (W.nativeDepth policy)
+  Wrapped -> Right 1
+  _ -> W.sidechainDepth <$> sourcePolicy policy asset
+quoteOrderAt :: Int -> W.OrderRequest -> Either Text Quote
+quoteOrderAt bps request = do
+  ensure (W.sourceOwner request==Nothing && (W.direction request==NativeToWrapped || T.null(W.refund request))) "invalid_connection_free_order"
   let address t=not(T.null t) && T.length t<=128 && not(T.any (<= ' ') t)
   ensure (address(W.recipient request) && (W.direction request/=NativeToWrapped || address(W.refund request))) "invalid_destination"
-  quote (W.input request)
+  quoteAtBps bps (W.input request)
 
 -- The two alternate payment costs protect conversion and full refund separately.
 -- This is not principal inventory or the fee hold for a prepared payment.
@@ -369,8 +390,9 @@ orderCostReservations :: Direction -> CostLimits -> Either Text [(Text,Asset,Amo
 orderCostReservations direction costs = do
   total<-amount (toInteger(units $ W.savedSolanaFee costs)+toInteger(units $ W.savedSolanaRent costs))
   let wrapping=direction==NativeToWrapped
-  pure [(if wrapping then "refund" else "conversion",Native,W.savedNativeFee costs)
-       ,(if wrapping then "conversion" else "refund",Sol,total)]
+  pure $ if fastWithdrawal direction then [("conversion",Native,W.savedNativeFee costs)] else
+    [(if wrapping then "refund" else "conversion",Native,W.savedNativeFee costs)
+    ,(if wrapping then "conversion" else "refund",Sol,total)]
 
 shouldExpireQuote :: Int64 -> Int64 -> Bool -> Either Text Bool
 shouldExpireQuote now grace hasReceipt = do
@@ -378,9 +400,11 @@ shouldExpireQuote now grace hasReceipt = do
   pure (now>grace && not hasReceipt)
 
 decideOrder :: OrderLimits -> CostLimits -> W.OrderRequest -> OrderAdmissionFacts -> Either Text OrderAdmission
-decideOrder limits costs request facts = do
+decideOrder = decideOrderAt 100
+decideOrderAt :: Int -> OrderLimits -> CostLimits -> W.OrderRequest -> OrderAdmissionFacts -> Either Text OrderAdmission
+decideOrderAt bps limits costs request facts = do
   checkIntake (orderIntake facts)
-  quoted<-quoteOrder request
+  quoted<-quoteOrderAt bps request
   ensure (queuedOrders facts<maximumQueued limits) "queue_full"
   ensure (availableFloat facts>=toInteger(units $ net quoted)) "insufficient_inventory"
   let now=intakeTime $ orderIntake facts
@@ -389,6 +413,22 @@ decideOrder limits costs request facts = do
   allocations<-orderCostReservations (W.direction request) costs
   forM_ allocations $ \(_,asset,n)->checkFeeBudget n (if asset==Native then nativeOrderBudget facts else solanaOrderBudget facts)
   pure $ OrderAdmission quoted (fromInteger deadline) (fromInteger grace) allocations
+
+-- Fast withdrawals consume ordinary ECX holds without joining a timed round.
+-- Existing rounds retain all their future inventory, fee and queue headroom.
+decideFastOrder :: W.PolicySnapshot -> OrderLimits -> CostLimits -> W.OrderRequest
+  -> OrderAdmissionFacts -> [BatchCapacity] -> Either Text OrderAdmission
+decideFastOrder policy limits costs request facts batches = do
+  ensure (fastWithdrawal $ W.direction request) "invalid_immediate_route"
+  saved<-sourcePolicy policy (sourceAsset $ W.direction request)
+  admitted<-decideOrderAt (W.sidechainFeeBps saved) limits costs request facts
+  checkBatchCapacities batches
+  let charged currency=sum [toInteger(units n) | (_,asset,n)<-admittedCosts admitted,asset==currency]
+      reserve currency budget=budget {operatingHeld=operatingHeld budget+charged currency}
+  checkBatchResources limits costs Native facts
+    {queuedOrders=queuedOrders facts+1,availableFloat=availableFloat facts-toInteger(units $ net $ admittedQuote admitted)
+    ,nativeOrderBudget=reserve Native (nativeOrderBudget facts),solanaOrderBudget=reserve Sol (solanaOrderBudget facts)} batches
+  pure admitted
 
 -- Additional resources required by an unfinished batch, beyond its actual
 -- orders. Admission must replace its own holds and preserve every other batch's.
@@ -448,10 +488,7 @@ checkBatchMember policy limits costs (BatchMember asset payout principal fees) f
   ensure (asset `elem` [Native,Wrapped] && units payout>0 && units principal>=0
     && all (\(currency,n)->currency `elem` [Native,Sol] && units n>0) fees
     && length(nub $ map fst fees)==length fees) "invalid_payout_capacity"
-  ensure (length batches<=1000 && length(nub $ map batchKey batches)==length batches
-    && all (\b->not(T.null $ batchKey b) && batchAsset b `elem` [Native,Wrapped]
-      && batchCommitted b>0 && batchQueueLimit b>0 && batchQueueLimit b<=1000) batches)
-    "invalid_payout_capacity"
+  checkBatchCapacities batches
   let quantity=toInteger(units payout)
       candidates=[b | b<-batches,batchAsset b==asset,batchCommitted b<toInteger(units $ batchThreshold b)]
   solanaFee<-amount (toInteger(units $ W.savedSolanaFee costs)+toInteger(units $ W.savedSolanaRent costs))
@@ -469,6 +506,13 @@ checkBatchMember policy limits costs (BatchMember asset payout principal fees) f
     {queuedOrders=queuedOrders facts+1,availableFloat=availableFloat facts-toInteger(units principal)
     ,nativeOrderBudget=reserve Native (nativeOrderBudget facts),solanaOrderBudget=reserve Sol (solanaOrderBudget facts)} after
   pure owner
+
+checkBatchCapacities :: [BatchCapacity] -> Either Text ()
+checkBatchCapacities batches =
+  ensure (length batches<=1000 && length(nub $ map batchKey batches)==length batches
+    && all (\b->not(T.null $ batchKey b) && batchAsset b `elem` [Native,Wrapped]
+      && batchCommitted b>0 && batchQueueLimit b>0 && batchQueueLimit b<=1000) batches)
+    "invalid_payout_capacity"
 
 -- Check the projected state after admitting or removing a member. Saved fee
 -- allowances are a floor, including when current execution costs have increased.
@@ -538,7 +582,7 @@ decideInstructionIssue backed coverage facts admission = do
     (intake,principal,costs)<-maybe (Left "quote_reservations_unavailable") Right admission
     checkIntake intake
     ensure (instructionStatus facts=="AwaitingDeposit" && intakeTime intake<=instructionDeadline facts) "deposit_window_closed"
-    ensure (principal==["quote"] && costs==["quote","quote"]) "quote_reservations_unavailable"
+    ensure (principal==["quote"] && costs==replicate (if fastWithdrawal $ instructionDirection facts then 1 else 2) "quote") "quote_reservations_unavailable"
     pure True
 
 -- Allocation/eligibility are checked before this snapshot is loaded. A receipt
@@ -553,8 +597,9 @@ decidePromotion identity now facts = do
   let order=promotionOrder facts; request=W.request order; quoted=W.quote order
       receipt=promotionReceipt facts; policy=W.policy order; direction=W.direction request
   ensure (W.input request==gross quoted && W.deploymentFingerprint policy==identity) "saved_order_terms_mismatch"
+  needed<-sourceDepth policy (sourceAsset direction)
   let exact=W.depositOrder receipt==Just(W.orderId order) && W.depositAmount receipt==gross quoted && W.depositAsset receipt==sourceAsset direction
-      eligible=W.depositEligible receipt && (W.depositAsset receipt/=Native || W.depositConfirmations receipt>=W.nativeDepth policy)
+      eligible=W.depositEligible receipt && W.depositConfirmations receipt>=needed
       timely=W.depositSeenAt receipt>=0 && W.depositSeenAt receipt<=W.deadline order && now<=promotionGrace facts
       pending=W.status order `elem` ["Provisioning","AwaitingDeposit"] && W.depositInstruction order/=Nothing
   if not (exact && eligible && timely && pending && not(conversionExists facts)) then pure Nothing else
@@ -582,6 +627,7 @@ data RefundFacts = RefundFacts
 
 checkRefundSource :: Text -> W.OrderRequest -> W.PolicySnapshot -> W.Deposit -> Either Text ()
 checkRefundSource identity request policy receipt = do
+  ensure (not $ fastWithdrawal $ W.direction request) "sidechain_refund_requires_review"
   ensure (W.deploymentFingerprint policy==identity && W.depositAsset receipt==sourceAsset(W.direction request)) "unsupported_refund_asset"
   ensure (W.depositEligible receipt && (W.depositAsset receipt/=Native || W.depositConfirmations receipt>=W.nativeDepth policy)) "source_not_eligible"
 
@@ -746,10 +792,19 @@ compactCustomerPayments payments = do
 -- Observations can retain evidence and require review, never authorize payment.
 -- The cursor, original scan anchor and all evidence commit in one transaction.
 scanAssets :: [(Text,Asset)]
-scanAssets=[("Native",Native),("Solana",Wrapped),("SolanaOperating",Sol)]
+scanAssets=[("Native",Native),("Solana",Wrapped),("SolanaOperating",Sol),("Thunder",Thunder),("BitNames",BitNames)]
 scanFacts :: [(Text,Maybe Int64,Maybe Text,Text)] -> Maybe ((Int64,Text),(Int64,Text),(Int64,Text))
-scanFacts [("Native",Just n,Nothing,a),("Solana",Just t,Nothing,b),("SolanaOperating",Just s,Nothing,c)] = Just((n,a),(t,b),(s,c))
-scanFacts _ = Nothing
+scanFacts rows = do
+  (Just n,Nothing,a)<-lookup "Native" entries
+  (Just t,Nothing,b)<-lookup "Solana" entries
+  (Just s,Nothing,c)<-lookup "SolanaOperating" entries
+  extra<-mapM healthy [(chain,at,problem,anchor) | (chain,at,problem,anchor)<-rows,chain `notElem` ["Native","Solana","SolanaOperating"]]
+  if length(nub $ map fst entries)/=length entries then Nothing
+    else Just((minimum(n:extra),a),(t,b),(s,c))
+ where
+  entries=[(chain,(at,problem,anchor)) | (chain,at,problem,anchor)<-rows]
+  healthy (chain,Just at,Nothing,_) | chain `elem` ["Thunder","BitNames"] = Just at
+  healthy _ = Nothing
 
 checkScanBatch :: W.ScanBatch -> Either Text ()
 checkScanBatch batch = do

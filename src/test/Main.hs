@@ -70,21 +70,22 @@ fullSuite = do
     , check "payout flow preserves new/resumed/family paths and stops after failure or cancellation" $ once $ ioProperty payoutFlowContract
     , check "internal workflows preserve branches, results, failure scopes and cancellation prefixes" $ once $ ioProperty workflowContract
     , check "signer handler resolves an existential to a signer-only critical operation" $ once $ property $
-        let prepared :<|> replacement :<|> draft :<|> checkpoint=signingServer ()
-        in case (checkedOperation $ prepared ("deployment","payment",3),checkedOperation $ replacement ("deployment",7),checkedOperation $ draft ("deployment","parent",good $ amount 2),checkedOperation $ checkpoint ("deployment",9)) of
-          (Right(SigningDSL (PreparedSigning (SignPrepared identity identifier generation))),Right(SigningDSL (ReplacementSigning (SignReplacement other decision))),Right(SigningDSL (DraftSigning (DraftReplacement third parent fee))),Right(SigningDSL (CheckpointSigning (CheckpointCustody fourth sequenceNo))))->
-            identity=="deployment" && identifier=="payment" && generation==3 && other==identity && decision==7 && third==identity && parent=="parent" && units fee==2 && fourth==identity && sequenceNo==9
+        let prepared :<|> replacement :<|> draft :<|> checkpoint :<|> address=signingServer ()
+        in case (checkedOperation $ prepared ("deployment","payment",3),checkedOperation $ replacement ("deployment",7),checkedOperation $ draft ("deployment","parent",good $ amount 2),checkedOperation $ checkpoint ("deployment",9),checkedOperation $ address ("deployment","order",10)) of
+          (Right(SigningDSL (PreparedSigning (SignPrepared identity identifier generation))),Right(SigningDSL (ReplacementSigning (SignReplacement other decision))),Right(SigningDSL (DraftSigning (DraftReplacement third parent fee))),Right(SigningDSL (CheckpointSigning (CheckpointCustody fourth sequenceNo))),Right(SigningDSL (AddressAllocation (AllocateSidechainAddress fifth order sequenceTwo))))->
+            identity=="deployment" && identifier=="payment" && generation==3 && other==identity && decision==7 && third==identity && parent=="parent" && units fee==2 && fourth==identity && sequenceNo==9 && fifth==identity && order=="order" && sequenceTwo==10
           _->False
     , check "signer trace labels match the formal path/result relation" $ once $ property $
-        let prepared :<|> replacement :<|> draft :<|> checkpoint=signingServer ()
+        let prepared :<|> replacement :<|> draft :<|> checkpoint :<|> address=signingServer ()
             label :: SomeOperationAt Program caller severity a -> Maybe (T.Text,T.Text,T.Text)
             label request=either (const Nothing) operationPath (checkedOperation request)
         in [label (prepared ("deployment","payment",3)),label (replacement ("deployment",7))
-           ,label (draft ("deployment","parent",good $ amount 2)),label (checkpoint ("deployment",9))]
+           ,label (draft ("deployment","parent",good $ amount 2)),label (checkpoint ("deployment",9)),label(address ("deployment","order",10))]
            ==map Just [("sign-preparation","SignPrepared","PreparedResult")
                       ,("sign-replacement","SignReplacement","ReplacementResult")
                       ,("draft-replacement","DraftReplacement","DraftResult")
-                      ,("checkpoint-custody","CheckpointCustody","CheckpointResult")]
+                       ,("checkpoint-custody","CheckpointCustody","CheckpointResult")
+                      ,("allocate-sidechain-address","AllocateSidechainAddress","AddressResult")]
     , check "library context identity preserves caller and severity through existential preparation" $ once $ property $
         let identities=[typeRep(Proxy @(Context (CustomerCommand 'Safe ())))
               ,typeRep(Proxy @(Context (CustomerCommand 'Critical ())))
@@ -120,6 +121,8 @@ fullSuite = do
         && absent(eqT @PreparedResult @ReplacementResult) && absent(eqT @PreparedResult @DraftResult)
         && absent(eqT @PreparedResult @CheckpointResult) && absent(eqT @ReplacementResult @DraftResult)
         && absent(eqT @ReplacementResult @CheckpointResult) && absent(eqT @DraftResult @CheckpointResult)
+        && absent(eqT @AddressResult @PreparedResult) && absent(eqT @AddressResult @ReplacementResult)
+        && absent(eqT @AddressResult @DraftResult) && absent(eqT @AddressResult @CheckpointResult)
     , check "library existential dispatch preserves payload and rejects a different caller" $ once $ property $
         let selector = Compile :: DSL (CustomerCommand 'Safe W.PublicConfiguration)
             mismatch = interpret (SomeOperation (WorkerAction (Proxy @'[WorkerCycle]) runWorkerCycle)) selector
@@ -286,6 +289,7 @@ instance WorkerRecovery TraceWorker where
   reusePayout _ = F.step . TraceReuse
   recoverNativeSettlements _ = error "unexpected settlement sweep in payout workflow"
   recoverNativeSources _ = error "unexpected source sweep in payout workflow"
+  recoverSidechainAllocations _ = error "unexpected allocation recovery in payout workflow"
   recoverNativeLocks _ = error "unexpected lock recovery in payout workflow"
   reconcilePayment _ _ = error "unexpected reconciliation in payout workflow"
 instance WorkerQueue TraceWorker where

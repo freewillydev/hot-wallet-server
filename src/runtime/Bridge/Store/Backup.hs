@@ -52,7 +52,7 @@ data LedgerArchive = LedgerArchive
 -- no paying-writer transaction or row lock is held during this operation.
 archiveLedger :: PG.ConnectInfo -> FilePath -> Text -> Int64 -> Int64 -> Text -> IO LedgerArchive
 archiveLedger settings directory identity version sequenceNo snapshot = do
-  require (version==23) "unsupported_backup_schema"
+  require (version==24) "unsupported_backup_schema"
   privateDirectory directory
   require (not(T.null snapshot) && T.length snapshot<=128 && T.all (`elem` ("0123456789abcdefABCDEF-"::String)) snapshot) "invalid_backup_snapshot"
   let run=databaseTool settings
@@ -243,7 +243,7 @@ manifestArchive identity minimumSequence manifest bytes = do
     either (const $ reject "invalid_backup_manifest") pure $ parseEither
       (withObject "ledger manifest" $ \o->(,,,,,,) <$> o .: "format" <*> o .: "archive" <*> o .: "sha256"
         <*> o .: "fingerprint" <*> o .: "schemaVersion" <*> o .: "criticalSequence" <*> o .: "remoteDurabilityAcknowledged") value
-  require (version==(2::Int) && schema==(23::Int64) && not remote && sequenceNo>=0
+  require (version==(2::Int) && schema==(24::Int64) && not remote && sequenceNo>=0
     && name==takeFileName name && name `notElem` ["",".",".."])
     "invalid_backup_manifest"
   require (saved==identity) "backup_identity_mismatch"
@@ -296,10 +296,13 @@ data CustodyArchive = CustodyArchive
   { custodyManifest :: FilePath, custodyIdentity :: Text, custodySequence :: Int64
   , custodyLedger :: FilePath, custodyFiles :: M.Map FilePath Text, custodyEncrypted :: Bool } deriving (Eq,Show)
 instance ToJSON CustodyArchive where
-  toJSON archive=object $ ["format" .= (if custodyEncrypted archive then 2 else 1::Int),"fingerprint" .= custodyIdentity archive
+  toJSON archive=object $ ["format" .= (if not(null $ sidechainFiles archive) then 3 else if custodyEncrypted archive then 2 else 1::Int),"fingerprint" .= custodyIdentity archive
     ,"criticalSequence" .= custodySequence archive,"ledgerManifest" .= custodyLedger archive
     ,"files" .= custodyFiles archive,"remoteDurabilityAcknowledged" .= False]
     <> ["nativeEncrypted" .= True | custodyEncrypted archive]
+
+sidechainFiles :: CustodyArchive -> [FilePath]
+sidechainFiles archive=filter (`M.member` custodyFiles archive) ["thunder-wallet.json","bitnames-wallet.json"]
 
 loadCustodyArchive :: Text -> Int64 -> FilePath -> IO CustodyArchive
 loadCustodyArchive identity minimumSequence manifest = do
@@ -319,7 +322,7 @@ custodyArchive identity minimumSequence manifest bytes = do
       dumps=filter (".dump-" `isSuffixOf`) (M.keys files)
   require (takeFileName manifest=="custody.json" && value==toJSON archive && all basename (M.keys files) && all checksum (M.elems files)
     && ".manifest-" `isSuffixOf` ledger && length dumps==1
-    && sort(M.keys files)==sort([ledger,"native-wallet","native-wallet.json","deployment.json","solana-key.json"]<>dumps<>["native-unlock" | encrypted]))
+    && sort(M.keys files)==sort([ledger,"native-wallet","native-wallet.json","deployment.json","solana-key.json"]<>dumps<>["native-unlock" | encrypted]<>sidechainFiles archive))
     "invalid_custody_manifest"
   require (saved==identity) "backup_identity_mismatch"
   require (n>=minimumSequence) "backup_snapshot_too_old"
@@ -353,7 +356,7 @@ downloadCustodyArchive program repository password snapshot identity minimumSequ
   metadata<-run ["cat","snapshot",T.unpack snapshot] >>= decodeReceipt
   paths<-receiptField "paths" metadata
   tags<-receiptField "tags" metadata
-  require (length paths `elem` [7,8] && all (\path->isAbsolute path && normalise path==path) paths) "backup_snapshot_mismatch"
+  require (length paths>=7 && length paths<=10 && all (\path->isAbsolute path && normalise path==path) paths) "backup_snapshot_mismatch"
   source<-case filter ((=="custody.json").takeFileName) paths of
     [manifest]->pure manifest
     _->reject "backup_snapshot_mismatch"

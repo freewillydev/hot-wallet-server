@@ -3,8 +3,8 @@
 {-# LANGUAGE DeriveAnyClass, DerivingStrategies, PatternSynonyms #-}
 module Bridge.Domain
   ( Amount, units, amount, parseUnits, parseCoins, renderCoins, parseNatural
-  , Asset(..), Direction(..), sourceAsset, destinationAsset
-  , Quote, gross, fee, net, quote, historicalQuote
+  , Asset(..), Direction(..), sourceAsset, destinationAsset, fastWithdrawal
+  , Quote, gross, fee, net, quote, quoteAtBps, historicalQuote
   , Funding(Conversion,Refund,EarnedFees), conversion, refund, earnedFees
   , Payment, payment, paymentId, paymentFunding, paymentRecipient, paymentAsset, paymentAmount
   , Account(..), Posting(..), settlement, reserveEarned, releaseEarned
@@ -53,13 +53,19 @@ parseCoins t = case T.splitOn "." t of
 renderCoins :: Amount -> Text
 renderCoins a = let (w,f) = units a `divMod` 100000000 in T.pack (show w) <> "." <> T.justifyRight 8 '0' (T.pack (show f))
 
-data Asset = Native | Wrapped | Sol deriving stock (Eq,Ord,Show,Generic) deriving anyclass (ToJSON,FromJSON)
-data Direction = NativeToWrapped | WrappedToNative deriving stock (Eq,Show,Generic) deriving anyclass (ToJSON,FromJSON)
+data Asset = Native | Wrapped | Sol | Thunder | BitNames deriving stock (Eq,Ord,Show,Read,Generic) deriving anyclass (ToJSON,FromJSON)
+data Direction = NativeToWrapped | WrappedToNative | ThunderToNative | BitNamesToNative deriving stock (Eq,Show,Generic) deriving anyclass (ToJSON,FromJSON)
 sourceAsset, destinationAsset :: Direction -> Asset
 sourceAsset NativeToWrapped = Native
 sourceAsset WrappedToNative = Wrapped
+sourceAsset ThunderToNative = Thunder
+sourceAsset BitNamesToNative = BitNames
 destinationAsset NativeToWrapped = Wrapped
 destinationAsset WrappedToNative = Native
+destinationAsset ThunderToNative = Native
+destinationAsset BitNamesToNative = Native
+fastWithdrawal :: Direction -> Bool
+fastWithdrawal direction = sourceAsset direction `elem` [Thunder,BitNames]
 
 data Quote = Quote !Amount !Amount !Amount deriving (Eq,Show)
 gross, fee, net :: Quote -> Amount
@@ -75,9 +81,13 @@ instance FromJSON Quote where
     n <- o .: "net"
     q <- either (fail . T.unpack) pure (historicalQuote g f)
     if net q == n then pure q else fail "inconsistent_quote"
--- New terms are always 1%. Existing terms are loaded verbatim, never repriced.
+-- Existing terms are loaded verbatim, never repriced. Fees round up once.
 quote :: Amount -> Either Text Quote
-quote input = amount ((toInteger (units input)+99) `div` 100) >>= historicalQuote input
+quote = quoteAtBps 100
+quoteAtBps :: Int -> Amount -> Either Text Quote
+quoteAtBps bps input
+  | bps<0 || bps>=10000 = Left "invalid_fee_rate"
+  | otherwise = amount ((toInteger (units input)*toInteger bps+9999) `div` 10000) >>= historicalQuote input
 historicalQuote :: Amount -> Amount -> Either Text Quote
 historicalQuote input charge = do
   remaining <- amount (toInteger (units input)-toInteger (units charge))
@@ -121,7 +131,7 @@ identifier key
   | otherwise = Right ()
 payout :: Asset -> Amount -> Either Text ()
 payout asset quantity
-  | asset==Sol = Left "invalid_payout_asset"
+  | asset `notElem` [Native,Wrapped] = Left "invalid_payout_asset"
   | units quantity==0 = Left "nonpositive_payout"
   | otherwise = Right ()
 

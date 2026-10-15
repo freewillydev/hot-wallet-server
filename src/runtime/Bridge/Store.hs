@@ -10,6 +10,7 @@ module Bridge.Store
 import qualified Bridge.Solana as Solana
 import qualified Bridge.SolanaDeposit as SD
 import qualified Bridge.NativePayment as N
+import qualified Bridge.Sidechain as Side
 import Bridge.Error
 import Bridge.Fence (withFence)
 import qualified Bridge.Fence as Fence
@@ -85,6 +86,7 @@ data StoreRestore a where
   AdoptLedger :: FilePath -> Text -> Int64 -> StoreRestore (Text,Int64)
   RetireLedger :: FilePath -> Text -> Int64 -> StoreRestore (Text,Int64)
   RestoreLedger :: FilePath -> Text -> Int64 -> StoreRestore (Text,Int64)
+  ReadRestoredSidechainAddresses :: Text -> Int64 -> StoreRestore [(Asset,[Text])]
   RecoverLedger :: FilePath -> Text -> FilePath -> Text -> Int64 -> StoreRestore (Text,Int64)
 
 evalRestore :: PG.ConnectInfo -> StoreRestore a -> IO a
@@ -118,6 +120,13 @@ evalRestore settings (RestoreLedger manifest identity minimumSequence) = do
     require (count==1) "corrupt_custody_state"
     audit c "ledger_restored" (archiveHash archive)
     pure (T.pack $ PG.connectDatabase target,S.criticalSequence row)
+
+evalRestore settings (ReadRestoredSidechainAddresses identity sequenceNo) =
+  bracket (PG.connect settings) PG.close $ \c->Tx.withTransaction c $ do
+    claimWorker c >>= flip require "worker_already_running"
+    row<-metadata c identity
+    require (S.paused row==1 && S.criticalSequence row==sequenceNo) "restored_sequence_mismatch"
+    forM [Thunder,BitNames] $ \asset->(,) asset <$> sidechainAddresses c asset
 
 -- Private implementation of the two closed fence operations above. The row
 -- lock stabilizes pause/sequence through fsync; the session lock excludes a
@@ -180,6 +189,11 @@ data StoreRead a where
   ReadReplacementDecision :: Text -> Amount -> Text -> StoreRead (Maybe (Int64,Bool))
   ReadLossCover :: Text -> Int64 -> StoreRead (Maybe (Amount,Amount,Text))
   NativeSourcePage :: Maybe Text -> StoreRead [W.Deposit]
+  SidechainInstructions :: Asset -> Maybe Text -> StoreRead [(Text,Text,W.PolicySnapshot)]
+  SidechainSourcePage :: Asset -> Maybe Text -> StoreRead [W.Deposit]
+  ReadSidechainAddresses :: Asset -> StoreRead [Text]
+  PendingSidechainAllocations :: Asset -> StoreRead [(Text,Int64)]
+  ReadSidechainAllocation :: Text -> Int64 -> StoreRead (W.SidechainPolicy,[Text],Maybe Text)
   ReadNativeSourceInspection :: Text -> StoreRead (Maybe (Text,W.PolicySnapshot),(Text,Value))
   ReadCoveredApproval :: Text -> Int64 -> StoreRead (Maybe Text)
   CheckCoveredSource :: Text -> Int64 -> StoreRead ()
@@ -265,6 +279,7 @@ data StoreWrite a where
   SaveDraft :: Text -> Int -> Text -> StoreWrite ()
   CommitScan :: W.ScanBatch -> StoreWrite ()
   CommitNativePage :: W.ScanBatch -> StoreWrite ()
+  CommitSidechainPage :: W.ScanBatch -> StoreWrite ()
   RecordHistoryProgress :: Text -> Maybe Solana.HistoryProgress -> Solana.HistoryProgress -> StoreWrite ()
   CommitHistoryScan :: Maybe Solana.HistoryProgress -> W.ScanBatch -> Bool -> StoreWrite ()
   ScanFailed :: Text -> Int64 -> Text -> StoreWrite ()
@@ -273,6 +288,9 @@ data StoreWrite a where
   Pause :: Text -> StoreWrite ()
   CreateOrder :: Int64 -> Text -> W.OrderRequest -> StoreWrite Text
   ClaimNative :: Int64 -> Text -> Text -> StoreWrite AllocationClaim
+  ClaimSidechain :: Int64 -> Text -> Text -> StoreWrite Int64
+  CompleteSidechainAllocation :: Text -> Int64 -> Text -> StoreWrite Int64
+  RecordSidechain :: Text -> Text -> Int64 -> Text -> StoreWrite Int64
   RecordNative :: Text -> Text -> Text -> Text -> StoreWrite Int64
   BindSolana :: Int64 -> Text -> Text -> StoreWrite Int64
   IssueInstruction :: Int64 -> Text -> Text -> StoreWrite W.OrderView
@@ -402,6 +420,22 @@ evalRead (Reader settings identity remote) operation = bracket connect PG.close 
         pure $ W.ServiceStatus (S.paused row/=0) (S.pauseReason row) (S.criticalSequence row) (S.backupSequence row)
           [W.ScannerStatus chain success failure checked | (chain,success,failure,checked)<-health]
       ReadLossCover key recovery -> lossCover c key recovery
+      SidechainInstructions asset after -> sidechainInstructions c asset after
+      SidechainSourcePage asset after -> do
+        require (asset `elem` [Thunder,BitNames]) "invalid_sidechain"
+        rows<-O.runSelect c $ O.limit 256 $ O.orderBy (O.asc S.depositId) $ do
+          row<-O.selectTable S.deposits
+          O.where_ (S.depositAsset row O..== O.sqlStrictText(T.pack $ show asset)
+            O..&& S.depositId row O..> O.sqlStrictText(maybe "" id after))
+          pure row
+        mapM asDeposit rows
+      ReadSidechainAddresses asset -> sidechainAddresses c asset
+      PendingSidechainAllocations asset -> do
+        require (asset `elem` [Thunder,BitNames]) "invalid_sidechain"
+        claims<-sidechainClaims c asset
+        require (length claims<=1) "sidechain_allocation_ambiguous"
+        pure claims
+      ReadSidechainAllocation identifier sequenceNo -> sidechainAllocation c identifier sequenceNo
       NativeSourcePage after -> nativeSourcePage c after
       ReadNativeSourceInspection key -> nativeSourceInspection c key
       ReadSourceApproval key restoration -> sourceApproval c False key restoration
@@ -503,6 +537,9 @@ evalWrite writer@(Writer _ config _) operation = transaction writer $ \c ->
   AdmitPayoutRounds now -> admitPayoutRounds c config now
   SaveDraft identifier generation draft -> saveDraft c (deploymentFingerprint $ paymentPolicy policy) identifier generation draft
   CommitScan batch -> commitScan c batch
+  CommitSidechainPage batch -> do
+    require (W.scanChain batch `elem` ["Thunder","BitNames"]) "invalid_sidechain_scan_page"
+    commitObservation c False batch
   CommitNativePage batch -> do
     require (W.scanChain batch=="Native") "invalid_native_scan_page"
     commitObservation c False batch
@@ -549,6 +586,33 @@ evalWrite writer@(Writer _ config _) operation = transaction writer $ \c ->
         O.iRows=[(O.sqlStrictText identifier,O.sqlStrictText label,O.sqlInt8 n)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
       pure ()
     pure claim
+  ClaimSidechain now header identifier -> do
+    row<-authorizedOrder c (deploymentFingerprint $ paymentPolicy policy) header identifier
+    (asset,_)<-sidechainOrder row
+    unresolved<-sidechainClaims c asset
+    require (null unresolved || map fst unresolved==[identifier]) "sidechain_allocation_pending"
+    previous<-O.runSelect c $ do
+      (oid,_,sequenceNo)<-O.selectTable S.nativeAllocations
+      O.where_ (oid O..== O.sqlStrictText identifier)
+      pure sequenceNo
+    case previous of
+      [sequenceNo]->pure sequenceNo
+      []->do
+        known<-sidechainAddresses c asset
+        require (length known<100000) "sidechain_allocation_history_too_large"
+        facts<-instructionFacts row
+        ready<-readIntake c (deploymentFingerprint $ paymentPolicy policy) now
+        checked (checkProvisioning facts (Just ready))
+        sequenceNo<-nextSequence c
+        void $ O.runInsert c O.Insert {O.iTable=S.nativeAllocations,
+          O.iRows=[(O.sqlStrictText identifier,O.sqlStrictText $ Side.sidechainInstruction asset identifier,O.sqlInt8 sequenceNo)],
+          O.iReturning=O.rCount,O.iOnConflict=Nothing}
+        pure sequenceNo
+      _->reject "duplicate_allocation"
+  RecordSidechain header identifier sequenceNo address -> do
+    _<-authorizedOrder c (deploymentFingerprint $ paymentPolicy policy) header identifier
+    recordSidechain c identifier sequenceNo address
+  CompleteSidechainAllocation identifier sequenceNo address -> recordSidechain c identifier sequenceNo address
   RecordNative header identifier label address -> do
     row<-authorizedOrder c (deploymentFingerprint $ paymentPolicy policy) header identifier
     facts<-instructionFacts row
@@ -675,7 +739,7 @@ metadata :: PG.Connection -> Text -> IO S.Deployment
 metadata c identity = do
   rows <- O.runSelect c (O.selectTable S.deployment)
   case rows of
-    [r] | S.singleton r==1 && S.schemaVersion r==23 && S.fingerprint r==identity
+    [r] | S.singleton r==1 && S.schemaVersion r==24 && S.fingerprint r==identity
         && S.criticalSequence r>=0 && S.backupSequence r>=0 && S.backupSequence r<=S.criticalSequence r
         && S.paused r `elem` [0,1] -> pure r
     _ -> reject "ledger_profile_or_schema_mismatch"
@@ -787,11 +851,12 @@ publicReport c wallTime=do
             rows<-maybe [] id <$> o .:? "assets"
             mapM (withObject "asset" $ \r->(,) <$> r .: "asset" <*> r .: "observed") rows) value
       forM_ values $ \(_,n)->checked(parseUnits n) >> pure ()
-      let complete=length values==3 && all (`M.member` M.fromList values) [Native,Wrapped,Sol]
+      let complete=length values>=3 && length values<=5 && length(nub $ map fst values)==length values
+            && all (`M.member` M.fromList values) [Native,Wrapped,Sol]
           fresh=complete && checkCustody wallTime ((,,) revision <$> checkedRevision <*> at)==Right () && failure==Nothing
       pure(at,fresh,M.fromList values)
     _->reject "custody_state_missing"
-  assets<-forM [Native,Wrapped,Sol] $ \asset->do
+  assets<-forM ([Native,Wrapped,Sol]<>[asset | asset<-[Thunder,BitNames],M.member asset reserves]) $ \asset->do
     held<-exact $ maybe 0 id $ lookup (T.pack $ show asset) holds
     fees<-exact $ maybe 0 id $ lookup (T.pack $ show asset) earned
     let available=M.findWithDefault 0 (asset,Float) booked-held
@@ -845,6 +910,8 @@ parseAsset :: Text -> IO Asset
 parseAsset "Native"=pure Native
 parseAsset "Wrapped"=pure Wrapped
 parseAsset "Sol"=pure Sol
+parseAsset "Thunder"=pure Thunder
+parseAsset "BitNames"=pure BitNames
 parseAsset _=reject "unknown_ledger_asset"
 checked :: Either Text a -> IO a
 checked=either reject pure
@@ -975,12 +1042,14 @@ createOrder c config now header request = do
     Nothing -> do
       readiness<-readIntake c identity now
       checked (checkIntake readiness)
-      _<-checked (quoteOrder request)
+      _<-checked (quoteOrderFor (paymentPolicy terms) request)
       let destination=destinationAsset $ W.direction request
       facts<-readAdmissionFunds c config readiness destination
       batches<-readPayoutBatches c
       capacities<-mapM batchCapacity batches
-      (owner,admitted)<-checked $ decideBatchOrder (payoutPolicy config) limits (paymentLimits terms) request facts capacities
+      (owner,admitted)<-if fastWithdrawal (W.direction request)
+        then (Nothing,) <$> checked (decideFastOrder (paymentPolicy terms) limits (paymentLimits terms) request facts capacities)
+        else checked (decideBatchOrder (payoutPolicy config) limits (paymentLimits terms) request facts capacities)
       identifier<-digest <$> (getRandomBytes 32 :: IO BS.ByteString)
       let text=O.sqlStrictText; num=O.sqlInt8; termsQuote=admittedQuote admitted
           row=S.Order (text identifier) (text cap) (text key) (text requestDigest) (text encoded)
@@ -991,7 +1060,7 @@ createOrder c config now header request = do
       reserveOrderCosts c (paymentLimits terms) identifier (admittedCosts admitted)
       sequenceNo<-nextSequence c
       let assignment=maybe (Left sequenceNo) Right owner
-      assignPayoutBatch c config assignment destination (Just identifier) Nothing
+      unless (fastWithdrawal $ W.direction request) $ assignPayoutBatch c config assignment destination (Just identifier) Nothing
       pure identifier
 
 readAdmissionFunds :: PG.Connection -> StorePolicy -> IntakeFacts -> Asset -> IO OrderAdmissionFacts
@@ -1207,7 +1276,7 @@ scanHeads c now = do
   pure [(chain,anchor) | (chain,_,_,anchor)<-scans]
 
 readScans :: PG.Connection -> IO [(Text,Maybe Int64,Maybe Text,Text)]
-readScans c = sortOn (\(chain,_,_,_)->chain) <$> (O.runSelect c $ O.limit 4 $ do
+readScans c = sortOn (\(chain,_,_,_)->chain) <$> (O.runSelect c $ O.limit 6 $ do
     (chain,success,problem,_) <- O.selectTable S.scanHealth
     (stream,anchor) <- O.selectTable S.checkpoints
     O.where_ (chain O..== stream)
@@ -1595,7 +1664,7 @@ observeDeposit c deposit = do
       [(request,policy)]->(,) <$> decodeSaved request <*> decodeSaved policy
       _->reject "deposit_order_missing"
     require (sourceAsset (W.direction request)==currency) "deposit_asset_mismatch"
-    when (currency==Native && eligible) $ require (depth>=nativeDepth savedPolicy) "deposit_confirmation_policy_mismatch"
+    when eligible $ checked (sourceDepth savedPolicy currency) >>= \needed->require (depth>=needed) "deposit_confirmation_policy_mismatch"
   old <- O.runSelect c $ do
     row <- O.selectTable S.deposits
     O.where_ (S.depositId row O..== O.sqlStrictText did)
@@ -1790,6 +1859,83 @@ lookupInstruction connection instruction = do
     []->pure Nothing
     [(oid,req,savedPolicy)]->Just <$> ((,,) oid <$> decodeSaved req <*> decodeSaved savedPolicy)
     _->reject "duplicate_deposit_instruction"
+
+sidechainOrder :: S.Order -> IO (Asset,W.PolicySnapshot)
+sidechainOrder row=do
+  request<-decodeSaved (S.requestJson row)
+  saved<-decodeSaved (S.policyJson row)
+  require (fastWithdrawal $ W.direction request) "invalid_sidechain_order"
+  let asset=sourceAsset $ W.direction request
+  _<-checked (sourcePolicy saved asset)
+  pure (asset,saved)
+
+sidechainClaims :: PG.Connection -> Asset -> IO [(Text,Int64)]
+sidechainClaims c asset=do
+  rows<-O.runSelect c $ O.limit 1001 $ do
+    (identifier,_,sequenceNo)<-O.selectTable S.nativeAllocations
+    row<-O.selectTable S.orders
+    O.where_ (identifier O..== S.orderId row O..&& O.isNull (S.instruction row))
+    pure (row,sequenceNo)
+    :: IO [(S.Order,Int64)]
+  require (length rows<=1000) "sidechain_allocation_history_too_large"
+  fmap concat $ forM rows $ \(row,sequenceNo)->do
+    request<-decodeSaved (S.requestJson row)
+    pure [(S.orderId row,sequenceNo) | sourceAsset(W.direction request)==asset]
+
+sidechainInstructions :: PG.Connection -> Asset -> Maybe Text -> IO [(Text,Text,W.PolicySnapshot)]
+sidechainInstructions c asset after=do
+  require (asset `elem` [Thunder,BitNames]) "invalid_sidechain"
+  rows<-O.runSelect c $ O.limit 256 $ O.orderBy (O.asc S.orderId) $ do
+    row<-O.selectTable S.orders
+    O.where_ (S.orderId row O..> O.sqlStrictText(maybe "" id after)
+      O..&& O.matchNullable (O.sqlBool False) (\instruction->O.like instruction (O.sqlStrictText $ Side.sidechainInstruction asset "%")) (S.instruction row))
+    pure row
+  forM rows $ \row->do
+    (actual,policy)<-sidechainOrder row
+    require (actual==asset) "sidechain_instruction_mismatch"
+    instruction<-maybe (reject "sidechain_instruction_missing") pure (S.instruction row)
+    address<-checked (Side.decodeInstruction asset instruction)
+    pure (S.orderId row,address,policy)
+
+sidechainAddresses :: PG.Connection -> Asset -> IO [Text]
+sidechainAddresses c asset=collect Nothing 0
+ where
+  collect after count=do
+    page<-sidechainInstructions c asset after
+    require (count+length page<=100000) "sidechain_allocation_history_too_large"
+    rest<-case reverse page of
+      (lastId,_,_):_ | length page==256->collect (Just lastId) (count+length page)
+      _->pure []
+    pure ([address | (_,address,_)<-page]<>rest)
+
+-- A recovered result completes only this exact durable claim; it never exposes
+-- customer instructions or creates/reprices an order.
+recordSidechain :: PG.Connection -> Text -> Int64 -> Text -> IO Int64
+recordSidechain c identifier sequenceNo address=do
+  (saved,known,replay)<-sidechainAllocation c identifier sequenceNo
+  require (Side.validAddress address && address `notElem` known && maybe True (==address) replay) "invalid_sidechain_allocation_result"
+  rows<-O.runSelect c $ O.selectTable S.orders >>= \row->O.where_ (S.orderId row O..== O.sqlStrictText identifier) >> pure row
+  row<-case rows of [one]->pure one; _->reject "order_not_found"
+  facts<-instructionFacts row
+  saveInstruction c row facts (Side.sidechainInstruction (W.sidechainAsset saved) address)
+
+sidechainAllocation :: PG.Connection -> Text -> Int64 -> IO (W.SidechainPolicy,[Text],Maybe Text)
+sidechainAllocation c identifier sequenceNo=do
+  rows<-O.runSelect c $ do
+    row<-O.selectTable S.orders
+    (oid,_,saved)<-O.selectTable S.nativeAllocations
+    O.where_ (S.orderId row O..== O.sqlStrictText identifier O..&& oid O..== S.orderId row O..&& saved O..== O.sqlInt8 sequenceNo)
+    pure row
+  row<-case rows of [value]->pure value; _->reject "sidechain_allocation_missing"
+  (asset,policy)<-sidechainOrder row
+  saved<-checked (sourcePolicy policy asset)
+  replay<-mapM (checked . Side.decodeInstruction asset) (S.instruction row)
+  when (replay==Nothing) $ sidechainClaims c asset >>= \claims->
+    require (claims==[(identifier,sequenceNo)]) "sidechain_allocation_changed"
+  addresses<-sidechainAddresses c asset
+  let known=filter (\address->Just address/=replay) addresses
+  require (length(nub known)==length known) "duplicate_sidechain_allocation"
+  pure (saved,known,replay)
 
 maximumNativeDepth :: PG.Connection -> Int -> IO Int
 maximumNativeDepth connection minimumDepth = do
@@ -2512,9 +2658,9 @@ custodySnapshot c now expectedOrigins inspectLosses = do
   booked<-balances c
   let total asset=sum [n | ((currency,_),n)<-M.toList booked,currency==asset]
       owned asset=sum [n | ((currency,account),n)<-M.toList booked,currency==asset,account/=External]
-      assets=[Native,Wrapped,Sol]
+      assets=[Native,Wrapped,Sol]<>[asset | (name,asset)<-scanAssets,name `elem` map fst origins,asset `elem` [Thunder,BitNames]]
   require (all (\asset->total asset==0 && owned asset>=0) assets) "invalid_custody_journal"
-  slots<-forM (filter ((/="Native").fst) heads) $ \(chain,txid)->do
+  slots<-forM (filter ((`elem` ["Solana","SolanaOperating"]).fst) heads) $ \(chain,txid)->do
     (_,anchor,_)<-custodyEvent c chain txid
     case readMaybe(T.unpack anchor) of Just n | n>=0->pure n; _->reject "custody_history_anchor_missing"
   require (length slots==2) "custody_history_anchor_missing"
@@ -2556,11 +2702,12 @@ recordCustody c expected now problem report = do
     let affected=case code of
           "custody_native_history_advanced"->["Native"]
           "custody_solana_history_advanced"->["Solana","SolanaOperating"]
+          "custody_sidechain_history_advanced"->["Thunder","BitNames"]
           _->[]
     forM_ affected $ \chain->scanHealth c chain now (Just code)
     -- An expired observation refuses intake until refreshed; it is not an
     -- operator pause. Never clear a pause that was already set.
-    when (code `notElem` ["custody_native_history_advanced","custody_solana_history_advanced","custody_ledger_changed","scanners_not_fresh"]) $ do
+    when (code `notElem` ["custody_native_history_advanced","custody_solana_history_advanced","custody_sidechain_history_advanced","custody_ledger_changed","scanners_not_fresh"]) $ do
       _<-O.runUpdate c O.Update {O.uTable=S.deployment,O.uUpdateWith= \r->r {S.paused=number 1,S.pauseReason=text $ "custody:"<>code},O.uWhere= \r->S.singleton r O..== number 1,O.uReturning=O.rCount}
       pure ()
   _<-O.runUpdate c O.Update {O.uTable=S.custody,
@@ -2590,7 +2737,7 @@ paymentCandidates c = do
     O.orderBy (O.asc (\(_,_,n)->n) <> O.asc (\(key,_,_)->key)) $ do
       (key,chain)<-P.readyPayments
       (member,n)<-O.unionAll (O.selectTable S.payoutMembers)
-        ((\identifier->(identifier,O.sqlInt8 0)) <$> P.immediateRefunds)
+        ((\identifier->(identifier,O.sqlInt8 0)) <$> O.unionAll P.immediateRefunds P.immediateConversions)
       O.where_ (member O..== key)
       pure (key,chain,n)
     :: IO [(Text,Text)]
@@ -2639,7 +2786,8 @@ admitPayoutRounds c config now = do
        require (count==fromIntegral(length members)) "payout_round_membership_conflict"
 
 checkPayoutAdmission :: PG.Connection -> Payment -> IO ()
-checkPayoutAdmission c outgoing | Refund{} <- paymentFunding outgoing = pure ()
+checkPayoutAdmission _ outgoing | Refund{} <- paymentFunding outgoing = pure ()
+checkPayoutAdmission _ outgoing | Conversion _ _ direction _ <- paymentFunding outgoing, fastWithdrawal direction = pure ()
 checkPayoutAdmission c outgoing = do
   rows<-O.runSelect c $ O.limit 2 $ do
     (key,n)<-O.selectTable S.payoutMembers
@@ -2743,7 +2891,7 @@ resumeLedger c config now origins reviewed nativeWork = do
     :: IO [Text]
   require (null legacy) "legacy_order_cost_review_required"
   booked<-balances c
-  require (all (\asset->M.findWithDefault 0 (asset,SourceDeficit) booked==0) [Native,Wrapped,Sol]) "source_shortfall_requires_review"
+  require (all (\asset->M.findWithDefault 0 (asset,SourceDeficit) booked==0) [Native,Wrapped,Sol,Thunder,BitNames]) "source_shortfall_requires_review"
   forM_ [Native,Sol] $ \asset->do
     held<-operatingHolds c asset
     require (M.findWithDefault 0 (asset,Operating) booked>=held) "operating_allocation_requires_funding"

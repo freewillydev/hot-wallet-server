@@ -233,6 +233,6 @@ cancellationPlan call profile config prepared=do
       let expected=encodeSaved (solanaPayoutRequest config plan)
       _<-resolveSigningPlan profile config prepared {preparedDraft=Just $ maybe expected id (preparedDraft prepared)}
       pure []
-    Sol->reject "invalid_payout_asset"
+    _->reject "invalid_payout_asset"
   pure (points,encodeSaved $ object ["chain" .= (if asset==Native then "Native" else "Solana"::Text),
     "nativeInputs" .= points,"draftHash" .= fmap (digest . TE.encodeUtf8) (preparedDraft prepared)])

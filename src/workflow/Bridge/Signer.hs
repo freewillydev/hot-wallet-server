@@ -33,7 +33,8 @@ type SigningAPI = BasicAuth "signer" () :>
   (("sign-preparation" :> ReqBody '[JSON] (Text,Text,Int) :> Post '[JSON] PreparedResult)
   :<|> ("sign-replacement" :> ReqBody '[JSON] (Text,Int64) :> Post '[JSON] ReplacementResult)
   :<|> ("draft-replacement" :> ReqBody '[JSON] (Text,Text,Amount) :> Post '[JSON] DraftResult)
-  :<|> ("checkpoint-custody" :> ReqBody '[JSON] (Text,Int64) :> Post '[JSON] CheckpointResult))
+  :<|> ("checkpoint-custody" :> ReqBody '[JSON] (Text,Int64) :> Post '[JSON] CheckpointResult)
+  :<|> ("allocate-sidechain-address" :> ReqBody '[JSON] (Text,Text,Int64) :> Post '[JSON] AddressResult))
 signingAPI :: Proxy SigningAPI
 signingAPI=Proxy
 signingServer :: Execution 'Signer 'Critical SignerCommand => ServerT SigningAPI (SomeOperationAt Program 'Signer 'Critical)
@@ -41,6 +42,7 @@ signingServer () = (\(identity,identifier,generation)->pending $ SignerAction $ 
   :<|> (\(identity,decision)->pending $ SignerAction $ ReplacementSigning $ SignReplacement identity decision)
   :<|> (\(identity,parent,fee)->pending $ SignerAction $ DraftSigning $ DraftReplacement identity parent fee)
   :<|> (\(identity,minimumSequence)->pending $ SignerAction $ CheckpointSigning $ CheckpointCustody identity minimumSequence)
+  :<|> (\(identity,identifier,sequenceNo)->pending $ SignerAction $ AddressAllocation $ AllocateSidechainAddress identity identifier sequenceNo)
 
 data SigningEndpoint = SigningEndpoint { signerPort :: Int, signerAuthFile :: FilePath } deriving (Eq,Show)
 

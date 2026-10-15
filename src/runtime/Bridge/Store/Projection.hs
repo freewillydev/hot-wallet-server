@@ -1,6 +1,6 @@
 -- Relational facts for specific closed Store/migration operations. No connection,
 -- evaluator or write capability is exported. Phase and restrictions stay distinct.
-module Bridge.Store.Projection (paymentStates, paymentAmounts, immediateRefunds, payoutCohort, assignedPayouts, unassignedPayments, activePayments, readyPayments, orderObligations, openOrders, workIntents, sourceRestricted, successorReady) where
+module Bridge.Store.Projection (paymentStates, paymentAmounts, immediateRefunds, immediateConversions, payoutCohort, assignedPayouts, unassignedPayments, activePayments, readyPayments, orderObligations, openOrders, workIntents, sourceRestricted, successorReady) where
 
 import qualified Bridge.Store.Schema as S
 import qualified Opaleye as O
@@ -21,6 +21,25 @@ immediateRefunds = do
   O.where_ (S.obligationKind row O..== O.sqlStrictText "refund")
   pure (S.obligationId row)
 
+-- Only the two immutable fast-withdrawal directions bypass scheduled rounds.
+fastOrders :: O.Select S.TextField
+fastOrders = do
+  row<-O.selectTable S.orders
+  let matches direction=json (S.requestJson row) O..@>
+        json (O.jsonBuildObject $ O.jsonBuildObjectField "direction" (O.sqlStrictText direction))
+  O.where_ (matches "ThunderToNative" O..|| matches "BitNamesToNative")
+  pure (S.orderId row)
+ where
+  json :: O.Field a -> O.Field O.SqlJsonb
+  json=O.unsafeCastSqlType
+immediateConversions :: O.Select S.TextField
+immediateConversions = do
+  order<-fastOrders
+  row<-O.selectTable S.obligations
+  O.where_ (S.obligationOrder row O..== order O..&& S.obligationKind row O..== O.sqlStrictText "conversion"
+    O..&& S.obligationAsset row O..== O.sqlStrictText "Native")
+  pure (S.obligationId row)
+
 -- Complete unassigned liabilities for capacity accounting, not a single sealing
 -- cohort. Stable per-batch assignments are still required. Reviewed conversions
 -- stay visible when readiness changes.
@@ -28,7 +47,11 @@ immediateRefunds = do
 payoutCohort :: O.Select (S.TextField,S.TextField,S.IntField,O.Field O.SqlBool)
 payoutCohort = O.unionAll (do
   (key,asset,n,phase)<-O.selectTable S.reservations
-  O.where_ (phase O..== O.sqlStrictText "quote")
+  fast<-E.exists $ do
+    identifier<-fastOrders
+    O.where_ (identifier O..== key)
+    pure ()
+  O.where_ (phase O..== O.sqlStrictText "quote" O..&& O.not fast)
   pure (key,asset,n,O.sqlBool False)) (do
   (root,state)<-paymentStates
   let key=S.rootId root
@@ -41,7 +64,11 @@ payoutCohort = O.unionAll (do
     identifier<-immediateRefunds
     O.where_ (identifier O..== key)
     pure ()
-  O.where_ (O.not assigned O..&& O.not refund)
+  fast<-E.exists $ do
+    identifier<-immediateConversions
+    O.where_ (identifier O..== key)
+    pure ()
+  O.where_ (O.not assigned O..&& O.not refund O..&& O.not fast)
   (funded,asset,n)<-paymentAmounts
   O.where_ (funded O..== key)
   pure (key,asset,n,state O..== O.sqlStrictText "ready"))

@@ -40,7 +40,7 @@ install -d -o root -g ecxnode -m 0750 "$base"
 runuser -u ecxnode -g ecxnode -- install -d -m 0700 "$spool"
 staging=$(mktemp -d "$base/.install-XXXXXXXX")
 trap 'rm -rf -- "$staging"' EXIT
-jq '{profile,nativeRpc,nativeWallet,nativeCheckpointHeight,nativeCheckpointHash,nativeCookie:"/var/lib/ecx-betanet/.cookie"}' "$config" > "$staging/config.json"
+jq '{profile,nativeRpc,nativeWallet,nativeCheckpointHeight,nativeCheckpointHash,nativeCookie:(if .profile == "L2LSignetDevnet" then "/var/lib/ecx-betanet/signet/.cookie" else "/var/lib/ecx-betanet/.cookie" end)}' "$config" > "$staging/config.json"
 if [ -e "$base/config.json" ]; then
   [ ! -L "$base/config.json" ] && cmp -s "$base/config.json" "$staging/config.json" || fail 'native backup identity changed'
 else

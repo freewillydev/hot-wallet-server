@@ -8,7 +8,7 @@ active work order in [RESUME.md](RESUME.md).
 
 The user has since required **one current schema only** (2026-10-10). Historical
 schema conversion/backfill and migration tests below are superseded. Fresh setup
-uses `src/schema.sql`; only schema 23 may run or be restored. Never reset an old
+uses `src/schema.sql`; only schema 24 may run or be restored. Never reset an old
 ledger to make setup pass. `example.conf` is the sole configuration example.
 
 ## Optional sidechain node policy (2026-10-15)
@@ -18,8 +18,8 @@ Wrap/unwrap-only remains the default and supports the managed pruned ECX node
 gain an archival-node requirement. Keep the existing full-history requirement for
 seed-only recovery and refuse missing history when needed for reconciliation.
 
-Thunder/BitNames fast withdrawals are a proposed optional extension, not an
-implemented mode. If enabled, provision or connect their nodes and a compatible
+Thunder/BitNames fast withdrawals are implemented for ECX Signet/Devnet, with
+funded and fresh-host acceptance still pending. If enabled, provision their nodes and a compatible
 enforcer with an unpruned ECX upstream. Apply those dependency checks only to
 enabled sidechain routes. Never silently disable pruning, replace existing node
 data or start an archival resynchronization for a wrap/unwrap-only installation.

@@ -1,5 +1,29 @@
 # Production acceptance
 
+## Optional fast-withdrawal candidate (2026-10-15)
+
+This branch adds Thunder/BitNames to ECX on L2L Signet only. Source review passes;
+live feature acceptance remains incomplete. Schema24 requires a fresh ledger and
+does not convert or reset schema23. The historical checklist below remains evidence
+for its named versions, not acceptance of this candidate.
+
+| Check | Current verdict and evidence |
+| --- | --- |
+| Native build and full Cabal suite | PASS: `/tmp/ecx-fast-build.log`, `/tmp/ecx-fast-tests-final.log`. |
+| PostgreSQL accounting and sidechain custody restore | PASS: ordinary/payout contracts and `/tmp/ecx-fast-restore-{Thunder,BitNames}.log`; real PostgreSQL, fixture chain responses. |
+| Five exclusive signer paths | PASS: TLC `/tmp/ecx-fast-tlc.log`, 184,219 generated / 90,201 distinct states, depth13. This is a bounded model check, not a proof of all application behavior. |
+| Separate source review | PASS: read-only `sidechain_ledger_fit`; final installer-helper hash `ab2e309534b74bfb55b06f316a79d046160e6908d8f9ee51d4763c121414a1f5`. Scope is source publication. |
+| Upstream compatibility | PASS: fixed BitNames Linux build and both formerly rejected historical Signet transactions; local real-node RPC shapes checked. |
+| Fresh Ubuntu installation, repeat/reboot and isolation | PENDING: isolated host build and full Signet node started. No installer acceptance claim yet. |
+| Funded fast withdrawals and exact payout accounting | PENDING: isolated enforcer tester funding submitted; neither new route has completed a funded bridge payout. |
+| Funded extended-custody restore | PENDING: fixture restoration passes, live independent restore remains required. |
+| Durable optional-node distribution | PENDING: pinned CI artifacts are retrievable now but have retention limits; BitNames/enforcer redistribution permissions are not established. |
+
+Wrong-amount, late and unsupported sidechain deposits require operator review.
+There is no automatic sidechain refund, reverse bridge or betanet sidechain route.
+
+## Existing release checklist
+
 **NOT READY.** This checklist supersedes the chronological status notes below.
 Application checkpoint: `240b974`; local acceptance recorded through `a80b7c5`.
 Public source publication is authorized; public service activation remains gated.
@@ -310,7 +334,7 @@ batching needs durable shared closing-capacity reservations. No minimum-order,
 or maximum-wait policy change has been authorized. Refund exemption was subsequently
 approved and is being verified; see the immediate-refund checkpoint below.
 Record thresholds and configurable hours reach runtime policy and the customer
-interface. Schema 23 seals all eligible per-asset members and totals, retains the
+interface. Schema 24 seals all eligible per-asset members and totals, retains the
 previous interval across restarts/configuration changes, and requires membership
 at preparation and signer evaluation. Already admitted settlement/recovery continues.
 

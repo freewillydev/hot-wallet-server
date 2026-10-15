@@ -69,7 +69,7 @@ verifyPaymentSource native transaction solana independent profile config binding
         Nothing->require (profile/=W.CanonicalBeta) "independent_rpc_required"
         Just call->proof call >>= \other->require (other==verified) "source_verifier_disagreement"
       pure deposit {W.depositConfirmations=1,W.depositEligible=True}
-    Sol->reject "unsupported_source_asset"
+    _->reject "unsupported_source_asset"
 
 -- The caller verifies network identity and supplies a closed ledger snapshot.
 -- Negative wallet confirmation alone is insufficient to book a missing source.

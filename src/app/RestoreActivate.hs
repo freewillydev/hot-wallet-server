@@ -3,6 +3,11 @@ module RestoreActivate (activate) where
 import qualified RestoreGuide as R
 import qualified Bridge.Config as C
 import qualified Bridge.Wire as W
+import qualified Bridge.Sidechain as Side
+import Bridge.Recovery (CustodyRecovery(..),evalCustodyRecovery)
+import Bridge.RPC (newRpcManager)
+import Network.HTTP.Client (closeManager)
+import qualified Data.Aeson.Key as K
 import Bridge.AdminKey (readPrivate,savePrivate,privateParent,withFamily)
 import Bridge.Error
 import Bridge.Identity (digest)
@@ -78,10 +83,18 @@ activate=withFamily "/var/lib/ecx-bridge-upgrade/lifecycle" $ do
   require (C.fingerprint installed==R.identity plan) "restored_install_identity_mismatch"
   selected<-B8.unpack . B8.strip <$> readPrivate "/var/lib/ecx-bridge-install/database"
   require (selected==database) "restored_install_database_mismatch"
+  (code,out,_)<-readProcessWithExitCode "/usr/sbin/runuser"
+    ["-u","postgres","--","/usr/bin/env","-i","PATH=/usr/bin:/bin","PGHOST=/var/run/postgresql","PGPORT=5432"
+    ,"PGUSER=postgres","PGDATABASE="<>database,binary,"provision-restored-database",T.unpack(R.identity plan),show sequenceNo] ""
+  require (code==ExitSuccess) "restored_sidechain_ledger_check_failed"
+  restored<-either (const $ reject "invalid_restored_ledger_result") pure (eitherDecodeStrict' $ B8.pack out)
+  addresses<-field "sidechainAddresses" restored
+  bracket newRpcManager closeManager $ \manager->evalCustodyRecovery manager c
+    (VerifyRestoredSidechains (R.manifest plan) sequenceNo addresses)
   -- Add only this verified wallet to the managed node's reboot configuration.
   autoloaded<-doesFileExist(root</>"native-autoload.completed")
   unless autoloaded $ do
-    NodeSetup.persistRestoredWallet (C.nativeWallet c)
+    NodeSetup.persistRestoredWallet (C.profile c) (C.nativeWallet c)
     mark "native-autoload.completed" (L.toStrict $ encode $ C.nativeWallet c)
   checked "systemctl" ["unmask","ecx-bridge-worker","ecx-bridge-signer"]
   let registry="/var/lib/ecx-bridge-setup"
@@ -129,9 +142,15 @@ prepare bundle plan c=do
   _<-readPrivate repository; _<-readPrivate password
   -- Fresh restricted RPC credentials are generated; restored private keys are
   -- referenced, never regenerated or placed in prompts/logs.
-  (admin,workerAuth,signerAuth)<-NodeSetup.credentials material
+  (admin,workerAuth,signerAuth)<-NodeSetup.credentialsFor (not $ null $ C.sidechains c) material
+  seeds<-bracket newRpcManager closeManager $ \manager->evalCustodyRecovery manager c
+    (RestoreSidechainSeeds (R.manifest plan) (R.minimumSequence plan) material)
+  chains<-mapM (\chain->do
+    let name=T.unpack(T.toLower $ T.pack $ show $ W.sidechainAsset $ Side.sidechainPolicy chain)<>"-seed.txt"
+    path<-maybe (reject "restored_sidechain_seed_missing") pure (lookup name seeds)
+    pure chain {Side.sidechainSeedFile=path}) (C.sidechains c)
   let source=takeDirectory(R.manifest plan)
-      configured=c {C.nativeCookie=admin}
+      configured=c {C.nativeCookie=admin,C.sidechains=chains}
   save "worker.json" (toJSON configured)
   save "signer.json" (toJSON configured)
   save "interface.json" (toJSON $ C.defaultInterface (C.profile c))
@@ -140,6 +159,8 @@ prepare bundle plan c=do
     ,"native-worker.auth" .= workerAuth,"native-signer.auth" .= signerAuth
     ,"backup.repository" .= repository,"backup.password" .= password]
     <>["native-unlock" .= (source</>"native-unlock") | encrypted]
+    <>["native-enforcer.auth" .= (material</>"native-enforcer.auth") | not(null chains)]
+    <>[K.fromString name .= path | (name,path)<-seeds]
   save "setup.json" $ object ["existing" .= True,"restoredCustody" .= True,"method" .= String "bundle"
     ,"sourceRoot" .= bundle,"managedNode" .= False,"nodeConfig" .= String "/var/lib/ecx-betanet/bitcoin.conf"
     ,"nodeService" .= String "ecx-betanet.service"]

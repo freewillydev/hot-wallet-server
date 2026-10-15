@@ -21,7 +21,7 @@ checks and database test fixtures/assertions. No raw SQL query/execute escape pa
 for those operations and no alternative database backend. Underlying libpq
 connections/transaction control and fixed schema DDL are separate infrastructure.
 
-Only schema 23 is supported. Fresh setup uses src/schema.sql; no migration folder,
+Only schema 24 is supported. Fresh setup uses src/schema.sql; no migration folder,
 old-schema conversion or automatic reset is permitted. example.conf is the only
 operator configuration example. Reject unsupported ledgers and backup manifests.
 

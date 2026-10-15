@@ -12,10 +12,11 @@ import qualified Bridge.NativeObservation as NativeObservation
 import Bridge.Solana (SignatureInfo(..),collectSignatures,tokenProgram)
 import qualified Bridge.Solana as S
 import Bridge.SolanaObservation (scanSolanaWith,scanSolanaOperatingWith)
+import qualified Bridge.Sidechain as Side
 import Bridge.SolanaDeposit
 import Bridge.SolanaMessage (base58)
 import Control.Exception (try)
-import Control.Monad (foldM)
+import Control.Monad (foldM,forM,when)
 import qualified Data.ByteString.Lazy as BL
 import Data.Aeson hiding (Result)
 import Data.Aeson.Types (parseEither)
@@ -80,7 +81,7 @@ checks=do
   let sourcePolicy=H.SolanaPolicy "source-test" "profile" (boundMint expected) (boundCustodyOwner expected) (boundCustody expected) (amt 10) (amt 10)
       sourceDeposit=W.Deposit ("solana:"<>boundSignature expected) (Just "order") Wrapped quantity (T.pack $ show slot) 1 True 100
       sourceRequest=W.OrderRequest WrappedToNative quantity "destination" "" (Just $ boundOwner expected) "key"
-      sourceBinding instruction=W.PaymentSource sourceDeposit sourceRequest (W.PolicySnapshot 2 "finalized" "profile") instruction
+      sourceBinding instruction=W.PaymentSource sourceDeposit sourceRequest (W.PolicySnapshot 2 "finalized" "profile" []) instruction
       sourceCall value method params=case (method,params) of
         ("getTransaction",[String signature,options])->do
           commitment<-fieldValue "commitment" options :: IO Text
@@ -183,7 +184,8 @@ checks=do
   effects<-mapM capturedEffect ["new","existing"]
   native<-nativeChecks
   scans<-solanaScanChecks expected proof payProof reference
-  pure (local<>effects<>native<>scans)
+  sidechains<-sidechainChecks
+  pure (local<>effects<>native<>scans<>sidechains)
 
 capturedEffect :: String -> IO Result
 capturedEffect kind=do
@@ -264,7 +266,7 @@ nativeChecks=do
       transaction=object ["txid" .= tx,"confirmations" .= (3::Int),"blockhash" .= tip,
         "amount" .= Number 0.001,"decoded" .= decoded,"details" .= [detail],"walletconflicts" .= ([]::[Text])]
       request=W.OrderRequest NativeToWrapped (amt 100000) "destination" "refund" Nothing "idempotency"
-      policy=W.PolicySnapshot 3 "finalized" "profile"
+      policy=W.PolicySnapshot 3 "finalized" "profile" []
       binding a=if a==address then pure (Just ("order",request,policy)) else fail "unexpected address lookup"
       response method params=case (method,params) of
         ("getblockchaininfo",[])->pure $ object ["chain" .= ("signet"::Text),"signet_challenge" .= signetChallenge,"initialblockdownload" .= False,"blocks" .= (20::Int)]
@@ -449,7 +451,7 @@ solanaScanChecks bound proof payProof reference=do
   let sig=boundSignature bound
       c=S.SolanaSettings W.L2LSignetDevnet "https://api.devnet.solana.com" Nothing (boundMint bound) (boundCustodyOwner bound) (boundCustody bound)
       order=W.OrderRequest WrappedToNative (amt 10000) "native" "refund" (Just $ boundOwner bound) "key"
-      policy=W.PolicySnapshot 2 "finalized" "profile"
+      policy=W.PolicySnapshot 2 "finalized" "profile" []
       legacy memo=pure $ if memo==boundMemo bound then Just ("order",order,policy) else Nothing
       noReference _=pure Nothing
       history=toJSON [object ["signature" .= sig,"slot" .= slot,"err" .= Null,"confirmationStatus" .= ("finalized"::Text)]]
@@ -534,3 +536,110 @@ solanaIdentityReply c method params=case (method,params) of
       ["type" .= ("account"::Text),"info" .= object ["owner" .= S.custodyOwner c,"mint" .= S.mint c,"state" .= ("initialized"::Text),
         "isNative" .= False,"tokenAmount" .= object ["decimals" .= (8::Int),"amount" .= ("1000000"::Text)]]]]]]
   _->fail ("unexpected Solana identity RPC "<>T.unpack method)
+
+-- Pinned upstream JSON contracts. These tests are not substitutes for live Signet.
+sideHash :: Char -> Text
+sideHash=T.replicate 64 . T.singleton
+sideAddress :: Int -> Text
+sideAddress n=base58(BS.replicate 20 $ fromIntegral n)
+sideBody :: Asset -> Int -> Integer -> Value
+sideBody asset addr n=object $ ["address" .= sideAddress addr,"content" .= object
+  [(if asset==Thunder then "Value" else "BitcoinSats") .= n]]<>["memo" .= (""::Text) | asset==BitNames]
+sideRow :: Asset -> Text -> Int -> Integer -> Value
+sideRow asset kind index n=object ["outpoint" .= point,"output" .= sideBody asset 1 n]
+ where
+  fields name=object [name .= sideHash 'a',"vout" .= index]
+  point=case kind of
+    "Regular"->object ["Regular" .= fields "txid"]
+    "Coinbase"->object ["Coinbase" .= fields (if asset==Thunder then "txid" else "merkle_root")]
+    "Deposit"->object ["Deposit" .= (sideHash 'a'<>":"<>T.pack(show index))]
+    _->error "fixture outpoint"
+sideRead :: Asset -> [Value] -> IO [Side.SidechainOutput]
+sideRead asset rows=Side.readOutputsWith call asset [sideAddress 1]
+ where
+  call "get_utxos" args | args==[toJSON [sideAddress 1]]=pure(toJSON rows)
+  call _ _=fail "unexpected sidechain read"
+sidechainChecks :: IO [Result]
+sidechainChecks=sequence
+  [ check "sidechain UTXO kinds preserve money and distinct identities" $
+      forAll (elements [Thunder,BitNames]) $ \asset->
+      forAll (chooseInteger (1,1000000000000)) $ \n->ioProperty $ do
+        let rows=[sideRow asset kind 1 n | kind<-["Regular","Coinbase","Deposit"]]
+            foreignContent=if asset==Thunder then object ["Withdrawal" .= object
+              ["value" .= n,"main_fee" .= (1::Int),"main_address" .= ("tb1q9vl0cpvddncs78537mrpxawydzsgkz7k5hgj7w"::Text)]]
+              else object ["BitName" .= sideHash 'f']
+            excluded=[sideRow asset "Regular" 2 0,replace ["output","content"] foreignContent (sideRow asset "Regular" 3 n)]
+        outputs<-sideRead asset (rows<>excluded)
+        duplicate<-rejects "duplicate_sidechain_output" $ sideRead asset (rows<>take 1 rows)
+        badIndex<-rejects "invalid_sidechain_output" $ sideRead asset [sideRow asset "Regular" (-1) n]
+        foreignAddress<-rejects "invalid_sidechain_output" $ sideRead asset [replace ["output","address"] (toJSON $ sideAddress 2) $ head rows]
+        unknown<-rejects "unsupported_sidechain_content" $ sideRead asset [replace ["output","content"] (object ["Unknown" .= n]) $ head rows]
+        pure (map Side.outputKind outputs==["Regular","Coinbase","Deposit"] && map Side.outputAmount outputs==replicate 3 (amt n)
+          && length(nub $ map (Side.outputId asset) outputs)==3 && duplicate && badIndex && foreignAddress && unknown)
+  , check "sidechain payout proof binds amount inclusion active ECX and slot" $ once $ ioProperty $
+      fmap and $ forM [Thunder,BitNames] $ \asset->do
+        valid<-sideProof asset "valid"; shallow<-sideProof asset "shallow"; orphan<-sideProof asset "orphan"
+        refused<-and <$> mapM (\(mode,code)->rejects code $ sideProof asset mode)
+          [("amount","sidechain_source_mismatch"),("address","sidechain_source_mismatch"),("spent","sidechain_source_spent")
+          ,("reorg","sidechain_source_changed"),("active","sidechain_commitment_changed"),("slot","sidechain_slot_commitment_mismatch")
+          ,("stale","sidechain_mainchain_behind"),("missing","sidechain_source_not_found"),("no-commitment","sidechain_commitment_missing")
+          ,("coinbase","invalid_sidechain_source")]
+        pure (valid==(sideHash 'e',6) && shallow==(sideHash 'e',5) && orphan==(sideHash 'e',0) && refused)
+  , check "sidechain allocation restores prefix and recovers lost reply without duplication" $
+      forAll (chooseInt (0,20)) $ \count->forAll (chooseInt (0,count)) $ \prefix->ioProperty $ do
+        let known=map sideAddress [1..count]; next=sideAddress(count+1)
+        (restored,restoredCalls)<-allocationFixture (take prefix known) False
+        result<-Side.recoverAddressWith restored known; replayCount<-restoredCalls
+        (lost,lostCalls)<-allocationFixture known True
+        interrupted<-rejects "fixture_lost_reply" $ Side.recoverAddressWith lost known
+        recovered<-Side.recoverAddressWith lost known; generated<-lostCalls
+        (ambiguous,ambiguousCalls)<-allocationFixture (known<>map sideAddress [count+1,count+2]) False
+        rejected<-rejects "sidechain_allocation_ambiguous" $ Side.recoverAddressWith ambiguous known
+        unexpectedCalls<-ambiguousCalls
+        pure (result==next && replayCount==count-prefix+1 && interrupted && recovered==next && generated==1 && rejected && unexpectedCalls==0)
+  ]
+sideProof :: Asset -> Text -> IO (Text,Int)
+sideProof asset mode=do
+  reads<-newIORef (0::Int)
+  let expected=Side.SidechainOutput (if mode=="coinbase" then "Coinbase" else "Regular") (sideHash 'a') 1 (sideAddress 1) (amt 41)
+      block=do n<-readIORef reads; pure $ sideHash $ if mode=="reorg" && n>=2 then 'f' else 'e'
+      tx=object ["outputs" .= [sideBody asset 1 0,sideBody asset (if mode=="address" then 2 else 1) (if mode=="amount" then 42 else 41)]]
+      call method args=case (method,args) of
+        ("get_transaction",[String key]) | key==sideHash 'a'->do
+          modifyIORef' reads (+1); b<-block
+          pure $ if mode=="missing" then Null else if asset==Thunder then object ["tx" .= tx,"block_hash" .= b] else tx
+        ("get_transaction_info",[String key]) | asset==BitNames && key==sideHash 'a'->do
+          b<-block
+          pure $ object ["txin" .= object ["block_hash" .= b,"idx" .= (0::Int)],"confirmations" .= (0::Int),"fee_sats" .= (1::Int)]
+        ("get_bmm_inclusions",[String key]) | key==sideHash 'e'->pure $ toJSON $ if mode=="no-commitment" then [] else [sideHash 'd',sideHash 'c']
+        ("get_utxos",_) | args==[toJSON [sideAddress 1]]->pure $ toJSON $ [sideRow asset "Regular" 1 41 | mode/="spent"]
+        _->fail "unexpected sidechain proof RPC"
+      native wallet method args=case (wallet,method,args) of
+        (False,"getblockheader",[String key])->do
+          (depth,height)<-if key==sideHash 'b' then pure(if mode=="stale" then 3 else 1,100::Int)
+            else if key==sideHash 'c' then pure(if mode=="orphan" then -1 else if mode=="shallow" then 5 else 6,95)
+            else if key==sideHash 'd' then pure(-1,94) else fail "unexpected ECX header"
+          pure $ object ["hash" .= key,"confirmations" .= (depth::Int),"height" .= height]
+        (False,"getblockhash",[Number height]) | height==100->pure $ toJSON $ sideHash 'b'
+        (False,"getblockhash",[Number height]) | height==95->pure $ toJSON $ sideHash $ if mode=="active" then 'f' else 'c'
+        _->fail "unexpected ECX proof RPC"
+      validator method payload=case method of
+        "GetChainTip" | payload==object []->pure $ object ["blockHeaderInfo" .= object ["blockHash" .= object ["hex" .= sideHash 'b'],"height" .= (100::Int)]]
+        "GetBmmHStarCommitment"->do
+          require (payload==object ["blockHash" .= object ["hex" .= sideHash 'c'],"sidechainId" .= (if asset==Thunder then 9 else 2::Int),"maxAncestors" .= (0::Int)]) "fixture_wrong_slot_request"
+          pure $ object ["commitment" .= object ["commitment" .= object ["hex" .= sideHash (if mode=="slot" then 'f' else 'e')]]]
+        _->fail "unexpected validator RPC"
+  Side.verifyOutputWith native validator call asset expected
+allocationFixture :: [Text] -> Bool -> IO ((Text -> [Value] -> IO Value),IO Int)
+allocationFixture initial loseReply=do
+  wallet<-newIORef initial; calls<-newIORef (0::Int); lose<-newIORef loseReply
+  let call method args=case (method,args) of
+        ("get_wallet_addresses",[])->toJSON <$> readIORef wallet
+        ("get_new_address",[])->do
+          address<-atomicModifyIORef' wallet $ \known->let next=sideAddress(length known+1) in (known<>[next],next)
+          modifyIORef' calls (+1)
+          interrupted<-atomicModifyIORef' lose (\pending->(False,pending))
+          when interrupted (reject "fixture_lost_reply")
+          pure(toJSON address)
+        _->fail "unexpected allocation RPC"
+  pure(call,readIORef calls)

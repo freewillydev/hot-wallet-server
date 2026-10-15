@@ -3,7 +3,8 @@
 module Configure (configure,configureAdvanced,configureFile,start,startAdvanced,startSetup,initializeNative) where
 import qualified Bridge.Config as C
 import qualified Bridge.Wire as W
-import Bridge.Domain (parseCoins)
+import Bridge.Domain (Asset(..),parseCoins)
+import Bridge.Sidechain (SidechainSettings(..))
 import qualified Bootstrap
 import qualified NodeSetup
 import qualified Upgrade
@@ -74,8 +75,12 @@ configureFile :: FilePath -> FilePath -> IO ()
 configureFile input output=do
   protectWalletProcess
   file<-makeAbsolute input
-  (bytes,settings)<-I.readInstallConfig file
-  keyBytes<-I.validateInstallConfig settings
+  (bytes,plan)<-I.readInstallPlan file
+  let settings=I.installBridge plan; network=I.installNetwork plan; selectedMint=T.pack(I.assetMintAddress settings)
+      signet=network==W.L2LSignetDevnet
+      checkpoint=if signet then "00000047dcc9d64b767687d6a5e610c411dd85db5460e824c0f7284f5514bc47"
+        else "00000000000000030101ba5cfea54b22becc79f95dc6040beb76e01dd9d04042"
+  keyBytes<-I.validateInstallPlan plan
   nativeThreshold<-either reject pure (parseCoins $ T.pack $ I.payoutThresholdEcx settings)
   wrappedThreshold<-either reject pure (parseCoins $ T.pack $ I.payoutThresholdWrappedEcx settings)
   defaultsLinks<-either (const $ reject "invalid_interface_defaults") pure $
@@ -83,14 +88,15 @@ configureFile input output=do
   let origin=case I.cloudflareTunnelToken settings of
         Nothing->Nothing
         Just _->Just $ "https://"<>T.pack (I.domain settings)
-      links=defaultsLinks {W.publicOrigin=origin,W.orcaUrl=Just $ T.pack $ I.externalLinkOrca settings
-        ,W.tokenExplorerUrl=Just $ T.pack $ I.externalLinkSolscan settings}
-  C.validateLinks W.CanonicalBeta Bootstrap.canonicalMint links
+      networkLinks=if signet then defaultsLinks {W.jupiterUrl=Nothing,W.orcaUrl=Nothing,W.tokenExplorerUrl=Nothing} else defaultsLinks
+      links=networkLinks {W.publicOrigin=origin,W.orcaUrl=if signet then Nothing else Just $ T.pack $ I.externalLinkOrca settings
+        ,W.tokenExplorerUrl=if signet then Nothing else Just $ T.pack $ I.externalLinkSolscan settings}
+  C.validateLinks network selectedMint links
   website<-traverse websiteManifest (I.websiteDirectory settings)
   let owner=base58 (B.drop 32 keyBytes)
   sdk<-SetupPaths.sdkPath
-  ata<-TokenOp.runSafe(TokenOp.Request $ Token.AssociatedAddress sdk owner Bootstrap.canonicalMint)
-  require (T.pack (I.ownerSolPubkey settings) `notElem` [owner,ata,Bootstrap.canonicalMint]) "bridge_owned_destination"
+  ata<-TokenOp.runSafe(TokenOp.Request $ Token.AssociatedAddress sdk owner selectedMint)
+  require (T.pack (I.ownerSolPubkey settings) `notElem` [owner,ata,selectedMint]) "bridge_owned_destination"
   directory<-makeAbsolute output
   withFamily (directory<>"-configure") $ do
     let keys=directory<>"-keys"
@@ -112,7 +118,7 @@ configureFile input output=do
     exists<-doesFileExist unlock
     when (not exists) $ getRandomBytes 32 >>= savePrivate unlock . B8.pack . T.unpack . base58
     verifyNativeUnlock unlock
-    (admin,worker,signer)<-NodeSetup.credentials directory
+    (admin,worker,signer)<-NodeSetup.credentialsFor (not $ null $ I.installSidechains plan) directory
     let repository=directory</>"backup.repository"
         password=directory</>"backup.password"
         url=I.backupRepositoryUrl settings
@@ -125,10 +131,21 @@ configureFile input output=do
     let restic=case bundle of
           Just path | I.resticExecutable settings=="/usr/local/lib/hot-wallet-server/restic"->path</>"bin/restic"
           _->I.resticExecutable settings
+    chains<-mapM (\chain->do
+      let asset=I.sidechain chain; name=T.toLower(T.pack $ show asset)
+          seed=keys</>(T.unpack name<>"-seed.txt")
+          port=if asset==Thunder then 29609 else 29602
+          endpoint p="http://127.0.0.1:"<>show (p::Int)
+          phrase=T.pack(I.sidechainSeedBip39 chain)
+          policy=W.SidechainPolicy asset (I.ecxConfirmations chain) (I.fastWithdrawalFeeBps chain) checkpoint (digest $ TE.encodeUtf8 phrase)
+      publishSetup seed (TE.encodeUtf8 $ phrase<>"\n")
+      pure(SidechainSettings policy (endpoint port) (endpoint $ port+100) (endpoint 29550) seed)) (I.installSidechains plan)
     let defaults=M.union (M.fromList
-          ["profile" .= String "CanonicalBeta","deploymentId" .= String ("ecx-"<>T.take 16 owner)
+          ["profile" .= network,"deploymentId" .= String ("ecx-"<>T.take 16 owner)
           ,"nativeWallet" .= String ("ecx-bridge-"<>T.take 16 owner),"backupRequired" .= Bool True
-          ,"mint" .= String Bootstrap.canonicalMint,"custodyOwner" .= String owner,"custodyAta" .= String ata
+          ,"nativeCheckpointHeight" .= (if signet then 16000 else 967680::Int)
+          ,"nativeCheckpointHash" .= (checkpoint::T.Text),"sidechains" .= chains
+          ,"mint" .= String selectedMint,"custodyOwner" .= String owner,"custodyAta" .= String ata
           ,"solanaRpc" .= I.solanaRpcUrl settings,"solanaVerifierRpc" .= I.solanaVerifierRpcUrl settings
           ,"nativeCookie" .= worker,"nativeUnlockFile" .= unlock
           ,"payoutPolicy" .= W.PayoutPolicy nativeThreshold wrappedThreshold (fromInteger $ 3600*I.minimumPayoutIntervalHours settings)
@@ -140,7 +157,9 @@ configureFile input output=do
           ,"initialFundingOwnership" .= I.initialFundingOwnership settings,"website" .= website]
         sources=object [K.fromString name .= path | (name,path)<-
           [("solana.keypair.json",key),("native-worker.auth",worker),("native-signer.auth",signer)
-          ,("native-unlock",unlock),("backup.repository",repository),("backup.password",password)]]
+          ,("native-unlock",unlock),("backup.repository",repository),("backup.password",password)]
+          <> [("native-enforcer.auth",directory</>"native-enforcer.auth") | not(null chains)]
+          <> [(T.unpack(T.toLower $ T.pack $ show $ W.sidechainAsset $ sidechainPolicy chain)<>"-seed.txt",sidechainSeedFile chain) | chain<-chains]]
     config<-either (const $ reject "invalid_install_settings") pure (parseEither parseJSON $ Object defaults)
     C.validateSetupConfig config
     mapM_ (\(name,value)->publishSetup (directory</>name) (L.toStrict $ encode value))
@@ -681,9 +700,12 @@ startUnlocked path=do
       _->reject "invalid_setup_method"
   requested<-C.loadConfig (directory</>"worker.json")
   installedConfig<-C.loadConfig config
+  require (map sidechainPolicy (C.sidechains requested)==map sidechainPolicy (C.sidechains installedConfig)) "installed_sidechain_policy_differs"
   let normalized=requested {C.nativeCookie=C.nativeCookie installedConfig,C.nativeUnlockFile=C.nativeUnlockFile installedConfig
         ,C.signerAuthFile=C.signerAuthFile installedConfig,C.fenceDirectory=C.fenceDirectory installedConfig
-        ,C.solanaSdkLibrary=C.solanaSdkLibrary installedConfig}
+        ,C.solanaSdkLibrary=C.solanaSdkLibrary installedConfig
+        ,C.sidechains=[chain {sidechainSeedFile=sidechainSeedFile installed} | chain<-C.sidechains requested
+          ,installed<-C.sidechains installedConfig,sidechainPolicy chain==sidechainPolicy installed]}
   require (normalized==installedConfig) "installed_configuration_differs_use_reviewed_upgrade"
   sourceInterface<-B.readFile(directory</>"interface.json")
   installedInterface<-B.readFile "/etc/ecx-bridge/worker/interface.json"

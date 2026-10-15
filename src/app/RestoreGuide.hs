@@ -57,12 +57,12 @@ restoreGuide=do
     plan<-if pending then decode =<< readPrivate(root</>"pending") else prepare
     validate plan
     targetConfig<-C.loadConfig(config plan)
-    require (C.profile targetConfig==W.CanonicalBeta) "guided_restore_requires_canonical_betanet"
+    require (C.profile targetConfig `elem` [W.CanonicalBeta,W.L2LSignetDevnet]) "unsupported_managed_restore_network"
     managed<-doesFileExist "/etc/systemd/system/ecx-betanet.service"
     unless managed $ do
       bundle<-SetupPaths.bundleRoot >>= maybe (reject "reviewed_bundle_required_for_managed_node") pure
       putStrLn "Installing the pinned pruned ECX node. Synchronization must finish before custody can be restored."
-      (code,_,_)<-readProcessWithExitCode "/bin/sh" [bundle</>"node"] ""
+      (code,_,_)<-readProcessWithExitCode "/bin/sh" [bundle</>"node",if C.profile targetConfig==W.L2LSignetDevnet then (if null(C.sidechains targetConfig) then "signet-pruned" else "signet-full") else "betanet"] ""
       require (code==ExitSuccess) "managed_recovery_node_setup_failed"
     binary<-getExecutablePath
     RestoreNative.checkExecutable binary

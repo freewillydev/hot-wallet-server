@@ -128,7 +128,8 @@ main=(getArgs >>= command) `catch` (\(BridgeError code)->
     sequenceNo<-maybe (reject "invalid_restore_policy") pure (readMaybe sequenceText)
     database<-databaseSettings
     evalSetup database (ProvisionRestoredDatabase (T.pack identity) sequenceNo)
-    putStrLn "Restored database roles provisioned; custody remains paused."
+    addresses<-evalRestore database (ReadRestoredSidechainAddresses (T.pack identity) sequenceNo)
+    LBS.putStrLn $ encode $ object ["paused" .= True,"sidechainAddresses" .= addresses]
   command ["provision-database"]=do
     bytes<-BS.hGet stdin 34
     require (BS.length bytes==32 || (BS.length bytes==33 && BS.last bytes==10)) "invalid_installation_token"

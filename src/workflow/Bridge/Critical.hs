@@ -8,7 +8,7 @@ import qualified Bridge.Operation.Internal as Operation
 import Control.Operation (Capabilities,UniqueCapabilities,Subset)
 import Control.Operation.Flow (Flow,Values(..),runFlow)
 import qualified Control.Operation.Flow as F
-import Bridge.Domain (Asset(..),Amount,gross,paymentAsset,paymentId,units)
+import Bridge.Domain (Asset(..),Direction(..),sourceAsset,Amount,gross,paymentAsset,paymentId,units)
 import Bridge.Identity (payURIFor,digest)
 import Bridge.Admission (checkSolanaPayoutWith)
 import Bridge.Order (createCustomerOrder)
@@ -25,9 +25,10 @@ import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Bridge.Error
 import Bridge.Payment
-import Bridge.Observer (ObserverSettings(..),observeOnce)
+import Bridge.Observer (ObserverSettings(..),observationOrigins,observeOnce)
 import Bridge.Reconciliation (inspectLossCustody)
 import qualified Bridge.Reconciliation as Reconciliation
+import qualified Bridge.Sidechain as Side
 import Bridge.PaymentSource (verifyPaymentSource,inspectNativeSource)
 import qualified Bridge.Wire as W
 import Control.Monad (forM,forM_,when,forever)
@@ -126,6 +127,7 @@ operationPath (SigningDSL signing)=Just $ case signing of
   ReplacementSigning{} -> ("sign-replacement","SignReplacement","ReplacementResult")
   DraftSigning{} -> ("draft-replacement","DraftReplacement","DraftResult")
   CheckpointSigning{} -> ("checkpoint-custody","CheckpointCustody","CheckpointResult")
+  AddressAllocation{} -> ("allocate-sidechain-address","AllocateSidechainAddress","AddressResult")
 operationPath (ReadCustomer op)=Just $ case op of
   PublicConfig -> ("GET /api/v1/config","PublicConfig","PublicConfiguration")
   OrderStatus{} -> ("GET /api/v1/orders/:id","OrderStatus","OrderView")
@@ -233,7 +235,10 @@ runProcess rpc reader process=do
           && W.pubCustodyOwner public==H.custodyOwner config && W.pubDeployment public==H.deploymentId config
           && W.pubDecimals public==8
           && W.pubPayoutPolicy public==payoutPolicy store
-          && W.pubFeesBps public==M.fromList [("NativeToWrapped",100),("WrappedToNative",100)]
+          && W.pubFeesBps public==M.fromList ([("NativeToWrapped",100),("WrappedToNative",100)]<>
+            [(T.pack(show direction),W.sidechainFeeBps $ Side.sidechainPolicy chain) | chain<-sidechainSettings settings,
+              direction<-[ThunderToNative,BitNamesToNative],sourceAsset direction==W.sidechainAsset(Side.sidechainPolicy chain)])
+          && W.sidechainPolicies policy==map Side.sidechainPolicy (sidechainSettings settings)
           && W.pubSolanaCluster public==(if N.profile native==W.CanonicalBeta then "mainnet-beta" else "devnet")
           && W.deploymentFingerprint policy==H.fingerprint config && W.nativeDepth policy==defaultNativeDepth settings
           && W.savedSolanaFee costs==H.maxSolFee config && W.savedSolanaRent costs==H.maxSolAccountRent config) "customer_configuration_mismatch"
@@ -295,6 +300,22 @@ evalCritical gate environment operation@Executable =
               pure result
 
         case signing of
+          AddressAllocation (AllocateSidechainAddress identity identifier sequenceNo) -> do
+            require (identity==expectedIdentity && sequenceNo>0) "invalid_sidechain_allocation"
+            (deployment,_,_)<-maybe (reject "sidechain_backup_required") pure (signingBackup settings)
+            require (C.fingerprint deployment==identity && C.nativeSettings deployment==native) "signer_profile_mismatch"
+            withStableDecision (const $ ReadSidechainAllocation identifier sequenceNo) $ \(saved,known,replay)->do
+              chain<-Side.findSidechain (C.sidechains deployment) (W.sidechainAsset saved)
+              let configured=Side.sidechainPolicy chain
+              require (W.sidechainCheckpoint saved==W.sidechainCheckpoint configured
+                && W.sidechainWalletIdentity saved==W.sidechainWalletIdentity configured) "sidechain_wallet_identity_mismatch"
+              _<-N.nativeIdentity manager native
+              _<-Side.sidechainHeadWith nativeRpc (Side.validatorCall manager chain) (Side.sidechainCall manager chain) (W.sidechainAsset saved)
+              let call=RPC.rpc manager (Side.sidechainPrivateRpc chain) Nothing
+              phrase<-Side.readSidechainSeed chain
+              _<-call "set_seed_from_mnemonic" [toJSON phrase]
+              address<-maybe (Side.recoverAddressWith call known) pure replay
+              pure (AddressResult address)
           CheckpointSigning (CheckpointCustody identity minimumSequence) -> do
             require (identity == expectedIdentity && minimumSequence >= 0)
               "invalid_custody_checkpoint"
@@ -432,9 +453,10 @@ instance Execution 'Signer 'Critical SignerCommand where
             body<-newIORef bytes
             pure response {responseBody=atomicModifyIORef' body $ \chunk->(BS.empty,chunk)}}
     bracket (newManager settings) closeManager $ \local->do
-      let prepared :<|> replacement :<|> draft :<|> checkpoint=SC.client signingAPI credentials
+      let prepared :<|> replacement :<|> draft :<|> checkpoint :<|> allocate=SC.client signingAPI credentials
           clientEnvironment=SC.mkClientEnv local (SC.BaseUrl SC.Https "127.0.0.1" (signerPort endpoint) "")
           call=case operation of
+            AddressAllocation (AllocateSidechainAddress identity identifier sequenceNo)->allocate (identity,identifier,sequenceNo)
             CheckpointSigning (CheckpointCustody identity minimumSequence)->checkpoint (identity,minimumSequence)
             PreparedSigning (SignPrepared identity identifier generation)->prepared (identity,identifier,generation)
             ReplacementSigning (SignReplacement identity decision)->replacement (identity,decision)
@@ -452,7 +474,8 @@ instance Execution 'Customer 'Critical CustomerCommand where
   evaluateOperation (WorkerEvaluation environment@(CriticalEnvironment rpc settings config _ _ reader writer))
       (WriteCustomer (Bridge.Operation.Internal.CreateOrder header request))=do
     c<-customer environment
-    createCustomerOrder rpc settings config (customerPolicy c) (unsignedSdk c) (\n->evalWorker @'[WorkerBackup] environment (\cap -> checkpointBackup cap n) >> freshIntake environment) reader writer header request
+    createCustomerOrder rpc settings config (customerPolicy c) (unsignedSdk c) (\identifier sequenceNo->
+      addressOutput <$> evaluateSigning environment (AddressAllocation $ AllocateSidechainAddress (H.fingerprint config) identifier sequenceNo)) (\n->evalWorker @'[WorkerBackup] environment (\cap -> checkpointBackup cap n) >> freshIntake environment) reader writer header request
 
 -- Private instruction constructors own IO; capability methods only build Flow.
 -- A composed Flow checks each leaf's original observation permission before IO,
@@ -568,7 +591,7 @@ instance Typeable result => ResumeSteps (OperatorCommand 'Critical result) where
   finishResume _ (ResumeWork reviewed) unsigned = operatorEffect False $ \(CriticalEnvironment _ settings _ _ _ _ writer) -> do
     now<-floor <$> getPOSIXTime
     let native=nativeSettings settings
-    evalWrite writer (ResumeLedger now [("Native",N.nativeCheckpointHash native),("Solana",tokenOrigin settings),("SolanaOperating",operatingOrigin settings)]
+    evalWrite writer (ResumeLedger now (observationOrigins settings)
       reviewed ((\(ResumeDraft work)->work) <$> unsigned))
 
 instance Typeable result => OperatorRepair (OperatorCommand 'Critical result) where
@@ -621,7 +644,7 @@ instance CancellationSteps (OperatorCommand 'Critical result) where
     case paymentAsset(savedPayment $ preparedView unsigned) of
       Native->N.nativeIdentity rpc (nativeSettings settings) >> pure ()
       Wrapped->S.solanaIdentity rpc (solanaSettings settings) >> pure ()
-      Sol->reject "invalid_payout_asset"
+      _->reject "invalid_payout_asset"
     refreshSource environment identifier
   beginCancellation _ (CancellationWork identifier generation reason previous) = operatorEffect False $ \(CriticalEnvironment rpc settings config _ _ reader writer) -> do
     let native=nativeSettings settings
@@ -784,7 +807,7 @@ instance OperatorTreasury (OperatorCommand 'Critical result) where
         independent<-maybe (reject "independent_rpc_required") pure (S.solanaVerifierRpc solana)
         let primary=S.solanaCall rpc solana
             verify=RPC.rpc rpc independent Nothing
-            origins=[("Native",N.nativeCheckpointHash native),("Solana",tokenOrigin settings),("SolanaOperating",operatingOrigin settings)]
+            origins=observationOrigins settings
         S.solanaGenesisWith primary (Just verify) solana
         proofs<-forM [primary,verify] $ \call->do
           statuses<-call "getSignatureStatuses" [toJSON [signature],object ["searchTransactionHistory" .= True]] >>= RPC.fieldValue "value"
@@ -828,7 +851,7 @@ instance OperatorTreasury (OperatorCommand 'Critical result) where
           Wrapped->do
             _<-S.solanaIdentity rpc solana
             checkSolanaPayoutWith (S.solanaCall rpc solana) (H.invokeUnsignedHelper (unsignedSdk c) config) config recipient quantity
-          Sol->reject "invalid_payout_asset"
+          _->reject "invalid_payout_asset"
         evalWorker @'[WorkerObservation] environment reconcileCustody
     now<-floor <$> getPOSIXTime
     paymentId . withdrawalPayment <$> evalWrite writer (ReserveFees now key asset quantity recipient reason)
@@ -914,6 +937,13 @@ instance WorkerRecovery (WorkerCommand 'Critical result) where
             []->maybe (pure ()) throwIO failed
             source:_->recover (Just $ W.depositId source) failed
     recover Nothing Nothing
+  recoverSidechainAllocations _ = workerEffect True $ \environment@(CriticalEnvironment _ settings config _ _ reader writer)->guarded environment $
+    forM_ (sidechainSettings settings) $ \chain->do
+      claims<-evalRead reader (PendingSidechainAllocations $ W.sidechainAsset $ Side.sidechainPolicy chain)
+      forM_ claims $ \(identifier,sequenceNo)->do
+        result<-evaluateSigning environment (AddressAllocation $ AllocateSidechainAddress (H.fingerprint config) identifier sequenceNo)
+        _<-evalWrite writer (CompleteSidechainAllocation identifier sequenceNo $ addressOutput result)
+        pure ()
   recoverNativeLocks _ = workerEffect True $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) -> guarded environment $ do
     let native=nativeSettings settings
     _<-N.nativeIdentity rpc native
@@ -1080,7 +1110,7 @@ instance OwnerFeeSteps (WorkerCommand 'Critical result) where
               checkSolanaPayoutWith (S.solanaCall rpc $ solanaSettings settings)
                 (H.invokeUnsignedHelper (unsignedSdk c) config) config address quantity
               pure address
-            Sol->reject "invalid_payout_asset"
+            _->reject "invalid_payout_asset"
           checkedAt<-floor <$> getPOSIXTime
           saved<-evalWrite writer (ReserveAutomaticFees checkedAt asset recipient)
           pure saved
@@ -1132,6 +1162,7 @@ backupDecisions environment@(CriticalEnvironment _ _ _ _ _ reader _)=do
 recoverPending :: CriticalEnvironment -> IO ()
 recoverPending environment@(CriticalEnvironment _ _ _ _ _ _ writer)=do
   locks<-tryBridge (evalWorker @'[WorkerRecovery] environment recoverNativeLocks)
+  allocations<-tryBridge (evalWorker @'[WorkerRecovery] environment recoverSidechainAllocations)
   scanned<-tryBridge (evalWorker @'[WorkerObservation] environment observeChains)
   sources<-tryBridge (evalWorker @'[WorkerRecovery] environment recoverNativeSources)
   now<-floor <$> getPOSIXTime
@@ -1139,7 +1170,7 @@ recoverPending environment@(CriticalEnvironment _ _ _ _ _ _ writer)=do
   outcomes<-reconcilePending environment
   settled<-tryBridge (evalWorker @'[WorkerRecovery] environment recoverNativeSettlements)
   evalWorker @'[WorkerObservation] environment reconcileCustody
-  mapM_ (either throwIO pure) (locks:scanned:sources:settled:outcomes)
+  mapM_ (either throwIO pure) (locks:allocations:scanned:sources:settled:outcomes)
 
 -- Inspect each economic payment once, including its native replacement family.
 reconcilePending :: CriticalEnvironment -> IO [Either BridgeError ()]
@@ -1239,9 +1270,14 @@ refreshSource environment@(CriticalEnvironment rpc settings config _ _ reader wr
       case W.depositAsset saved of
         Native->N.nativeIdentity rpc native >> pure ()
         Wrapped->S.solanaIdentity rpc solana >> pure ()
-        Sol->reject "unsupported_source_asset"
-      observed<-verifyPaymentSource (N.nativeCall rpc native) (N.readNativeTransaction native) (S.solanaCall rpc solana)
-        (fmap (\url->RPC.rpc rpc url Nothing) $ S.solanaVerifierRpc solana) (N.profile native) config binding
+        asset | asset `elem` [Thunder,BitNames]->N.nativeIdentity rpc native >> pure ()
+        _->reject "unsupported_source_asset"
+      observed<-if W.depositAsset saved `elem` [Thunder,BitNames] then do
+          chain<-Side.findSidechain (sidechainSettings settings) (W.depositAsset saved)
+          require (W.deploymentFingerprint(W.sourcePolicy binding)==H.fingerprint config) "payment_profile_mismatch"
+          Side.verifySourceWith (N.nativeCall rpc native) (Side.validatorCall rpc chain) (Side.sidechainCall rpc chain) binding
+        else verifyPaymentSource (N.nativeCall rpc native) (N.readNativeTransaction native) (S.solanaCall rpc solana)
+          (fmap (\url->RPC.rpc rpc url Nothing) $ S.solanaVerifierRpc solana) (N.profile native) config binding
       evalWrite writer (RefreshPaymentSource saved observed)
     evalRead reader (CheckPaymentSource identifier)
  where

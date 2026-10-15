@@ -55,7 +55,7 @@ checks=do
   let encoded value=TE.decodeUtf8 (BL.toStrict $ encode value)
       boundPlan=plan {solPlanReference=payoutReference (fingerprint config) identifier}
       boundRequest=solanaPayoutRequest config boundPlan
-      terms=W.PaymentTerms (W.PolicySnapshot 1 "finalized" $ fingerprint config)
+      terms=W.PaymentTerms (W.PolicySnapshot 1 "finalized" (fingerprint config) [])
         (W.CostLimits (amt 1) (maxSolFee config) (maxSolAccountRent config))
       prepared=PreparedPayment (PaymentView outgoing terms PaymentPaying) 0 (encoded boundPlan)
         (Just $ encoded boundRequest) (amt 2110000)

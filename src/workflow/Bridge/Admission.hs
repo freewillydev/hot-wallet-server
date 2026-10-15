@@ -2,7 +2,8 @@
 module Bridge.Admission (checkOrderAdmission,checkSolanaQuoteWith,checkSolanaPayoutWith) where
 import Bridge.Domain (Direction(..),units,amount)
 import qualified Bridge.Domain as D
-import Bridge.Lifecycle (quoteOrder)
+import Bridge.Lifecycle (quoteOrderFor)
+import qualified Bridge.Sidechain as Side
 import Bridge.Wire (OrderRequest(..),PaymentTerms(..),CostLimits(..),PolicySnapshot(..))
 import Bridge.Observer (ObserverSettings(..))
 import Bridge.Store (StorePolicy(..))
@@ -31,8 +32,12 @@ checkOrderAdmission manager settings config store sdk request = do
     && deploymentFingerprint(paymentPolicy $ executionTerms store)==fingerprint config
     && nativeDepth(paymentPolicy $ executionTerms store)==defaultNativeDepth settings
     && savedSolanaFee costs==maxSolFee config && savedSolanaRent costs==maxSolAccountRent config) "payment_profile_mismatch"
-  terms<-either reject pure (quoteOrder request)
+  terms<-either reject pure (quoteOrderFor (paymentPolicy $ executionTerms store) request)
   _<-N.nativeIdentity manager native
+  when (D.fastWithdrawal $ direction request) $ do
+    chain<-Side.findSidechain (sidechainSettings settings) (D.sourceAsset $ direction request)
+    _<-Side.sidechainHeadWith (N.nativeCall manager native) (Side.validatorCall manager chain) (Side.sidechainCall manager chain) (D.sourceAsset $ direction request)
+    pure ()
   previewNativePayment (N.nativeCall manager native) (N.profile native) (defaultNativeDepth settings)
     (savedNativeFee costs) (if wrapping then refund request else recipient request) (if wrapping then D.gross terms else D.net terms)
   _<-S.solanaIdentity manager solana

@@ -81,7 +81,7 @@ import Data.List (sort,sortOn)
 import Data.IORef
 import GHC.Stack (HasCallStack,callStack,prettyCallStack)
 import Test.QuickCheck (quickCheckWithResult,stdArgs,maxSuccess,forAll,chooseInteger,ioProperty,isSuccess)
-import Control.Monad (unless,void,when,forM_,foldM,filterM)
+import Control.Monad (unless,void,when,forM,forM_,foldM,filterM)
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import qualified Database.PostgreSQL.Simple as PG
@@ -107,6 +107,7 @@ contractMain = do
   credentialsContract
   initialFunding<-lookupEnv "ECX_INITIAL_FUNDING_ONLY"
   historyOnly<-lookupEnv "ECX_REBUILD_HISTORY_ONLY"
+  sidechainsOnly<-lookupEnv "ECX_REBUILD_SIDECHAINS_ONLY"
   payoutsOnly<-lookupEnv "ECX_REBUILD_PAYOUT_ONLY"
   cacheOnly<-lookupEnv "ECX_REPORT_CACHE_ONLY"
   live<-lookupEnv "ECX_REBUILD_LIVE_OBSERVER_CONFIG"
@@ -119,7 +120,7 @@ contractMain = do
   custody<-lookupEnv "ECX_REBUILD_CUSTODY_ONLY"
   when (encrypted==Just "1" && (native/=Just "1" || custody/=Just "1"))
     (fail "encrypted native acceptance requires native recovery and custody modes")
-  if payoutsOnly==Just "1" then payoutRoundsMain else if initialFunding==Just "1" then initialFundingMain else if historyOnly==Just "1" then historyProgressMain else if cacheOnly==Just "1" then reportCacheMain else case live of
+  if sidechainsOnly==Just "1" then sidechainOrdersMain else if payoutsOnly==Just "1" then payoutRoundsMain else if initialFunding==Just "1" then initialFundingMain else if historyOnly==Just "1" then historyProgressMain else if cacheOnly==Just "1" then reportCacheMain else case live of
     Just path->liveObserverMain path
     Nothing->if setup==Just "1" then setupMain else if native==Just "1" then nativeRecoveryMain else if tls==Just "1" then tlsMain else if fence==Just "1" then fenceMain else if server==Just "1" then serverMain else ledgerMain
 
@@ -662,12 +663,12 @@ reportCacheMain=do
   unless ("ecx_rebuild_contract_" `T.isPrefixOf` T.pack database) (fail "disposable database required")
   user<-getEnv "USER"; role<-getEnv "ECX_REBUILD_CONTRACT_READER"
   let settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
-      terms=PaymentTerms (PolicySnapshot 2 "finalized" "contract") (CostLimits (money 10) (money 10) (money 10))
+      terms=PaymentTerms (PolicySnapshot 2 "finalized" "contract" []) (CostLimits (money 10) (money 10) (money 10))
       limits=OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)
       store=StorePolicy terms limits "contract" True immediatePayouts
       key=T.replicate 32 "1"
       native=N.NativeSettings W.L2LSignetDevnet "http://127.0.0.1:29432" "/unused" "workflow" 1 (T.replicate 64 "0")
-      chain=ObserverSettings native (Solana.SolanaSettings W.L2LSignetDevnet "https://api.devnet.solana.com" Nothing key key key) 2 "sol-origin" "opening-signature"
+      chain=ObserverSettings native (Solana.SolanaSettings W.L2LSignetDevnet "https://api.devnet.solana.com" Nothing key key key) 2 "sol-origin" "opening-signature" []
       policy=H.SolanaPolicy "contract" "contract" key key key (money 10) (money 10)
       public=W.PublicConfiguration W.L2LSignetDevnet "devnet" (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing Nothing)
         "contract" key key 8 (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)]) False False (W.Availability False "starting") Nothing immediatePayouts
@@ -747,7 +748,7 @@ initialFundingMain=do
   user<-getEnv "USER"; readRole<-getEnv "ECX_REBUILD_CONTRACT_READER"
   let settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
       identity=digest "initial-funding-contract"
-      policy=PaymentTerms (PolicySnapshot 6 "finalized" identity) (CostLimits (money 10) (money 5000) (money 2000000))
+      policy=PaymentTerms (PolicySnapshot 6 "finalized" identity []) (CostLimits (money 10) (money 5000) (money 2000000))
       store=StorePolicy policy (OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)) identity True immediatePayouts
       owner="9Dfte8EDq1L9F2N4qTuMqtAEZUmDcvXpCu7EGXEHVcjY"; mint="EVHqNdzjCupKi4rQkbuYw52sa1m8A7jeUAMP23S9AVVq"
       account="6YJUhxxb3Udg2SBu2P7JktUfMMCNUw7itdNTHzDk3Xec"
@@ -848,7 +849,7 @@ ledgerMain = do
   readRole <- getEnv "ECX_REBUILD_CONTRACT_READER"
   let settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
       readerSettings=settings {PG.connectUser=readRole}
-      policy=PaymentTerms (PolicySnapshot 2 "finalized" "contract") (CostLimits (money 10) (money 10) (money 10))
+      policy=PaymentTerms (PolicySnapshot 2 "finalized" "contract" []) (CostLimits (money 10) (money 10) (money 10))
       limits=OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)
       store terms config=StorePolicy terms config "contract" True immediatePayouts
       key=T.replicate 64 "a"
@@ -1812,7 +1813,7 @@ ledgerMain = do
             observer=ObserverSettings
               (N.NativeSettings W.L2LSignetDevnet "http://127.0.0.1:1" "/unused" "test" 1 "scan-origin")
               (Solana.SolanaSettings W.L2LSignetDevnet "http://127.0.0.1:1" Nothing key key key)
-              2 "sol-origin" "opening-signature"
+              2 "sol-origin" "opening-signature" []
             privilege sql=void $ PG.execute fixtures sql (PG.Only $ Identifier $ T.pack readRole)
         networkCalls<-newIORef (0::Int)
         bracket (newManager defaultManagerSettings {managerModifyRequest=const $ modifyIORef' networkCalls (+1) >> fail "unexpected observer network call"}) closeManager $ \manager->
@@ -1904,13 +1905,92 @@ money :: Integer -> Amount
 money = either (error . T.unpack) id . amount
 
 -- Actual PostgreSQL scheduling, with public fixture funds and no chain IO.
+-- Real PostgreSQL constraints and Opaleye projections; no chain simulation.
+sidechainOrdersMain :: IO ()
+sidechainOrdersMain=do
+  selected<-lookupEnv "ECX_FAST_ASSET"
+  route<-case selected of
+    Nothing->pure (ThunderToNative,Thunder,1)
+    Just "BitNames"->pure (BitNamesToNative,BitNames,2)
+    _->fail "unknown sidechain contract route"
+  database<-getEnv "ECX_REBUILD_CONTRACT_DATABASE"
+  unless ("ecx_rebuild_contract_" `T.isPrefixOf` T.pack database) (fail "disposable database required")
+  user<-getEnv "USER"; role<-getEnv "ECX_REBUILD_CONTRACT_READER"
+  let settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
+      chain asset=W.SidechainPolicy asset 6 100 (T.replicate 64 "a") (T.replicate 64 "b")
+      terms=PaymentTerms (PolicySnapshot 6 "finalized" "contract" [chain Thunder,chain BitNames]) (CostLimits (money 10) (money 10) (money 10))
+      limits=OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)
+      policy=StorePolicy terms limits "contract" True (W.PayoutPolicy (money 100) (money 100) 172800)
+      check :: HasCallStack => Bool -> IO ()
+      check ok=unless ok (fail $ "sidechain contract failed\n"<>prettyCallStack callStack)
+      header="Bearer "<>T.replicate 64 "0"
+  bracket (PG.connect settings) PG.close $ \fixtures->do
+    fixture fixtures Initialize
+    fixture fixtures SeedIntake
+    withReader settings {PG.connectUser=role} "contract" True $ \reader->do
+      withWriter settings policy (const $ pure ()) $ \writer->do
+        let ready=fixture fixtures ReadyIntake >> fixture fixtures (FreshAt 100)
+        fastIntents<-forM [route] $ \(direction,asset,byte)->do
+          ready
+          let key="side-"<>T.pack(show asset)
+              address=SolanaMessage.base58(BS.replicate 20 byte)
+          oid<-evalWrite writer (CreateOrder 100 header $ W.OrderRequest direction (money 100) "native-recipient" "" Nothing key)
+          fixture fixtures PayoutCohort >>= check . null
+          sequenceNo<-evalWrite writer (ClaimSidechain 100 header oid)
+          evalWrite writer (ClaimSidechain 100 header oid) >>= check . (==sequenceNo)
+          evalRead reader (PendingSidechainAllocations asset) >>= check . (==[(oid,sequenceNo)])
+          void $ evalWrite writer (CompleteSidechainAllocation oid sequenceNo address)
+          void $ evalWrite writer (RecordSidechain header oid sequenceNo address)
+          expectStore "invalid_sidechain_allocation_result" $ evalWrite writer (RecordSidechain header oid sequenceNo $ SolanaMessage.base58(BS.replicate 20 9))
+          evalRead reader (ReadSidechainAddresses asset) >>= check . (==[address])
+          evalRead reader (PendingSidechainAllocations asset) >>= check . null
+          fixture fixtures (SeedReceipt key (Just oid) asset 100 6 True 100)
+          evalWrite writer (PromoteDeposit 100 key) >>= check
+          evalWrite writer (PromoteDeposit 100 key) >>= check . not
+          ready
+          let intent="convert:"<>oid
+          outgoing<-savedPayment <$> evalRead reader (ReadPayment intent)
+          check (paymentAsset outgoing==Native && paymentAmount outgoing==money 99 && paymentRecipient outgoing=="native-recipient")
+          evalRead reader PaymentCandidates >>= check . elem intent
+          fixture fixtures PayoutCohort >>= check . null
+          fixture fixtures AssignedPayouts >>= check . null
+          pure intent
+        -- The ordinary wrapped route still needs its configured payout round.
+        ready
+        normal<-evalWrite writer (CreateOrder 100 header $ W.OrderRequest WrappedToNative (money 100) "recipient" "" Nothing "normal-batched")
+        void $ evalWrite writer (BindSolana 100 header normal)
+        fixture fixtures (SeedReceipt "normal-source" (Just normal) Wrapped 100 1 True 100)
+        evalWrite writer (PromoteDeposit 100 "normal-source") >>= check
+        ready
+        expectStore "payout_round_not_due" $ evalWrite writer (PreparePayment 100 ("convert:"<>normal) (money 10) "{}")
+        ready
+        snapshot<-fixture fixtures FinancialRecords
+        let (direction,_,_)=route
+        expectStore "payout_batch_needs_inventory" $ evalWrite writer
+          (CreateOrder 100 header $ W.OrderRequest direction (money 811) "recipient" "" Nothing "fast-over-reserve")
+        fixture fixtures FinancialRecords >>= check . (==snapshot)
+        forM_ fastIntents $ \intent->void $ evalWrite writer (PreparePayment 100 intent (money 10) "{}")
+        fixture fixtures PayoutRecords >>= check . (==([],[]))
+        before<-fixture fixtures FinancialRecords
+        -- Source ownership is not inferred for a manual sidechain refund.
+        evalWrite writer (Pause "test sidechain refund")
+        expectStore "sidechain_refund_requires_review" $ evalWrite writer (AuthorizeRefund 100 $ "side-"<>T.pack(show $ case route of (_,asset,_)->asset))
+        fixture fixtures FinancialRecords >>= check . (==before)
+        expectStore "worker_already_running" $ evalRestore settings (ReadRestoredSidechainAddresses "contract" 0)
+      sequenceNo<-ledgerSequence <$> evalRead reader ReadState
+      expectStore "restored_sequence_mismatch" $ evalRestore settings (ReadRestoredSidechainAddresses "contract" $ sequenceNo+1)
+      restored<-evalRestore settings (ReadRestoredSidechainAddresses "contract" sequenceNo)
+      let (_,selectedAsset,byte)=route
+      check (restored==[(asset,[SolanaMessage.base58(BS.replicate 20 byte) | asset==selectedAsset]) | asset<-[Thunder,BitNames]])
+  putStrLn "PASS: sidechain claims, restart completion, immutable replay, immediate ECX payouts and retained normal batching"
+
 payoutRoundsMain :: IO ()
 payoutRoundsMain=do
   database<-getEnv "ECX_REBUILD_CONTRACT_DATABASE"
   unless ("ecx_rebuild_contract_" `T.isPrefixOf` T.pack database) (fail "disposable database required")
   user<-getEnv "USER"; role<-getEnv "ECX_REBUILD_CONTRACT_READER"
   let settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
-      terms=PaymentTerms (PolicySnapshot 2 "finalized" "contract") (CostLimits (money 10) (money 10) (money 10))
+      terms=PaymentTerms (PolicySnapshot 2 "finalized" "contract" []) (CostLimits (money 10) (money 10) (money 10))
       limits=OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)
       policy=StorePolicy terms limits "contract" True (W.PayoutPolicy (money 50) (money 99) 172800)
       check :: HasCallStack => Bool -> IO ()
@@ -2793,7 +2873,7 @@ fixture c HistoryCheckpointRows = O.runSelect c (O.selectTable S.checkpoints)
 fixture c Initialize = fixture c (InitializeIdentity "contract")
 fixture c (InitializeIdentity identity) = PG.withTransaction c $ do
   void $ O.runInsert c O.Insert {O.iTable=S.operatingClock,O.iRows=[(O.sqlInt8 1,O.sqlInt8 0)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
-  void $ O.runInsert c O.Insert {O.iTable=S.deployment,O.iRows=[S.Deployment (O.sqlInt8 1) (O.sqlInt8 23) (O.sqlStrictText identity) (O.sqlInt8 0) (O.sqlInt8 0) (O.sqlInt8 1) (O.sqlStrictText "test")],O.iReturning=O.rCount,O.iOnConflict=Nothing}
+  void $ O.runInsert c O.Insert {O.iTable=S.deployment,O.iRows=[S.Deployment (O.sqlInt8 1) (O.sqlInt8 24) (O.sqlStrictText identity) (O.sqlInt8 0) (O.sqlInt8 0) (O.sqlInt8 1) (O.sqlStrictText "test")],O.iReturning=O.rCount,O.iOnConflict=Nothing}
   void $ O.runInsert c O.Insert {O.iTable=S.custody,O.iRows=[(O.sqlInt8 1,O.sqlInt8 0,O.null,O.null,O.null)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
   void $ O.runInsert c O.Insert {O.iTable=S.events,O.iRows=[(O.sqlStrictText "fixture",O.sqlStrictText "contract balances")],O.iReturning=O.rCount,O.iOnConflict=Nothing}
   void $ O.runInsert c O.Insert {O.iTable=S.postings,O.iRows=[(Nothing,O.sqlStrictText "fixture",O.sqlStrictText "Native",O.sqlStrictText account,O.sqlInt8 delta)| (account,delta)<-[("external",-1100),("earned",1000),("operating",100)]],O.iReturning=O.rCount,O.iOnConflict=Nothing}
@@ -2810,7 +2890,7 @@ fixture c SeedOrders = PG.withTransaction c $ do
       request=W.OrderRequest NativeToWrapped (money 100) "recipient" "refund" Nothing "placeholder"
       savedQuote=either (error . T.unpack) id (historicalQuote (money 100) (money 7))
   forM_ ["hidden","visible","mismatch","corrupt"] $ \identifier -> do
-    let policy=W.PolicySnapshot 2 "finalized" (if identifier=="mismatch" then "wrong" else "contract")
+    let policy=W.PolicySnapshot 2 "finalized" (if identifier=="mismatch" then "wrong" else "contract") []
         row=S.Order (O.sqlStrictText identifier) (O.sqlStrictText cap) (O.sqlStrictText identifier)
           (O.sqlStrictText "fixture") (O.sqlStrictText $ raw request {W.idempotencyKey=identifier})
           (O.sqlStrictText $ if identifier=="corrupt" then "{}" else raw savedQuote) (O.sqlStrictText $ raw policy)
@@ -2985,7 +3065,7 @@ fixture c (HistoricalHolds oid) = PG.withTransaction c $ do
       saved=either (error . T.unpack) id (historicalQuote (money 100) (money 7))
   void $ O.runInsert c O.Insert {O.iTable=S.orders,
     O.iRows=[S.Order (text oid) (text cap) (text oid) (text "fixture") (text $ raw request) (text $ raw saved)
-      (text $ raw $ W.PolicySnapshot 2 "finalized" "contract") (text "AwaitingDeposit") (num 200) (num 300)
+      (text $ raw $ W.PolicySnapshot 2 "finalized" "contract" []) (text "AwaitingDeposit") (num 200) (num 300)
       (O.toNullable $ text "historical-native-fixture") (O.toNullable $ num 0) (num 0)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
   void $ O.runInsert c O.Insert {O.iTable=S.reservations,O.iRows=[(text oid,text "Wrapped",num 93,text "quote")],O.iReturning=O.rCount,O.iOnConflict=Nothing}
   void $ O.runInsert c O.Insert {O.iTable=S.orderCosts,O.iRows=[(text oid,num 10,num 10,num 10)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
@@ -3162,7 +3242,7 @@ custodyContract database store fixtures reader = do
       config=H.SolanaPolicy "contract" "contract" key key ata (money 10) (money 10)
       native=N.NativeSettings W.L2LSignetDevnet "http://127.0.0.1:29432" "/unused" "test" 1 "scan-origin"
       solana=Solana.SolanaSettings W.L2LSignetDevnet "https://api.devnet.solana.com" Nothing key key ata
-      settings=ObserverSettings native solana 2 "sol-origin" "opening-signature"
+      settings=ObserverSettings native solana 2 "sol-origin" "opening-signature" []
       balance=object ["mine" .= object ["trusted" .= (0.000021::Double),"untrusted_pending" .= (0::Int),"immature" .= (0::Int)],
         "lastprocessedblock" .= object ["hash" .= block,"height" .= (100::Int)]]
       nativeCall wallet method params=case (wallet,method,params) of
@@ -3564,7 +3644,7 @@ orderWorkflowContract fixtures reader writer storePolicy = do
             "labels" .= maybe [] pure saved,"scriptPubKey" .= ("0014"<>T.replicate 40 "a")]
         _->fail "unexpected provisioning RPC"
       backup n=evalWrite writer (AcknowledgeBackup "contract" n $ T.replicate 64 "d")
-      transport=OrderTransport (pure 110) (const $ modifyIORef' admissions (+1)) (modifyIORef' identities (+1)) call backup
+      transport=OrderTransport (pure 110) (const $ modifyIORef' admissions (+1)) (modifyIORef' identities (+1)) call backup (\_ _->fail "unexpected sidechain allocation")
       create=createCustomerOrderWith transport native True reader writer header
       check :: HasCallStack => Bool -> IO ()
       check ok=unless ok (fail $ "customer workflow contract failed\n"<>prettyCallStack callStack)
@@ -3602,7 +3682,7 @@ orderWorkflowContract fixtures reader writer storePolicy = do
 
   let key=T.replicate 32 "1"
       solana=Solana.SolanaSettings W.L2LSignetDevnet "https://api.devnet.solana.com" Nothing key key key
-      chainSettings=ObserverSettings native solana 2 "sol-origin" "opening-signature"
+      chainSettings=ObserverSettings native solana 2 "sol-origin" "opening-signature" []
       config=H.SolanaPolicy "contract" "contract" key key key (money 10) (money 10)
       public=W.PublicConfiguration W.L2LSignetDevnet "devnet" (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing Nothing)
         "contract" key key 8 (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)]) False False (W.Availability False "starting") Nothing immediatePayouts
@@ -3693,7 +3773,7 @@ fenceMain = do
   user<-getEnv "USER"; role<-getEnv "ECX_REBUILD_CONTRACT_READER"
   let identity=T.replicate 64 "a"
       settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
-      terms=PaymentTerms (PolicySnapshot 2 "finalized" identity) (CostLimits (money 10) (money 10) (money 10))
+      terms=PaymentTerms (PolicySnapshot 2 "finalized" identity []) (CostLimits (money 10) (money 10) (money 10))
       limits=OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)
       policy=StorePolicy terms limits "fence-test" True immediatePayouts
       key=T.replicate 64 "b"
@@ -4598,7 +4678,7 @@ tlsMain=do
       custody=if canonical then "Jon9rntk6G8BftwW1nRqkSf54iqXaqDD6a2ZSky2bWW" else H.replySource vectorReply
       identity="offline-policy"; encoded value=TE.decodeUtf8 (BL.toStrict $ encode value)
       settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
-      policy=PaymentTerms (PolicySnapshot 1 "finalized" identity) (CostLimits (money 1) (money 10000) (money 2100000))
+      policy=PaymentTerms (PolicySnapshot 1 "finalized" identity []) (CostLimits (money 1) (money 10000) (money 2100000))
       store=StorePolicy policy (OrderLimits (money 3) 100 100 100 (money 10000000) (money 10000000)) "codec-fixture" True immediatePayouts
       config=H.SolanaPolicy "codec-fixture" identity mint owner custody (money 10000) (money 2100000)
       native=N.NativeSettings profile "http://127.0.0.1:1" "/unused" "ecx-bridge-test"
@@ -4762,7 +4842,7 @@ tlsMain=do
                 -- assertion thread is delayed; never race a signing attempt.
                 writeIORef workerProbe ((not.null) <$> saved)
                 flip finally (writeIORef workerProbe (pure False) >> void (tryPutMVar workerRelease ())) $
-                 withWorkerProcess manager reader writer (ObserverSettings connectedNative solana 1 headSignature headSignature) config
+                 withWorkerProcess manager reader writer (ObserverSettings connectedNative solana 1 headSignature headSignature []) config
                   (Just $ CustomerSettings public store sdk $ Just recipients) endpoint $ \_ _->do
                     awaitCondition "automatic worker owner reservation" ((==1) . length <$> saved)
                       `onException` (evalRead reader ReadServiceStatus >>= print)
@@ -4978,7 +5058,7 @@ tlsMain=do
               check (sort(map recordedPayment pending)==[nativeId,identifier])
               writeIORef calls []
               prior<-fixture fixtures RecoveryPauseCount
-              withWorkerProcess manager reader writer (ObserverSettings native solana 1 "origin" "origin") config Nothing endpoint $ \_ _->do
+              withWorkerProcess manager reader writer (ObserverSettings native solana 1 "origin" "origin" []) config Nothing endpoint $ \_ _->do
                 awaitCondition "both payment recoveries" $ do
                   pauses<-fixture fixtures RecoveryPauseCount
                   methods<-readIORef calls
@@ -5025,7 +5105,7 @@ tlsMain=do
               checkpointPort<-freePort
               let checkpointEndpoint=endpoint {signerPort=checkpointPort}
               withProcessListening (runSigningServer checkpointEndpoint checkpointApp) checkpointPort $
-                withWorkerProcess manager reader writer (ObserverSettings configuredNative solana 1 "origin" "origin") config
+                withWorkerProcess manager reader writer (ObserverSettings configuredNative solana 1 "origin" "origin" []) config
                   (Just $ CustomerSettings publicConfig store sdk Nothing) checkpointEndpoint $ \httpPort _->
                   bracket (newManager defaultManagerSettings) closeManager $ \client->do
                     let submit=do
@@ -5066,7 +5146,7 @@ tlsMain=do
               let frozenSequence=ledgerSequence frozen
                   frozenReceipt=receipt {W.receiptSequence=frozenSequence}
                   checkpoint=runProcess manager reader $ WorkerProcess
-                    (ObserverSettings configuredNative solana 1 "origin" "origin") config
+                    (ObserverSettings configuredNative solana 1 "origin" "origin" []) config
                     (Just $ CustomerSettings publicConfig store sdk Nothing) checkpointEndpoint writer Checkpointing
                   preserved=do
                     current<-evalRead reader ReadState
@@ -5137,7 +5217,7 @@ tlsMain=do
                         when (count==2) inject
                       pure request {HTTP.secure=False,HTTP.host="127.0.0.1",HTTP.port=rpcPort}
                 bracket (newManager defaultManagerSettings {managerModifyRequest=fault}) closeManager $ \faulty->
-                  withWorkerProcess faulty reader writer (ObserverSettings configuredNative solana 1 "origin" "origin") config
+                  withWorkerProcess faulty reader writer (ObserverSettings configuredNative solana 1 "origin" "origin" []) config
                     (Just $ CustomerSettings publicConfig store sdk Nothing) checkpointEndpoint $ \_ directory->do
                       result<-try (Control.callControl directory $ object ["operation" .= ("resume"::T.Text)]) :: IO (Either SomeException Value)
                       if asynchronous then check (case result of Left _->True; _->False)
@@ -5772,7 +5852,7 @@ historyProgressMain=do
   unless ("ecx_rebuild_contract_" `T.isPrefixOf` T.pack database) (fail "disposable database required")
   user<-getEnv "USER"; role<-getEnv "ECX_REBUILD_CONTRACT_READER"
   let settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
-      policy=StorePolicy (PaymentTerms (PolicySnapshot 2 "finalized" "contract") (CostLimits (money 10) (money 10) (money 10)))
+      policy=StorePolicy (PaymentTerms (PolicySnapshot 2 "finalized" "contract" []) (CostLimits (money 10) (money 10) (money 10)))
         (OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)) "contract" True immediatePayouts
       sig n=SolanaMessage.base58 (BS.replicate 63 0<>BS.singleton n)
       progress=Solana.HistoryProgress (sig 0) Nothing 100 (Solana.SignatureInfo (sig 2) 2 False)

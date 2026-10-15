@@ -16,11 +16,12 @@ import Network.HTTP.Client (Manager)
 
 data OrderTransport = OrderTransport
   { orderClock :: IO Int64, orderAdmission :: W.OrderRequest -> IO ()
-  , orderIdentity :: IO (), orderNative :: NativeRPC, orderBackup :: Int64 -> IO () }
+  , orderIdentity :: IO (), orderNative :: NativeRPC, orderBackup :: Int64 -> IO ()
+  , orderSidechain :: Text -> Int64 -> IO Text }
 
 createCustomerOrder :: Manager -> ObserverSettings -> H.SolanaPolicy -> StorePolicy -> FilePath
-  -> (Int64 -> IO ()) -> Reader -> Writer -> Text -> W.OrderRequest -> IO W.OrderView
-createCustomerOrder manager settings config store sdk backup = createCustomerOrderWith transport (nativeSettings settings) (requireBackup store)
+  -> (Text -> Int64 -> IO Text) -> (Int64 -> IO ()) -> Reader -> Writer -> Text -> W.OrderRequest -> IO W.OrderView
+createCustomerOrder manager settings config store sdk allocate backup = createCustomerOrderWith transport (nativeSettings settings) (requireBackup store)
  where
   clock=floor <$> getPOSIXTime
   native=nativeSettings settings
@@ -29,7 +30,7 @@ createCustomerOrder manager settings config store sdk backup = createCustomerOrd
     _<-S.solanaIdentity manager (solanaSettings settings)
     _<-N.nativeWalletKeysWith (N.nativeCall manager native) native
     pure ()
-  transport=OrderTransport clock (checkOrderAdmission manager settings config store sdk) identity (N.nativeCall manager native) backup
+  transport=OrderTransport clock (checkOrderAdmission manager settings config store sdk) identity (N.nativeCall manager native) backup allocate
 
 -- The runtime's critical gate spans this workflow, but no DB transaction spans
 -- admission, address allocation or backup. A lost reply retains the saved claim.
@@ -59,6 +60,11 @@ createCustomerOrderWith transport native remote reader writer header requested =
         WrappedToNative->do
           started<-orderClock transport
           evalWrite writer (BindSolana started header identifier)
+        _->do
+          started<-orderClock transport
+          sequenceNo<-evalWrite writer (ClaimSidechain started header identifier)
+          address<-orderSidechain transport identifier sequenceNo
+          evalWrite writer (RecordSidechain header identifier sequenceNo address)
     if remote then orderBackup transport required else pure ()
     issued<-orderClock transport
     evalWrite writer (IssueInstruction issued header identifier)

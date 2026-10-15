@@ -4,11 +4,16 @@
 module Bridge.Recovery (CustodyRecovery(..),evalCustodyRecovery) where
 
 import qualified Bridge.Config as C
+import qualified Bridge.Sidechain as Side
+import Bridge.Wire (sidechainAsset)
+import Bridge.Domain (Asset(..))
+import Data.List (nub,sort)
 import Bridge.Error
 import Bridge.Identity (digest)
 import Bridge.File (withHandle,readBounded,hashHandle)
 import qualified Bridge.Native as N
 import Bridge.Credentials (verifySigningKey,readNativeUnlock,withNativeUnlock)
+import Bridge.RPC (fieldValue)
 import Bridge.Store
 import Control.Exception (bracket,bracketOnError)
 import Control.Monad (forM,forM_,void,when)
@@ -26,7 +31,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Database.PostgreSQL.Simple as PG
 import Network.HTTP.Client (Manager)
-import System.Directory (removeDirectoryRecursive)
+import System.Directory (removeDirectoryRecursive,doesFileExist)
 import System.Environment (lookupEnv)
 import System.FilePath (isAbsolute,normalise,takeDirectory,takeFileName,(</>))
 import System.IO (Handle,hFlush)
@@ -41,6 +46,8 @@ import System.Posix.User (getEffectiveUserID)
 data CustodyRecovery a where
   ExportCustody :: PG.ConnectInfo -> PG.ConnectInfo -> FilePath -> FilePath -> CustodyRecovery (FilePath,Int64)
   ExportCheckpoint :: Reader -> FilePath -> FilePath -> Int64 -> CustodyRecovery (FilePath,Int64)
+  RestoreSidechainSeeds :: FilePath -> Int64 -> FilePath -> CustodyRecovery [(String,FilePath)]
+  VerifyRestoredSidechains :: FilePath -> Int64 -> [(Asset,[Text])] -> CustodyRecovery ()
   InspectCustody :: FilePath -> Int64 -> CustodyRecovery Int64
   UploadCustody :: FilePath -> FilePath -> Int64 -> CustodyRecovery BackupReceipt
   RecoverCustody :: FilePath -> Text -> FilePath -> Int64 -> CustodyRecovery (FilePath,Int64)
@@ -69,13 +76,14 @@ evalCustodyRecovery manager config operation = do
       archive<-evalRestore PG.defaultConnectInfo (InspectLedger (directory </> ledger) identity minimumSequence)
       (wallet,nativePath,nativeHash)<-N.evalNativeRecoveryWith call native
         (N.InspectNativeWalletBackup $ directory </> "native-wallet.json")
-      require (M.keys files==M.keys (M.fromList [(name,()) | name<-bundleFiles archive encrypted])
+      require (M.keys files==M.keys (M.fromList [(name,()) | name<-bundleFiles archive encrypted (C.sidechains config)])
         && nativePath==directory </> "native-wallet" && wallet==C.nativeWallet config
         && archiveSequence archive==sequenceNo) "custody_backup_binding_mismatch"
       verify (takeFileName $ archivePath archive) (archiveHash archive)
       verify "native-wallet" nativeHash
       mapM_ (\name->hashFile (directory </> name) >>= verify name)
-        ([ledger,"native-wallet.json","deployment.json","solana-key.json"]<>["native-unlock" | encrypted])
+        ([ledger,"native-wallet.json","deployment.json","solana-key.json"]<>["native-unlock" | encrypted]
+          <>map (Side.sidechainWalletFile.sidechainAsset.Side.sidechainPolicy) (C.sidechains config))
       savedConfig<-C.loadConfig (directory </> "deployment.json")
       require (C.fingerprint savedConfig==identity) "backup_identity_mismatch"
       require (isJust(C.nativeUnlockFile savedConfig)==encrypted) "custody_backup_binding_mismatch"
@@ -83,7 +91,42 @@ evalCustodyRecovery manager config operation = do
       -- the bound copy, so recovery remains offline after moving the bundle.
       when encrypted $ void $ readNativeUnlock (directory </> "native-unlock")
       verifySigningKey (C.custodyOwner config) (directory </> "solana-key.json")
+      forM_ (C.sidechains config) $ \chain->do
+        bytes<-readPrivate (4*1024*1024) (directory </> Side.sidechainWalletFile(sidechainAsset $ Side.sidechainPolicy chain))
+        value<-either (const $ reject "invalid_sidechain_backup") pure (eitherDecodeStrict' bytes)
+        phrase<-fieldValue "mnemonic" value
+        addresses<-fieldValue "addresses" value :: IO [Text]
+        Side.validateSidechainSeed (Side.sidechainPolicy chain) phrase
+        require (length addresses<=100000 && all Side.validAddress addresses && sort(nub addresses)==addresses) "invalid_sidechain_backup"
       pure sequenceNo
+    VerifyRestoredSidechains manifest sequenceNo actual -> do
+      archived<-evalCustodyRecovery manager config (InspectCustody manifest sequenceNo)
+      require (archived==sequenceNo) "restored_sequence_mismatch"
+      expected<-forM [Thunder,BitNames] $ \asset->do
+        addresses<-if asset `elem` map (sidechainAsset.Side.sidechainPolicy) (C.sidechains config)
+          then do
+            bytes<-readPrivate (4*1024*1024) (takeDirectory manifest </> Side.sidechainWalletFile asset)
+            value<-either (const $ reject "invalid_sidechain_backup") pure (eitherDecodeStrict' bytes)
+            fieldValue "addresses" value
+          else pure []
+        pure(asset,addresses)
+      require (sort [(asset,sort addresses) | (asset,addresses)<-actual]==expected) "restored_sidechain_addresses_mismatch"
+    RestoreSidechainSeeds manifest minimumSequence target -> do
+      _<-evalCustodyRecovery manager config (InspectCustody manifest minimumSequence)
+      privateDirectory target
+      forM (C.sidechains config) $ \chain->do
+        let asset=sidechainAsset(Side.sidechainPolicy chain)
+            name=T.unpack(T.toLower $ T.pack $ show asset)<>"-seed.txt"
+            path=target</>name
+        bytes<-readPrivate (4*1024*1024) (takeDirectory manifest </> Side.sidechainWalletFile asset)
+        value<-either (const $ reject "invalid_sidechain_backup") pure (eitherDecodeStrict' bytes)
+        phrase<-fieldValue "mnemonic" value
+        Side.validateSidechainSeed (Side.sidechainPolicy chain) phrase
+        let raw=TE.encodeUtf8(phrase<>"\n")
+        exists<-doesFileExist path
+        if exists then readPrivate 8192 path >>= \old->require (old==raw) "restored_sidechain_seed_changed"
+          else writePrivate path (BL.fromStrict raw) >> sync target
+        pure(name,path)
     UploadCustody configuration manifest minimumSequence -> do
       sequenceNo<-evalCustodyRecovery manager config (InspectCustody manifest minimumSequence)
       originalHash<-digest <$> readPrivate 8192 manifest
@@ -132,6 +175,12 @@ evalCustodyRecovery manager config operation = do
       forM_ unlock $ writePrivate (directory </> "native-unlock") . BL.fromStrict . TE.encodeUtf8
       let validateUnlock=withNativeUnlock call native ((const $ directory </> "native-unlock") <$> unlock) (pure ())
       validateUnlock
+      chains<-forM (C.sidechains config) $ \chain->do
+        let asset=sidechainAsset (Side.sidechainPolicy chain)
+        phrase<-Side.readSidechainSeed chain
+        addresses<-sort <$> evalRead reader (ReadSidechainAddresses asset)
+        writePrivate (directory </> Side.sidechainWalletFile asset) (encode $ object ["mnemonic" .= phrase,"addresses" .= addresses])
+        pure (chain,phrase,addresses)
       archive<-evalBackup reader (ExportLedger directory)
       transfer<-lookupEnv "ECX_NATIVE_BACKUP_SERVICE"
       require (transfer `elem` [Nothing,Just "1"]) "invalid_native_backup_service_setting"
@@ -143,18 +192,23 @@ evalCustodyRecovery manager config operation = do
       after<-evalRead reader ReadState
       require ((not offline || ledgerPaused after) && ledgerSequence before==ledgerSequence after
         && archiveSequence archive==ledgerSequence after && archiveIdentity archive==identity) "custody_backup_changed"
+      forM_ chains $ \(chain,phrase,addresses)->do
+        current<-Side.readSidechainSeed chain
+        known<-sort <$> evalRead reader (ReadSidechainAddresses $ sidechainAsset $ Side.sidechainPolicy chain)
+        require (current==phrase && known==addresses) "custody_backup_key_changed"
       currentKey<-readPrivate 4096 key
       require (currentKey==keyBytes) "custody_backup_key_changed"
-      files<-M.fromList <$> forM (bundleFiles archive encrypted) (\name->(,) name <$> hashFile (directory </> name))
+      files<-M.fromList <$> forM (bundleFiles archive encrypted (C.sidechains config)) (\name->(,) name <$> hashFile (directory </> name))
       let manifest=directory </> "custody.json"
       writePrivate manifest (encode $ CustodyArchive manifest identity (archiveSequence archive) (takeFileName $ manifestPath archive) files encrypted)
       sync directory
       sync parent
       pure (manifest,archiveSequence archive)
 
-bundleFiles :: LedgerArchive -> Bool -> [FilePath]
-bundleFiles archive encrypted=[takeFileName $ archivePath archive,takeFileName $ manifestPath archive,
+bundleFiles :: LedgerArchive -> Bool -> [Side.SidechainSettings] -> [FilePath]
+bundleFiles archive encrypted chains=[takeFileName $ archivePath archive,takeFileName $ manifestPath archive,
   "native-wallet","native-wallet.json","deployment.json","solana-key.json"]<>["native-unlock" | encrypted]
+    <>map (Side.sidechainWalletFile.sidechainAsset.Side.sidechainPolicy) chains
 
 privateDirectory :: FilePath -> IO ()
 privateDirectory path=do

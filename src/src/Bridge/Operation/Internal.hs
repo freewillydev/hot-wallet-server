@@ -154,6 +154,14 @@ instance ToJSON CheckpointResult
 instance FromJSON CheckpointResult where
   parseJSON = genericParseJSON defaultOptions { rejectUnknownFields = True }
 
+type AddressResult = Result 'Critical AllocateSidechainAddress
+data instance Result 'Critical AllocateSidechainAddress = AddressResult { addressOutput :: !Text } deriving (Eq,Show,Generic)
+instance ToJSON AddressResult
+instance FromJSON AddressResult where
+  parseJSON = genericParseJSON defaultOptions { rejectUnknownFields = True }
+data AllocateSidechainAddress a where
+  AllocateSidechainAddress :: Text -> Text -> Int64 -> AllocateSidechainAddress AddressResult
+
 -- Initial signing is tied to a durable decision, never caller-supplied bytes.
 data CheckpointCustody a where
   CheckpointCustody :: Text -> Int64 -> CheckpointCustody CheckpointResult
@@ -170,6 +178,7 @@ data SigningOperation a where
   ReplacementSigning :: SignReplacement a -> SigningOperation a
   DraftSigning :: DraftReplacement a -> SigningOperation a
   CheckpointSigning :: CheckpointCustody a -> SigningOperation a
+  AddressAllocation :: AllocateSidechainAddress a -> SigningOperation a
 
 class WorkerBackup value where
   checkpointBackup :: value -> Int64 -> Method value '[] '[] ()
@@ -184,6 +193,7 @@ class WorkerObservation value where
 class WorkerRecovery value where
   recoverNativeSettlements :: value -> Method value '[] '[] ()
   recoverNativeSources :: value -> Method value '[] '[] ()
+  recoverSidechainAllocations :: value -> Method value '[] '[] ()
   recoverNativeLocks :: value -> Method value '[] '[] ()
   reconcilePayment :: value -> Text -> Method value '[] '[] ()
   reusePayout :: value -> [Text] -> Method value '[Text] '[SignedPayout] ()

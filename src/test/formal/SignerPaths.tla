@@ -2,20 +2,22 @@
 EXTENDS FiniteSets, Naturals
 CONSTANT Requests
 ASSUME Requests # {}
-Paths == {"sign-preparation", "sign-replacement", "draft-replacement", "checkpoint-custody"}
-Operations == {"SignPrepared", "SignReplacement", "DraftReplacement", "CheckpointCustody"}
-Constructors == {"PreparedResult", "ReplacementResult", "DraftResult", "CheckpointResult"}
+Paths == {"sign-preparation", "sign-replacement", "draft-replacement", "checkpoint-custody", "allocate-sidechain-address"}
+Operations == {"SignPrepared", "SignReplacement", "DraftReplacement", "CheckpointCustody", "AllocateSidechainAddress"}
+Constructors == {"PreparedResult", "ReplacementResult", "DraftResult", "CheckpointResult", "AddressResult"}
 None == "none"
 Handler(p) == CASE p = "sign-preparation" -> "SignPrepared"
                [] p = "sign-replacement" -> "SignReplacement"
                [] p = "draft-replacement" -> "DraftReplacement"
                [] p = "checkpoint-custody" -> "CheckpointCustody"
+               [] p = "allocate-sidechain-address" -> "AllocateSidechainAddress"
 NoCommand == [caller |-> None, severity |-> None, operation |-> None]
 Command(op) == [caller |-> "Signer", severity |-> "Critical", operation |-> op]
 Result(op) == CASE op = "SignPrepared" -> "PreparedResult"
               [] op = "SignReplacement" -> "ReplacementResult"
               [] op = "DraftReplacement" -> "DraftResult"
               [] op = "CheckpointCustody" -> "CheckpointResult"
+              [] op = "AllocateSidechainAddress" -> "AddressResult"
 Owner(c) == CHOOSE p \in Paths : Result(Handler(p)) = c
 VARIABLES stage, path, authenticated, eligible, stable, operation, dsl, output, paying, dispatched, gateOwner
 vars == <<stage, path, authenticated, eligible, stable, operation, dsl, output, paying, dispatched, gateOwner>>

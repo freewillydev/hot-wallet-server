@@ -1,9 +1,11 @@
 #!/bin/sh
-# Managed ECX betanet node for the Ubuntu x86_64 installation. No wallet creation.
+# Managed ECX node for Ubuntu x86_64. No wallet creation.
 set -eu
 umask 077
 fail() { echo "ECX node setup: $*" >&2; exit 1; }
-[ "$#" = 0 ] || fail 'no arguments accepted'
+[ "$#" -le 1 ] || fail 'one managed network mode accepted'
+mode=${1:-betanet}
+case "$mode" in betanet|signet-pruned|signet-full) ;; *) fail 'unknown network mode';; esac
 [ "$(id -u)" = 0 ] || fail 'root required'
 . /etc/os-release
 [ "$ID:$VERSION_ID:$(uname -m)" = ubuntu:24.04:x86_64 ] || fail 'Ubuntu 24.04 x86_64 required'
@@ -14,20 +16,40 @@ checksum=1fcdaad74888f8d445a335c54102ffe540d17e8942d6939713d4c5d71c31a17e
 url=https://releases.ecash.com/L1-ecash-bitcoin/betanet/ca64033c1374/L1-ecash-bitcoin-x86_64-unknown-linux-gnu.zip
 sync_mode=${ECX_NODE_SYNC:-snapshot}
 case "$sync_mode" in snapshot|full) ;; *) fail 'ECX_NODE_SYNC must be snapshot or full' ;; esac
+if [ "$mode" != betanet ]; then
+  version=bitcoin-30.2
+  checksum=6aa7bb4feb699c4c6262dd23e4004191f6df7f373b5d5978b5bcdd4bb72f75d8
+  url=https://bitcoincore.org/bin/bitcoin-core-30.2/bitcoin-30.2-x86_64-linux-gnu.tar.gz
+  sync_mode=full
+fi
 base=/opt/ecx-node
 home=/var/lib/ecx-betanet
 unit=/etc/systemd/system/ecx-betanet.service
 for path in "$base" "$home" "$unit"; do [ ! -L "$path" ] || fail "symlink refused: $path"; done
 command -v curl >/dev/null && command -v unzip >/dev/null || fail 'install curl and unzip first'
 install -d -m 0755 "$base"
+marker=$base/managed-profile
+[ ! -L "$marker" ] || fail 'profile marker symlink refused'
+if [ -e "$marker" ]; then
+  [ "$(stat -c '%u:%a:%h' "$marker")" = 0:600:1 ] && [ "$(cat "$marker")" = "$mode" ] || fail 'existing node network/pruning differs; use a separate fresh host'
+else
+  if [ "$mode" != betanet ]; then [ ! -e "$home" ] && [ ! -e "$unit" ] || fail 'Signet requires a fresh managed node'; fi
+  printf '%s\n' "$mode" > "$marker"
+fi
 staging=$(mktemp -d "$base/.install-XXXXXXXX")
 trap 'rm -rf -- "$staging"' EXIT
 trap 'exit 1' HUP INT TERM
 if [ ! -d "$base/$version" ]; then
-  echo 'Downloading the pinned ECX betanet node.'
+  echo 'Downloading the pinned ECX network node.'
   curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 --connect-timeout 20 --max-time 600 "$url" -o "$staging/node.zip"
   printf '%s  %s\n' "$checksum" "$staging/node.zip" | sha256sum --check --status || fail 'download checksum mismatch'
-  unzip -q "$staging/node.zip" -d "$staging/unpacked"
+  mkdir "$staging/unpacked"
+  if [ "$mode" = betanet ]; then
+    unzip -q "$staging/node.zip" -d "$staging/unpacked"
+  else
+    tar -xzf "$staging/node.zip" -C "$staging/unpacked"
+    mv "$staging/unpacked/$version/bin/bitcoind" "$staging/unpacked/$version/bitcoind"
+  fi
   [ -x "$staging/unpacked/$version/bitcoind" ] || fail 'unexpected node archive layout'
   chown -R root:root "$staging/unpacked/$version"
   chmod -R go-w "$staging/unpacked/$version"
@@ -42,6 +64,7 @@ install -d -o ecxnode -g ecxnode -m 0700 "$home"
 if [ ! -e "$home/bitcoin.conf" ]; then
   # Never adopt an unidentified old data directory as a fresh installation.
   [ -z "$(find "$home" -mindepth 1 -maxdepth 1 -print -quit)" ] || fail 'existing node data requires explicit configuration'
+  if [ "$mode" = betanet ]; then
   cat > "$staging/bitcoin.conf" <<'CONFIG'
 # Managed ECX betanet; this is the ECX binary, not Bitcoin mainnet.
 server=1
@@ -52,6 +75,23 @@ rpcbind=127.0.0.1
 rpcallowip=127.0.0.1
 rpcport=28532
 CONFIG
+  else
+    prune=2000; [ "$mode" != signet-full ] || prune=0
+    cat > "$staging/bitcoin.conf" <<CONFIG
+# Managed real L2L ECX Signet.
+server=1
+signet=1
+signetchallenge=00148835832e28c816b7acd8fdb19772ab2199603a56
+signet.addnode=172.105.148.135:38333
+signet.rpcport=28532
+signet.rpcbind=127.0.0.1
+rpcallowip=127.0.0.1
+prune=$prune
+dbcache=450
+listen=0
+CONFIG
+    [ "$mode" != signet-full ] || printf '%s\n' 'zmqpubsequence=tcp://127.0.0.1:29433' >> "$staging/bitcoin.conf"
+  fi
   install -o ecxnode -g ecxnode -m 0600 "$staging/bitcoin.conf" "$home/bitcoin.conf"
 fi
 cat > "$staging/service" <<UNIT
@@ -86,7 +126,7 @@ snapshot_hash=87e21e2cb2054fa079f1873e42dee555de2f1631eadf4e09e7dab376ea172428
 snapshot_url=https://ecx-betanet-snapshots-242254325782-us-east-2.s3.us-east-2.amazonaws.com/$snapshot_hash/chain.tar.gz
 snapshot=/var/lib/ecx-node-snapshot-$snapshot_hash
 [ ! -L "$snapshot" ] || fail 'snapshot staging symlink refused'
-if [ "$sync_mode" = snapshot ] && { [ -f "$snapshot/ready" ] || { [ ! -e "$home/blocks" ] && [ ! -e "$home/chainstate" ]; }; }; then
+if [ "$mode" = betanet ] && [ "$sync_mode" = snapshot ] && { [ -f "$snapshot/ready" ] || { [ ! -e "$home/blocks" ] && [ ! -e "$home/chainstate" ]; }; }; then
   systemctl is-active --quiet ecx-betanet.service && fail 'stop the node before snapshot bootstrap'
   # Protect root extraction from preexisting untrusted staging/ancestors.
   [ "$(stat -c '%u:%a' "$base")" = 0:755 ] || fail 'node directory must be root-owned mode 755'
@@ -142,8 +182,10 @@ if [ "$sync_mode" = snapshot ] && { [ -f "$snapshot/ready" ] || { [ ! -e "$home/
   sync
 fi
 # A partial directory is never treated as a successful bootstrap.
-if [ -e "$home/blocks" ] || [ -e "$home/chainstate" ]; then
-  [ -d "$home/blocks" ] && [ -d "$home/chainstate" ] || fail 'incomplete existing chain data; operator review required'
+chainhome=$home
+[ "$mode" = betanet ] || chainhome=$home/signet
+if [ -e "$chainhome/blocks" ] || [ -e "$chainhome/chainstate" ]; then
+  [ -d "$chainhome/blocks" ] && [ -d "$chainhome/chainstate" ] || fail 'incomplete existing chain data; operator review required'
 fi
 systemctl daemon-reload
 systemctl enable ecx-betanet.service

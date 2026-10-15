@@ -155,7 +155,7 @@ checks=sequence
       let amount=either (error . show) id (D.amount 100)
           quote=either (error . show) id (D.quote amount)
           request=W.OrderRequest D.NativeToWrapped amount "recipient" "refund" Nothing "key"
-          order=W.OrderView "order" request quote "AwaitingDeposit" 200 (Just "instruction") Nothing (W.PolicySnapshot 2 "finalized" "deployment")
+          order=W.OrderView "order" request quote "AwaitingDeposit" 200 (Just "instruction") Nothing (W.PolicySnapshot 2 "finalized" "deployment" [])
           config=W.PublicConfiguration W.L2LSignetDevnet "devnet" (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing Nothing)
             "deployment" "mint" "owner" 8 M.empty False False (W.Availability False "paused") Nothing W.defaultPayoutPolicy
           instruction=W.PaymentInstruction "solana:fixture" "reference" "mint" amount "verified_source_owner"

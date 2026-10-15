@@ -16,6 +16,7 @@ import Data.Aeson.Types (parseMaybe)
 import qualified Data.ByteString.Lazy as LBS
 import Data.IORef
 import Data.List (find)
+import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust, fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -86,7 +87,7 @@ customerError code = fromMaybe code $ lookup code
   , ("insufficient_custody_tokens", "The bridge needs more wrapped-token liquidity. Try later.")
   , ("insufficient_operating_sol", "The bridge needs more SOL for transaction fees. Try later.")
   , ("invalid_public_key", "Enter a valid Solana address.")
-  , ("nonpositive_net", "Enter an amount that leaves a positive payout after the 1% fee.")
+  , ("nonpositive_net", "Enter an amount that leaves a positive payout after the fee.")
   , ("payout_batch_needs_capacity", "The remaining queue slot is reserved for a transfer large enough to complete a payout round. Try a larger amount or wait for the queue to clear.")
   , ("payout_batch_needs_inventory", "The bridge needs more liquidity to complete this payout round. Try later or contact support.")
   , ("deposit_window_closed", "This order has expired. Do not pay; create a new order.")
@@ -133,29 +134,38 @@ persist state = do
 readDirection :: IO Direction
 readDirection = do
   d <- value "direction"
-  case d of "NativeToWrapped" -> pure NativeToWrapped; "WrappedToNative" -> pure WrappedToNative; _ -> failWith "Invalid direction."
-preview :: IO ()
-preview = do
-  _ <- readDirection
+  case d of
+    "NativeToWrapped" -> pure NativeToWrapped
+    "WrappedToNative" -> pure WrappedToNative
+    "ThunderToNative" -> pure ThunderToNative
+    "BitNamesToNative" -> pure BitNamesToNative
+    _ -> failWith "Invalid direction."
+preview :: IORef State -> IO ()
+preview state = do
+  direction <- readDirection
+  configured <- configuration <$> readIORef state
+  let rate=maybe 100 (Map.findWithDefault 100 (T.pack $ show direction) . pubFeesBps) configured
   a <- value "amount"
-  case parseCoins a >>= Domain.quote of
+  case parseCoins a >>= Domain.quoteAtBps rate of
     Right q -> text "fee" (renderCoins $ fee q) >> text "net" (renderCoins $ net q)
     Left _ -> text "fee" "—" >> text "net" "—"
-showDirection :: IO ()
-showDirection = do
-  wrapping <- (==NativeToWrapped) <$> readDirection
+showDirection :: IORef State -> IO ()
+showDirection state = do
+  d <- readDirection
+  let wrapping=d==NativeToWrapped
   hidden "refund-field" (not wrapping)
   B.setBool (B.js "refund") (B.js "required") wrapping
-  hidden "refund-note" wrapping
+  hidden "refund-note" (wrapping || Domain.fastWithdrawal d)
+  hidden "sidechain-note" (not $ Domain.fastWithdrawal d)
   text "destination-label" (if wrapping then "Solana destination address" else "Native destination address")
-  preview
-showRequest :: OrderRequest -> IO ()
-showRequest r = do
+  preview state
+showRequest :: IORef State -> OrderRequest -> IO ()
+showRequest state r = do
   setValue "direction" (T.pack $ show $ direction r)
   setValue "amount" (renderCoins $ input r)
   setValue "recipient" (recipient r)
   setValue "refund" (refund r)
-  showDirection
+  showDirection state
 
 solanaExplorer :: PublicConfiguration -> Text -> Text -> IO Text
 solanaExplorer cfg kind identifier = do
@@ -175,6 +185,11 @@ loadConfig state = do
   text "network-note" $ if pubSolanaCluster cfg=="devnet"
     then "Test coins only. Select Devnet in your Solana Pay wallet; the transfer URI does not select a network."
     else "Verify the configured networks before paying."
+  forM_ [ThunderToNative,BitNamesToNative] $ \d->do
+    let key=T.pack(show d); enabled=Map.member key (pubFeesBps cfg)
+    hidden ("option-"<>key) (not enabled)
+    disabled ("option-"<>key) (not enabled)
+    hidden ("report-"<>T.pack(show $ Domain.sourceAsset d)<>"-row") (not enabled)
   text "mint" (pubMint cfg)
   let links = pubLinks cfg
   explorer <- maybe (solanaExplorer cfg "address" $ pubMint cfg) pure (tokenExplorerUrl links)
@@ -189,7 +204,7 @@ loadConfig state = do
   text "limits" $ "Payout rounds: at least " <> renderCoins (nativePayoutThreshold payouts)
     <> " ECX or " <> renderCoins (wrappedPayoutThreshold payouts) <> " wrapped ECX of queued net payouts per asset, with "
     <> T.pack(show (fromIntegral(payoutIntervalSeconds payouts)/3600 :: Double))
-    <> " hours between rounds. Small payments wait until the threshold is met; the interval is not a maximum wait. All eligible payments join a round; new arrivals wait for the next. Confirmations, fees and reserves still apply."
+    <> " hours between wrap/unwrap rounds. Sidechain fast withdrawals pay after ECX confirmations and safety checks. Small payments wait until the threshold is met; the interval is not a maximum wait. All eligible payments join a round; new arrivals wait for the next. Confirmations, fees and reserves still apply."
   hidden "report-data" (not $ isJust $ pubReport cfg)
   text "report-note" "Report unavailable."
   forM_ (pubReport cfg) $ \report -> do
@@ -243,7 +258,7 @@ refresh state = do
     let path = "/api/v1/orders/" <> encoded
     o <- api state path "GET" Nothing
     unless (orderId o==oid) $ failWith "Order identity mismatch. Contact support."
-    showRequest (request o)
+    showRequest state (request o)
     let refunding = status o `elem` ["Refunded","Refunding"]
         q = quote o
     text "fee" $ if refunding then "0.00000000" else renderCoins (fee q)
@@ -263,7 +278,10 @@ refresh state = do
     expiry <- B.text <$> B.dateText (fromIntegral $ deadline o)
     forM_ (configuration s) $ \cfg -> do
       when (awaiting && available (pubAvailability cfg)) $ forM_ (depositInstruction o) $ \instruction -> do
-        paymentText <- if direction (request o)==NativeToWrapped then pure instruction else do
+        paymentText <- if Domain.fastWithdrawal(direction $ request o) then do
+          let prefix=if direction(request o)==ThunderToNative then "thunder:" else "bitnames:"
+          maybe (failWith "Invalid sidechain payment address.") pure (T.stripPrefix prefix instruction)
+          else if direction (request o)==NativeToWrapped then pure instruction else do
           instructions <- api state (path <> "/transaction") "POST" Nothing
           let reference = T.stripPrefix "solana-pay:" instruction
               expected = "solana:" <> pubCustodyOwner cfg <> "?amount=" <> renderCoins (gross q)
@@ -281,7 +299,7 @@ refresh state = do
       text "payout-link" $ if refunding then "View refund transaction" else "View payout transaction"
       url <- case payoutTx o of
         Nothing -> pure Nothing
-        Just txid -> if (if status o=="Refunded" then direction (request o)==NativeToWrapped else direction (request o)==WrappedToNative)
+        Just txid -> if (if status o=="Refunded" then direction (request o)==NativeToWrapped else Domain.destinationAsset(direction $ request o)==Domain.Native)
           then do encodedTx <- B.text <$> B.urlEncode (B.js txid); pure ((<> encodedTx) <$> nativeExplorerBase (pubLinks cfg))
           else Just <$> solanaExplorer cfg "tx" txid
       link "payout-link" url
@@ -295,6 +313,7 @@ createOrder state = do
     Just existing | isJust (savedRequest existing) -> pure existing
     _ -> do
       d <- readDirection
+      unless (Map.member (T.pack $ show d) $ pubFeesBps cfg) $ failWith "This route is not enabled."
       quantity <- value "amount" >>= either (const $ failWith "Enter a decimal amount with at most eight places.") pure . parseCoins
       destination <- T.strip <$> value "recipient"
       refundAddress <- if d==NativeToWrapped then T.strip <$> value "refund" else pure ""
@@ -325,7 +344,7 @@ newOrder state = do
   modifyIORef' state $ \s -> s{current=Nothing}
   clearPayment state
   forM_ ["amount","recipient","refund"] $ \key -> setValue key ""
-  showDirection
+  showDirection state
   persist state
   hidden "order-details" True
   closeCopy
@@ -347,8 +366,8 @@ main = do
   let on key event action = asyncCallback (attempt state gate action) >>= B.listen (B.js key) (B.js event)
       reload = loadConfig state >> refresh state
   on "order-form" "submit" (createOrder state)
-  on "direction" "change" showDirection
-  on "amount" "input" preview
+  on "direction" "change" (showDirection state)
+  on "amount" "input" (preview state)
   on "refresh" "click" reload
   on "new" "click" (newOrder state)
   on "close-copy" "click" closeCopy
@@ -369,8 +388,8 @@ main = do
         modifyIORef' state $ \old -> old{current=Just entry}
         persist state
         refresh state
-  showDirection
-  forM_ (session >>= savedRequest) showRequest
+  showDirection state
+  forM_ (session >>= savedRequest) (showRequest state)
   persist state
   attempt state gate reload
   void $ forkIO $ forever $ threadDelay 15000000 >> attempt state gate reload

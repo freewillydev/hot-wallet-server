@@ -16,6 +16,9 @@ import qualified Bridge.Solana as S
 import qualified Bridge.SolanaHelper as H
 import qualified Bridge.Observer as O
 import qualified Bridge.Store as Store
+import Bridge.Sidechain (SidechainSettings(..),validateSidechains)
+import Bridge.Wire (sidechainAsset,sidechainFeeBps,sidechainCheckpoint,sidechainWalletIdentity)
+import Bridge.Domain (Direction(..),sourceAsset)
 import Data.Aeson
 import Control.Monad (forM_)
 import qualified Data.Aeson.KeyMap as KM
@@ -53,6 +56,7 @@ data Config = Config
   , solanaOperatingHistoryStart :: !Text, maxNativeDailyCost :: !Amount, maxSolDailyCost :: !Amount
   , payoutPolicy :: !PayoutPolicy
   , ownerFeeRecipients :: !(Maybe OwnerFeeRecipients)
+  , sidechains :: ![SidechainSettings]
   } deriving (Eq,Show,Generic,ToJSON)
 -- Legacy order bounds never constrain swaps. Retain the old maximum only as
 -- its previously shared fee-withdrawal cap, without changing custody identity.
@@ -67,8 +71,9 @@ instance FromJSON Config where
       _->either (fail . T.unpack) pure (amount 100000)
     payouts<-o .:? "payoutPolicy" .!= defaultPayoutPolicy
     recipients<-o .:? "ownerFeeRecipients"
+    chains<-o .:? "sidechains" .!= []
     genericParseJSON defaultOptions {rejectUnknownFields=True} $
-      Object $ KM.insert "ownerFeeRecipients" (toJSON (recipients :: Maybe OwnerFeeRecipients)) $
+      Object $ KM.insert "sidechains" (toJSON (chains :: [SidechainSettings])) $ KM.insert "ownerFeeRecipients" (toJSON (recipients :: Maybe OwnerFeeRecipients)) $
         KM.insert "payoutPolicy" (toJSON payouts) $ KM.insert "maxWithdrawal" (toJSON cap) $ KM.delete "minInput" $ KM.delete "maxInput" o
 
 nativeSettings :: Config -> N.NativeSettings
@@ -77,25 +82,31 @@ nativeSettings c=N.NativeSettings (profile c) (nativeRpc c) (nativeCookie c) (na
 solanaSettings :: Config -> S.SolanaSettings
 solanaSettings c=S.SolanaSettings (profile c) (solanaRpc c) (solanaVerifierRpc c) (mint c) (custodyOwner c) (custodyAta c)
 observerSettings :: Config -> O.ObserverSettings
-observerSettings c=O.ObserverSettings (nativeSettings c) (solanaSettings c) (nativeConfirmations c) (solanaHistoryStart c) (solanaOperatingHistoryStart c)
+observerSettings c=O.ObserverSettings (nativeSettings c) (solanaSettings c) (nativeConfirmations c) (solanaHistoryStart c) (solanaOperatingHistoryStart c) (sidechains c)
 solanaPolicy :: Config -> H.SolanaPolicy
 solanaPolicy c=H.SolanaPolicy (deploymentId c) (fingerprint c) (mint c) (custodyOwner c) (custodyAta c) (maxSolFee c) (maxSolAccountRent c)
 storePolicy :: Config -> Store.StorePolicy
 storePolicy c=Store.StorePolicy
-  (PaymentTerms (PolicySnapshot (nativeConfirmations c) "finalized" (fingerprint c)) (CostLimits (maxNativeFee c) (maxSolFee c) (maxSolAccountRent c)))
+  (PaymentTerms (PolicySnapshot (nativeConfirmations c) "finalized" (fingerprint c) (map sidechainPolicy $ sidechains c)) (CostLimits (maxNativeFee c) (maxSolFee c) (maxSolAccountRent c)))
   (Store.OrderLimits (maxWithdrawal c) (quoteSeconds c) (confirmationGraceSeconds c) (maxQueued c) (maxNativeDailyCost c) (maxSolDailyCost c))
   (deploymentId c) (backupRequired c) (payoutPolicy c)
 publicConfiguration :: Config -> InterfaceConfig -> Bool -> PublicConfiguration
 publicConfiguration c links paying=PublicConfiguration (profile c) (if profile c==CanonicalBeta then "mainnet-beta" else "devnet")
   links (deploymentId c) (mint c) (custodyOwner c) 8
-  (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)]) paying False (Availability False "starting") Nothing (payoutPolicy c)
+  (M.fromList $ [("NativeToWrapped",100),("WrappedToNative",100)]<>
+    [(T.pack(show direction),sidechainFeeBps $ sidechainPolicy chain) | chain<-sidechains c,
+      direction<-[ThunderToNative,BitNamesToNative],sourceAsset direction==sidechainAsset(sidechainPolicy chain)])
+  paying False (Availability False "starting") Nothing (payoutPolicy c)
 
 fingerprint :: Config -> Text
-fingerprint c=digest . LBS.toStrict . encode $ object
+fingerprint c=digest . LBS.toStrict . encode $ object $
   ["schema" .= (1::Int),"profile" .= profile c,"deployment" .= deploymentId c
   ,"checkpointHeight" .= nativeCheckpointHeight c,"checkpointHash" .= nativeCheckpointHash c
   ,"genesis" .= S.solanaGenesis (profile c),"mint" .= mint c
-  ,"custodyOwner" .= custodyOwner c,"custodyAta" .= custodyAta c,"wallet" .= nativeWallet c]
+  ,"custodyOwner" .= custodyOwner c,"custodyAta" .= custodyAta c,"wallet" .= nativeWallet c]<>
+  ["sidechains" .= map (\chain->let p=sidechainPolicy chain in object
+    ["asset" .= sidechainAsset p,"checkpoint" .= sidechainCheckpoint p,"wallet" .= sidechainWalletIdentity p]) (sidechains c)
+  | not(null $ sidechains c)]
 
 loadConfig :: FilePath -> IO Config
 loadConfig filename = do
@@ -112,6 +123,9 @@ validateConfig c = do
 -- Fresh setup has no invented history anchors; runtime loading still requires them.
 validateSetupConfig :: Config -> IO ()
 validateSetupConfig c = do
+  validateSidechains (profile c) (sidechains c)
+  require (all ((==nativeCheckpointHash c).sidechainCheckpoint.sidechainPolicy) (sidechains c)) "sidechain_checkpoint_mismatch"
+  require (null(sidechains c) || backupRequired c) "sidechain_backup_required"
   either reject pure (checkPayoutPolicy $ payoutPolicy c)
   forM_ (ownerFeeRecipients c) $ \recipients->do
     validNetworkXpub (profile c==L2LSignetDevnet) (nativeOwnerXpub recipients) >>= (`require` "invalid_owner_ecx_xpub")

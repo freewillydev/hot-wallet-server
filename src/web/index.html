@@ -38,7 +38,7 @@
         <p id="report-note" class="small">Loading report…</p>
         <div id="report-data" hidden>
           <p>Completed in the last 24 hours: <strong id="report-wraps">—</strong> wraps,
-            <strong id="report-unwraps">—</strong> unwraps.</p>
+            <strong id="report-unwraps">—</strong> ECX payouts.</p>
           <p id="report-undated" class="small"></p>
           <div class="report-table">
             <table>
@@ -47,7 +47,9 @@
             <tr><th scope="row">ECX</th><td id="report-Native-reserve">—</td><td id="report-Native-fees">—</td><td id="report-Native-float">—</td><td id="report-Native-held">—</td><td id="report-Native-liability">—</td></tr>
             <tr><th scope="row">Wrapped ECX</th><td id="report-Wrapped-reserve">—</td><td id="report-Wrapped-fees">—</td><td id="report-Wrapped-float">—</td><td id="report-Wrapped-held">—</td><td id="report-Wrapped-liability">—</td></tr>
             <tr><th scope="row">SOL</th><td id="report-Sol-reserve">—</td><td id="report-Sol-fees">—</td><td id="report-Sol-float">—</td><td id="report-Sol-held">—</td><td id="report-Sol-liability">—</td></tr>
-              </tbody>
+              <tr id="report-Thunder-row" hidden><th scope="row">Thunder ECX</th><td id="report-Thunder-reserve">—</td><td id="report-Thunder-fees">—</td><td id="report-Thunder-float">—</td><td id="report-Thunder-held">—</td><td id="report-Thunder-liability">—</td></tr>
+<tr id="report-BitNames-row" hidden><th scope="row">BitNames ECX</th><td id="report-BitNames-reserve">—</td><td id="report-BitNames-fees">—</td><td id="report-BitNames-float">—</td><td id="report-BitNames-held">—</td><td id="report-BitNames-liability">—</td></tr>
+</tbody>
             </table>
           </div>
           <p class="small">Reserves include funds owed to customers and operating funds;
@@ -58,11 +60,14 @@
       </details>
       <section class="card">
         <h2>Transfer</h2>
+        <p id="sidechain-note" hidden>Send an ordinary transfer from the selected sidechain wallet to the displayed address. Pay the exact amount once, before the deadline. Fast withdrawals pay ECX after confirmations and safety checks. Incorrect or late sidechain deposits require operator review; they are not automatically refunded.</p>
         <form id="order-form">
           <label
             >Direction<select id="direction">
               <option value="NativeToWrapped">Native → wrapped</option>
               <option value="WrappedToNative">Wrapped → native</option>
+            <option id="option-ThunderToNative" value="ThunderToNative" hidden disabled>Thunder ECX → ECX</option>
+              <option id="option-BitNamesToNative" value="BitNamesToNative" hidden disabled>BitNames ECX → ECX</option>
             </select></label
           ><label
             >Amount<input
@@ -147,7 +152,7 @@
         <p class="small">Trading uses your wallet on the external site. Verify its token mint and quote before signing.</p>
       </section>
       <footer>
-        Bridge fee: 1% in each direction. Operator pays payout network costs.
+        Wrap/unwrap fee: 1% in each direction. Sidechain fees are shown in the quote. Operator pays payout network costs.
         Keep your recovery link private. Use only the networks and token mint
         shown above.
         <p><a id="support-link" target="_blank" rel="noopener noreferrer" hidden>Contact the bridge operator</a></p>

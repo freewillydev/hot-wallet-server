@@ -141,3 +141,14 @@ of freewillydev/operation-capabilities, version0.1.1.0. Its MIT copyright and li
 are retained in [the bundled notice](third-party/operation-capabilities/LICENSE).
 It depends only on base. The bridge uses checked interpretation, not its partial
 `execute` convenience function.
+
+## Optional sidechain nodes
+
+Source/run/artifact pins are in INSTALL.md. Thunder's upstream MIT and Unicode
+notice is preserved in `third-party/thunder/LICENSE.txt` and beside its mirrored
+dependency artifact. BitNames' source declares "All rights reserved unless
+otherwise noted"; no redistribution grant was identified for the enforcer.
+Those two dependencies are fetched from their original fixed CI artifacts through
+nightly.link, not included in the bridge's own binary bundle. Do not describe them
+as MIT licensed or treat a passing build as distribution approval. CI retention
+and upstream permission/release availability remain release dependencies.

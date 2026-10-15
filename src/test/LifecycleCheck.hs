@@ -571,7 +571,7 @@ checks = (++) <$> ((++) <$> payoutSafetyChecks <*> payoutGroupChecks) <*> sequen
           ,shouldExpireQuote (grace+1) grace True===Right False,shouldExpireQuote 0 grace False===Right False]
   , check "earned cancellation requires unsigned cleanup and exact replay reason" $ once $
       let outgoing=good $ withdrawalInput (money 1000) 100 (T.replicate 64 "a") Native (money 10) "owner" "earned"
-          terms=PaymentTerms (PolicySnapshot 2 "finalized" "fixture") customerCosts
+          terms=PaymentTerms (PolicySnapshot 2 "finalized" "fixture" []) customerCosts
           saved=WithdrawalView outgoing terms "earned" 3 Nothing
       in conjoin [decideWithdrawal outgoing terms "earned" (Just saved) Nothing===Right False
            ,decideWithdrawal outgoing terms "changed" (Just saved) Nothing===Left "fee_withdrawal_conflict"
@@ -583,12 +583,12 @@ checks = (++) <$> ((++) <$> payoutSafetyChecks <*> payoutGroupChecks) <*> sequen
       forAll (chooseInteger (1,1000000)) $ \n ->
         let receipt=W.Deposit "native:receipt:0" Nothing Native (money(n+2)) "anchor" 2 True 100
             facts=TreasuryFacts readyOperator receipt False False
-            entries=good $ decideTreasury (PolicySnapshot 2 "finalized" "fixture") [("float",money n),("operating",money 2)] facts
+            entries=good $ decideTreasury (PolicySnapshot 2 "finalized" "fixture" []) [("float",money n),("operating",money 2)] facts
             spent=good $ decideTreasurySpend (Native,money(n+1),money 1) n 1
         in conjoin [aggregate entries===M.fromList [((Native,Unallocated),negate(n+2)),((Native,Float),n),((Native,Operating),2)]
              ,sum(map postingDelta entries)===0,sum(map postingDelta spent)===0
              ,decideTreasurySpend (Native,money(n+1),money 1) (n-1) 1===Left "treasury_spend_exceeds_free_allocation"
-             ,decideTreasury (PolicySnapshot 2 "finalized" "fixture") [("float",money(n+2))] facts {treasuryLinked=True}===Left "receipt_has_customer_obligation"
+             ,decideTreasury (PolicySnapshot 2 "finalized" "fixture" []) [("float",money(n+2))] facts {treasuryLinked=True}===Left "receipt_has_customer_obligation"
              ,property $ all ((`notElem` [Principal,Backing,Liquidity,Earned]).postingAccount) spent]
   , check "customer projection preserves conversion priority independently of row ordering and extra refunds" $
       forAll (chooseInt (1,6)) $ \count -> forAll arbitrary $ \review ->
@@ -896,7 +896,7 @@ snapshot :: Int -> FundingCase -> SettlementFacts
 snapshot index funding = SettlementFacts queued view (Just(currency,money 10)) Nothing Nothing
  where
   p=outgoing index funding; native=paymentAsset p==Native; currency=if native then Native else Sol
-  view=PaymentView p (PaymentTerms (PolicySnapshot 2 "finalized" "fixture") (CostLimits (money 10) (money 10) (money 10))) PaymentPaying
+  view=PaymentView p (PaymentTerms (PolicySnapshot 2 "finalized" "fixture" []) (CostLimits (money 10) (money 10) (money 10))) PaymentPaying
   queued=RecordedAttempt (paymentId p) (if native then "Native" else "Solana") 0 (money 10) "broadcast_intent" (Just 5) Nothing
     (SignedAttempt ("transaction-"<>T.pack(show index)) "exact-saved-bytes" "exact-saved-policy" Nothing)
 
@@ -1048,5 +1048,5 @@ customerPromotion :: Direction -> Integer -> Integer -> PromotionFacts
 customerPromotion direction n charge=PromotionFacts order receipt 300 False
  where
   order=W.OrderView "order" (customerRequest direction n) (good $ historicalQuote (money n) (money charge))
-    "AwaitingDeposit" 200 (Just "instruction") Nothing (PolicySnapshot 2 "finalized" "fixture")
+    "AwaitingDeposit" 200 (Just "instruction") Nothing (PolicySnapshot 2 "finalized" "fixture" [])
   receipt=W.Deposit "original" (Just "order") (sourceAsset direction) (money n) "anchor" 2 True 100

@@ -115,11 +115,11 @@ initializeLedger settings identity = do
         require (occupied==[False]) "initialization_requires_empty_ledger"
         now<-floor <$> getPOSIXTime
         _<-O.runInsert c O.Insert {O.iTable=S.deployment,
-          O.iRows=[S.Deployment (O.sqlInt8 1) (O.sqlInt8 23) (O.sqlStrictText identity) (O.sqlInt8 0) (O.sqlInt8 0) (O.sqlInt8 1) (O.sqlStrictText "installation_requires_reconciliation")],
+          O.iRows=[S.Deployment (O.sqlInt8 1) (O.sqlInt8 24) (O.sqlStrictText identity) (O.sqlInt8 0) (O.sqlInt8 0) (O.sqlInt8 1) (O.sqlStrictText "installation_requires_reconciliation")],
           O.iReturning=O.rCount,O.iOnConflict=Nothing}
         _<-O.runInsert c O.Insert {O.iTable=S.custody,O.iRows=[(O.sqlInt8 1,O.sqlInt8 0,O.null,O.null,O.null)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
         void $ O.runInsert c O.Insert {O.iTable=S.operatingClock,O.iRows=[(O.sqlInt8 1,O.sqlInt8 now)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
-      [r] | S.singleton r==1 && S.schemaVersion r==23 && S.fingerprint r==identity
+      [r] | S.singleton r==1 && S.schemaVersion r==24 && S.fingerprint r==identity
         && S.criticalSequence r>=0 && S.backupSequence r>=0 && S.backupSequence r<=S.criticalSequence r
         && S.paused r `elem` [0,1]->pure ()
       _->reject "ledger_profile_or_schema_mismatch"
@@ -136,7 +136,7 @@ provisionRestoredDatabase settings identity sequenceNo=do
     claimWorker db >>= flip require "worker_already_running"
     rows<-O.runSelect db (O.selectTable S.deployment) :: IO [S.Deployment]
     require (case rows of
-      [r]->S.singleton r==1 && S.schemaVersion r==23 && S.fingerprint r==identity
+      [r]->S.singleton r==1 && S.schemaVersion r==24 && S.fingerprint r==identity
         && S.criticalSequence r==sequenceNo && S.paused r==1
         && S.pauseReason r=="restored_requires_reconciliation"
       _->False) "restored_database_identity_or_state_mismatch"

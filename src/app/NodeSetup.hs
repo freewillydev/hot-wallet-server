@@ -1,8 +1,9 @@
 -- One-time local node provisioning, never a worker/signer runtime capability.
-module NodeSetup (credentials,checkConfig,serviceName,provision,persistRestoredWallet,signerPolicy,refreshSignerPolicy) where
+module NodeSetup (credentials,credentialsFor,checkConfig,serviceName,provision,persistRestoredWallet,signerPolicy,refreshSignerPolicy) where
 import Bridge.AdminKey (savePrivate,readPrivate,withFamily)
 import Bridge.File (withHandle)
 import System.IO (hFlush)
+import qualified Bridge.Wire as W
 import Bridge.Error
 import Bridge.RPC (fieldValue)
 import Bridge.SolanaMessage (base58)
@@ -40,8 +41,11 @@ checkConfig path=do
     && isDirectory parent && fileMode parent .&. 0o022==0 && fileSize status<=8192) "unsafe_node_configuration"
 
 credentials :: FilePath -> IO (FilePath,FilePath,FilePath)
-credentials directory=do
-  let roles=[("admin",adminMethods),("worker",workerMethods),("signer",signerMethods)]
+credentials=credentialsFor False
+
+credentialsFor :: Bool -> FilePath -> IO (FilePath,FilePath,FilePath)
+credentialsFor sidechains directory=do
+  let roles=[("admin",adminMethods),("worker",workerMethods),("signer",signerMethods)]<>[("enforcer",enforcerMethods) | sidechains]
       files=[directory</>("native-"<>role<>".auth") | (role,_)<-roles]
       config=directory</>"native-rpc.conf"
   complete<-doesFileExist config
@@ -64,7 +68,7 @@ credentials directory=do
       pure $ "rpcauth="<>B8.unpack user<>":"<>T.unpack salt<>"$"<>digest<>"\nrpcwhitelist="<>B8.unpack user<>":"<>methods<>"\n"
     savePrivate config (B8.pack $ concat rows)
   case files of
-    [admin,worker,signer]->pure(admin,worker,signer)
+    admin:worker:signer:_->pure(admin,worker,signer)
     _->reject "invalid_generated_credentials"
 
 -- Preserve the node's existing configuration and authority defaults. Refuse
@@ -87,7 +91,11 @@ provision directory=do
       require (method `elem` ["source","bundle"]) "managed_node_release_bootstrap_required"
       root<-fieldValue "sourceRoot" setup
       let installer=if method=="bundle" then root</>"node" else root</>"build/install/node"
-      result<-rawSystem "/bin/sh" [installer]
+      profile<-fieldValue "profile" bootstrap :: IO W.Profile
+      chains<-either (const $ reject "invalid_setup_json") pure
+        (parseEither (withObject "config" (\o->o .:? "sidechains" .!= ([]::[Value]))) bootstrap)
+      let mode=if profile==W.L2LSignetDevnet then (if null chains then "signet-pruned" else "signet-full") else "betanet"
+      result<-rawSystem "/bin/sh" [installer,mode]
       require (result==ExitSuccess) "managed_node_install_failed_retry_start"
     checkConfig path
     (loaded,_,_)<-readProcessWithExitCode "systemctl" ["cat",service] ""
@@ -115,7 +123,7 @@ provision directory=do
         -- Recovery may have appended one wallet autoload line after provisioning.
         -- Preserve that existing line; never invent a wallet or accept other edits.
         retained=case [extra | prefix<-[legacyExpected,updated],Just extra<-[B.stripPrefix prefix current]
-          ,Just line<-[B.stripPrefix "\nwallet=" extra],Just wallet<-[B.stripSuffix "\n" line]
+          ,prefix<-["\nwallet=","\nsignet.wallet="],Just line<-[B.stripPrefix prefix extra],Just wallet<-[B.stripSuffix "\n" line]
           ,not(B.null wallet),B8.all (`elem` ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"::String)) wallet] of
             extra:_->extra
             []->B.empty
@@ -164,6 +172,9 @@ refreshSignerPolicy directory=do
     (legacy,_)<-either reject pure (signerPolicy auth rules)
     when legacy $ provision directory
 
+enforcerMethods :: String
+enforcerMethods="getblockchaininfo,getnetworkinfo,getblockhash,getblockheader,getblock,getbestblockhash,getblockcount,getzmqnotifications,getmempoolinfo,getmempoolentry,getrawmempool,getrawtransaction,gettxout,getindexinfo,getconnectioncount,getblocktemplate"
+
 readMethods,workerMethods,signerMethods,adminMethods :: String
 readMethods="getblockchaininfo,getblockhash,getblockheader,getnetworkinfo,getconnectioncount,getwalletinfo,getbalances,getaddressinfo,gettransaction,gettxout,gettxspendingprevout,getmempoolentry,listsinceblock,listunspent,listlockunspent,decodepsbt,decoderawtransaction,decodescript,estimatesmartfee,getmempoolinfo"
 workerMethods=readMethods<>",getdescriptorinfo,deriveaddresses"<>",getnewaddress,getaddressesbylabel,getrawchangeaddress,walletcreatefundedpsbt,lockunspent,createpsbt,testmempoolaccept,sendrawtransaction"
@@ -187,10 +198,10 @@ signerPolicy credential rules=do
 
 -- Managed recovery only, with custody services stopped by the activation journal.
 -- Preserve all RPC restrictions; an unfamiliar scoped config requires review.
-persistRestoredWallet :: T.Text -> IO ()
-persistRestoredWallet wallet=do
+persistRestoredWallet :: W.Profile -> T.Text -> IO ()
+persistRestoredWallet profile wallet=do
   let path="/var/lib/ecx-betanet/bitcoin.conf"
-      record=B8.pack $ "wallet="<>T.unpack wallet
+      record=B8.pack $ (if profile==W.L2LSignetDevnet then "signet.wallet=" else "wallet=")<>T.unpack wallet
   require (not(T.null wallet) && T.all (`elem` ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"::String)) wallet) "invalid_recovered_wallet_name"
   checkConfig path
   bytes<-B.readFile path

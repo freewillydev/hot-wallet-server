@@ -2,6 +2,7 @@
 module RestoreNative (newStage,newLedgerStage,stageNative,stageLedger,nodeCommand,ledgerCommand,checkExecutable,checkRootAncestors,checkStages) where
 import Bridge.AdminKey (savePrivate,readPrivate)
 import qualified Bridge.Config as C
+import qualified Bridge.Wire as W
 import Bridge.Error (require,reject)
 import Bridge.File (withHandle,hashHandle)
 import Bridge.Identity (digest)
@@ -95,7 +96,7 @@ stageNative journal source staging c=do
   require (code==ExitSuccess && words name==["ecxnode"]) "restore_requires_verified_managed_node_identity"
   let node=object ["profile" .= C.profile c,"nativeRpc" .= C.nativeRpc c,"nativeWallet" .= C.nativeWallet c
         ,"nativeCheckpointHeight" .= C.nativeCheckpointHeight c,"nativeCheckpointHash" .= C.nativeCheckpointHash c
-        ,"nativeCookie" .= ("/var/lib/ecx-betanet/.cookie"::FilePath)]
+        ,"nativeCookie" .= (if C.profile c==W.L2LSignetDevnet then "/var/lib/ecx-betanet/signet/.cookie" else "/var/lib/ecx-betanet/.cookie"::FilePath)]
   stageFiles Native journal source staging ["native-wallet","native-wallet.json"] (Just node)
 
 -- Closed role selection; no caller-selected owner, parent or external command.

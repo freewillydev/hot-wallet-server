@@ -143,7 +143,18 @@ if [ "$mode" = fresh ] || [ "$mode" = recover ]; then
   for name in worker.json signer.json; do private_source "$material/$name"; done
   if [ -e "$material/sources.json" ] || [ -L "$material/sources.json" ]; then
     private_source "$material/sources.json"
-    jq -e 'type == "object" and all(to_entries[]; (.key as $k | ["solana.keypair.json","native-worker.auth","native-signer.auth","native-unlock","backup.repository","backup.password","public-fullchain.pem","public-privkey.pem"] | index($k)) != null and (.value | type == "string" and startswith("/") and (explode | all(. >= 32 and . != 127))))' "$material/sources.json" >/dev/null || fail 'invalid source references'
+    jq -e 'type == "object" and all(to_entries[]; (.key as $k | ["solana.keypair.json","native-worker.auth","native-signer.auth","native-enforcer.auth","thunder-seed.txt","bitnames-seed.txt","native-unlock","backup.repository","backup.password","public-fullchain.pem","public-privkey.pem"] | index($k)) != null and (.value | type == "string" and startswith("/") and (explode | all(. >= 32 and . != 127))))' "$material/sources.json" >/dev/null || fail 'invalid source references'
+  fi
+  side_names=$(jq -er '[.sidechains[]?.sidechainPolicy.sidechainAsset | ascii_downcase] | join(" ")' "$material/worker.json")
+  for name in $side_names; do
+    case "$name" in thunder|bitnames) ;; *) fail 'unsupported sidechain';; esac
+    source=$(source_file "$name-seed.txt") || fail 'missing sidechain seed'
+    private_source "$source"
+    [ "$source" = "$(jq -er --arg name "$name" '.sidechains[] | select((.sidechainPolicy.sidechainAsset | ascii_downcase)==$name) | .sidechainSeedFile' "$material/worker.json")" ] || fail 'sidechain seed reference differs'
+  done
+  if [ -n "$side_names" ]; then
+    source=$(source_file native-enforcer.auth) || fail 'missing restricted enforcer credential'
+    private_source "$source"
   fi
   key_source=$(source_file solana.keypair.json) || fail 'missing key source'
   worker_source=$(source_file native-worker.auth) || fail 'missing worker credential source'
@@ -200,7 +211,7 @@ if [ "$mode" = fresh ] || [ "$mode" = recover ]; then
     for source in "$key_source" "$worker_source" "$signer_source" "$unlock_source" "$cert_source" "$tls_source"; do
       if [ -n "$source" ] && [ -f "$source" ]; then sha256sum "$source"; fi
     done
-    for name in backup.repository backup.password; do
+    for name in backup.repository backup.password native-enforcer.auth thunder-seed.txt bitnames-seed.txt; do
       source=$(source_file "$name" 2>/dev/null) || source=
       if [ -n "$source" ] && [ -f "$source" ]; then private_source "$source"; sha256sum "$source"; fi
     done
@@ -259,14 +270,20 @@ if [ "$mode" = fresh ] || [ "$mode" = recover ]; then
     if [ "$role" = worker ]; then account=$worker; else account=$signer; fi
     install -d -m 0750 -o root -g "$account" "$config/$role"
     install -d -m 0700 -o "$account" -g "$account" "$state/$role"
-    jq --arg root "$config/$role" --arg sdk "$prefix/current/lib/libecx_solana_sdk.so" --arg fence "$state/worker/fence" \
-      '.nativeCookie=($root+"/native.auth") | .signerAuthFile=($root+"/signer.auth") | .solanaSdkLibrary=$sdk | .fenceDirectory=$fence | .nativeUnlockFile=null' \
+    jq --arg root "$config/$role" --arg sdk "$prefix/current/lib/libecx_solana_sdk.so" --arg fence "$state/worker/fence" --arg seeds "$state/signer" \
+      '.nativeCookie=($root+"/native.auth") | .signerAuthFile=($root+"/signer.auth") | .solanaSdkLibrary=$sdk | .fenceDirectory=$fence | .nativeUnlockFile=null | .sidechains=((.sidechains // []) | map(.sidechainSeedFile=($seeds+"/"+(.sidechainPolicy.sidechainAsset | ascii_downcase)+"-seed.txt")))' \
       "$material/$role.json" > "$config/$role/config.json"
     chown root:"$account" "$config/$role/config.json"
     chmod 0640 "$config/$role/config.json"
     if [ "$role" = worker ]; then credential_source=$worker_source; else credential_source=$signer_source; fi
     install -o "$account" -g "$account" -m 0600 "$credential_source" "$config/$role/native.auth"
   done
+  for name in $side_names; do
+    install -o "$signer" -g "$signer" -m 0600 "$(source_file "$name-seed.txt")" "$state/signer/$name-seed.txt"
+  done
+  if [ -n "$side_names" ]; then
+    sh "$target/sidechains" "$config/worker/config.json" "$(source_file native-enforcer.auth)"
+  fi
   install -o "$signer" -g "$signer" -m 0600 "$key_source" "$config/signer/solana.keypair.json"
   if [ -e "$unlock_source" ]; then
     [ -f "$unlock_source" ] && [ ! -L "$unlock_source" ] && [ "$(stat -c '%u:%a' "$unlock_source")" = 0:600 ] || fail 'protect native-unlock as root:0600'

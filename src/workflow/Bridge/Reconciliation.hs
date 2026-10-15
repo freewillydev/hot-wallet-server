@@ -4,8 +4,10 @@ module Bridge.Reconciliation (reconcileCustody,inspectLossCustody,inspectCustody
 import Bridge.Domain (Asset(..),units)
 import Bridge.Error
 import Bridge.Store
-import Bridge.Observer (ObserverSettings(..))
+import Bridge.Observer (ObserverSettings(..),observationOrigins)
 import Bridge.Payment
+import qualified Bridge.Sidechain as Side
+import Bridge.Wire (sidechainAsset)
 import Bridge.NativePayment
 import Bridge.SolanaPayment
 import qualified Bridge.Native as N
@@ -47,17 +49,22 @@ inspectCustody losses manager settings config reader = do
   let native=nativeSettings settings; solana=solanaSettings settings
       verifier=fmap (\url->rpc manager url Nothing) (S.solanaVerifierRpc solana)
       identity=N.nativeIdentity manager native >> S.solanaGenesisWith (S.solanaCall manager solana) verifier solana
-  inspectCustodyWith (floor <$> getPOSIXTime) identity (N.nativeCall manager native) (N.withNativeHistory native) (S.solanaCall manager solana)
+  inspectCustodyWithSidechains (sideBalances manager settings reader) (floor <$> getPOSIXTime) identity (N.nativeCall manager native) (N.withNativeHistory native) (S.solanaCall manager solana)
     verifier settings config reader losses
 
 -- Explicit read-only transports allow protocol contracts without invented chains.
 -- No transaction spans RPC; the revision is checked again before certification.
 inspectCustodyWith :: IO Int64 -> IO () -> NativeRPC -> (Text -> Int -> (Text -> Value -> IO ()) -> IO Text) -> SolanaRPC -> Maybe SolanaRPC
   -> ObserverSettings -> H.SolanaPolicy -> Reader -> Bool -> IO (Int64,Int64,Bool,Value)
-inspectCustodyWith clock identity native history solana verifier settings config reader inspectLosses = do
+inspectCustodyWith=inspectCustodyWithSidechains (const $ pure [])
+
+inspectCustodyWithSidechains :: ([(Text,Text)] -> IO [(Asset,Integer)]) -> IO Int64 -> IO () -> NativeRPC
+  -> (Text -> Int -> (Text -> Value -> IO ()) -> IO Text) -> SolanaRPC -> Maybe SolanaRPC
+  -> ObserverSettings -> H.SolanaPolicy -> Reader -> Bool -> IO (Int64,Int64,Bool,Value)
+inspectCustodyWithSidechains sideBalances clock identity native history solana verifier settings config reader inspectLosses = do
   at<-clock
   let n=nativeSettings settings; s=solanaSettings settings
-      origins=[("Native",N.nativeCheckpointHash n),("Solana",tokenOrigin settings),("SolanaOperating",operatingOrigin settings)]
+      origins=observationOrigins settings
   require (N.profile n==S.solanaProfile s && S.mint s==H.mint config
     && S.custodyOwner s==H.custodyOwner config && S.custodyAta s==H.custodyAta config) "payment_profile_mismatch"
   require (maybe False (const True) verifier==maybe False (const True) (S.solanaVerifierRpc s)) "verifier_configuration_mismatch"
@@ -118,10 +125,12 @@ inspectCustodyWith clock identity native history solana verifier settings config
     require (currentFamily==saved && familyPosition saved==object ["hash" .= block,"height" .= height]) "custody_native_view_changed"
   active<-native False "getblockhash" [toJSON height] >>= parseValue parseJSON
   require (active==block) "custody_native_view_changed"
+  side<-sideBalances (custodyHeads view)
+  require (sortOn id (map fst side)==sortOn id (map (sidechainAsset.Side.sidechainPolicy) $ sidechainSettings settings)) "custody_sidechain_snapshot_missing"
   end<-clock
   require (end>=at && toInteger end-toInteger at<=60) "custody_check_timed_out"
   let walletExcluded=sum (map (toInteger.units.prevoutAmount) excluded)
-      observed=M.fromList [(Native,nativeUnits+walletExcluded),(Wrapped,wrapped),(Sol,sol)]
+      observed=M.fromList $ [(Native,nativeUnits+walletExcluded),(Wrapped,wrapped),(Sol,sol)]<>side
       adjustments=M.fromListWith (+) [(asset,delta)|(_,asset,delta)<-effects]
       rows=[(asset,n,M.findWithDefault 0 asset adjustments,M.findWithDefault 0 asset observed)|(asset,n)<-M.toList $ custodyTotals view]
       matches=all (\(_,booked,delta,actual)->booked+delta>=0 && booked+delta==actual) rows
@@ -134,6 +143,32 @@ inspectCustodyWith clock identity native history solana verifier settings config
   revision<-evalRead reader ReadCustodyRevision
   require (revision==custodyRevision view) "custody_ledger_changed"
   pure (revision,at,matches,report)
+
+-- Sidechain custody is receive-only. Every ever-allocated address remains in
+-- the ledger; a removed UTXO cannot be hidden by dropping a completed order.
+sideBalances :: Manager -> ObserverSettings -> Reader -> [(Text,Text)] -> IO [(Asset,Integer)]
+sideBalances manager settings reader heads=mapM inspect (sidechainSettings settings)
+ where
+  inspect chain=do
+    let asset=sidechainAsset (Side.sidechainPolicy chain)
+        call=Side.sidechainCall manager chain
+        validator=Side.validatorCall manager chain
+        native=N.nativeCall manager (nativeSettings settings)
+        position=Side.sidechainHeadWith native validator call asset
+        page after count=do
+          instructions<-evalRead reader (SidechainInstructions asset after)
+          require (count+length instructions<=100000) "sidechain_scan_too_large"
+          outputs<-Side.readOutputsWith call asset [address | (_,address,_)<-instructions]
+          rest<-case reverse instructions of
+            (identifier,_,_):_ | length instructions==256->page (Just identifier) (count+length instructions)
+            _->pure 0
+          pure (rest+sum [toInteger(units $ Side.outputAmount output) | output<-outputs])
+    before<-position
+    require (lookup (T.pack $ show asset) heads==Just(snd before)) "custody_sidechain_history_advanced"
+    balance<-page Nothing 0
+    after<-position
+    require (before==after) "custody_sidechain_view_changed"
+    pure(asset,balance)
 
 nativeBalance :: NativeRPC -> IO (Integer,Integer,Text,Int64)
 nativeBalance call = do
