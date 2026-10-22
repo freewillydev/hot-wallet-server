@@ -8,16 +8,13 @@ import Bridge.Error
 import Bridge.Identity (publicKey)
 import Bridge.RPC (independentHttps)
 import Bridge.NativeKey (validMainnetXpub)
-import Bridge.Wallet (nativeDescriptors,protectWalletProcess)
+import Bridge.Wallet (nativeDescriptors,walletKey,protectWalletProcess)
 import Control.Exception (catch)
 import Control.Monad (forM_)
 import Data.List (isPrefixOf,stripPrefix)
 import Data.Maybe (fromMaybe,isJust)
 import Data.IP (IP)
 import Data.Aeson (Value,object,(.=))
-import Crypto.Error (CryptoFailable(..))
-import qualified Crypto.PubKey.Ed25519 as Ed
-import qualified Data.ByteArray as BA
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Base58 as B58
 import qualified Data.ByteString.Char8 as B8
@@ -31,7 +28,7 @@ data InstallConfig = InstallConfig
   { serverIp :: String, domain :: String
   , websiteDirectory :: Maybe FilePath
   , cloudflareTunnelToken :: Maybe String
-  , ecxSeedBip39 :: String, solKeyB58 :: String, assetMintAddress :: String
+  , ecxSeedBip39 :: String, solSeedBip39 :: String, assetMintAddress :: String
   , feeRateWrapBps :: Int, feeRateUnwrapBps :: Int
   , payoutThresholdEcx :: String, payoutThresholdWrappedEcx :: String
   , minimumPayoutIntervalHours :: Integer
@@ -63,19 +60,13 @@ updateSettings file=do
     ,"setup" .= updateSetupDirectory config]
 
 -- Validate the entire input before creating any installation material. Return
--- only the decoded Solana key bytes to the private configuration publisher.
+-- only the derived Solana key bytes to the private configuration publisher.
 validateInstallConfig :: InstallConfig -> IO B.ByteString
 validateInstallConfig c=do
   require (freshCustodyAttestation c=="NEW_UNUSED_KEYS_WITH_NO_EXISTING_BRIDGE_LEDGER") "fresh_unused_custody_attestation_required"
   require (not(null $ initialFundingOwnership c) && length(initialFundingOwnership c)<=512) "initial_funding_ownership_statement_required"
   _<-nativeDescriptors False (ecxSeedBip39 c) >>= either reject pure
-  key<-case B58.decodeBase58 B58.bitcoinAlphabet (TE.encodeUtf8 $ T.pack $ solKeyB58 c) of
-    Just bytes | B.length bytes==64->pure bytes
-    _->reject "expected_base58_solana_64_byte_private_key"
-  secret<-case Ed.secretKey(B.take 32 key) of
-    CryptoPassed value->pure value
-    _->reject "invalid_imported_key"
-  require ((BA.convert(Ed.toPublic secret)::B.ByteString)==B.drop 32 key) "imported_key_public_half_mismatch"
+  key<-either reject pure (walletKey $ solSeedBip39 c)
   require (assetMintAddress c=="EVHqNdzjCupKi4rQkbuYw52sa1m8A7jeUAMP23S9AVVq") "canonical_mint_required"
   require (feeRateWrapBps c==100 && feeRateUnwrapBps c==100) "supported_fee_is_100_basis_points"
   forM_ [payoutThresholdEcx c,payoutThresholdWrappedEcx c] $ \value->do
