@@ -1830,3 +1830,22 @@ VM, saved local pilot node endpoint unavailable, AWS ecx-dev credentials expired
 Internal disk16GiB, external drives32MiB/1.4GiB available: insufficient for the
 27GiB snapshot. AWS login approval remains pending. No live custody, user node
 or public ingress changes.
+
+### Solana configuration phrase (2026-10-22)
+
+Fresh configuration now uses `solSeedBip39`, replacing `solKeyB58`. It requires
+12 canonical English BIP39 words and derives the existing `m/44'/501'/0'/0'`
+account with an empty passphrase. Production validation is 9 lines shorter and
+reuses `Bridge.Wallet.walletKey`; no dependency, runtime key format or custody
+change. Existing sealed records must remain unchanged; Docs/INSTALL.md documents
+the authenticated updater entry for those legacy installations.
+
+Scoped PASS: native chain Cabal build, both actual InstallConfig modules compiled,
+and direct QuickCheck (100 valid phrases, fixed derivation vector, 12 invalid
+inputs, old-field refusal). Main validation reused feature chain dependencies;
+Wallet.hs is byte-identical. Separate domain_config_check source review PASS for
+both patches. Full configure executable tests were updated but not run because
+browser/SDK assets need rebuilding; this is not full installer/release acceptance.
+Test log `/tmp/hot-wallet-main-sol-seed-check.log`, SHA256
+`0c1cc7cd7934e8ba9895837bb8c9a94259b980fb45c6e3c26bc2dd9fb2df817a`.
+No live wallet replacement, service update, or financial operation was performed.

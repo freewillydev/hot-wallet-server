@@ -15,7 +15,10 @@ version-specific evidence; results from earlier installers do not certify this o
 ### Older installed versions
 
 An installed binary predating `update-settings` cannot parse updater settings.
-For that one transition, use the existing authenticated entry directly, with the
+The same applies after upgrading a legacy `solKeyB58` installation to the
+`solSeedBip39` configuration format. Preserve its sealed configuration and custody;
+a private key cannot be converted back into its original recovery phrase.
+Use the existing authenticated entry directly, with the
 independently trusted key, downloaded signed release, and original setup folder:
 
 ```sh
@@ -23,9 +26,11 @@ sudo python3 build/scripts/release-auth install /root/release-public.pem /root/n
 ```
 
 Use the actual original setup folder for your deployment. This retains the same
-signature/checkpoint/schema gates and never reinstalls custody. Afterward add
-`updatePublicKey`, `updateReleaseDirectory` and `updateSetupDirectory` to the
-protected Haskell record; subsequent updates use only `sudo ./build/update.sh`.
+signature/checkpoint/schema gates and never reinstalls custody. For a current-format
+record, add `updatePublicKey`, `updateReleaseDirectory` and `updateSetupDirectory`
+to the protected Haskell record if absent; subsequent updates use only
+`sudo ./build/update.sh`. Legacy `solKeyB58` installations retain the authenticated
+command above; they must not rerun fresh installation.
 
 ### Fresh installation
 
@@ -57,7 +62,14 @@ available; see [LOCAL-DEVELOPMENT.md](LOCAL-DEVELOPMENT.md) for prerequisites.
 The interactive wizard saves settings during `configure`; `start` then
 creates **fresh CanonicalBeta custody with two generated wallets**, requiring a
 terminal and recovery acknowledgement. Configuration-file installation imports
-the supplied ECX phrase and Solana key instead. Missing or invalid keys stop setup;
+the supplied ECX and Solana phrases instead. `solSeedBip39` requires 12 lowercase
+English BIP39 words separated by single spaces, including a valid checksum.
+It derives `m/44'/501'/0'/0'` with an empty BIP39 passphrase, the first account in
+[Phantom's default derivation group](https://help.phantom.com/articles/12988493966227).
+Other accounts or derivation paths are not selected automatically.
+The old `solKeyB58` field is no longer accepted. This is a fresh-setup format change;
+do not rewrite a sealed installation record or replace existing custody to adopt it.
+Missing or invalid seeds stop setup;
 it never generates replacements.
 It asks for the connection inputs below (Enter accepts displayed defaults),
 plus an explicit initial SOL ownership statement saved for startup accounting:

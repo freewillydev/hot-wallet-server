@@ -122,7 +122,7 @@ contract=bracket temporary removeDirectoryRecursive $ \directory->do
     nativeChecked<-nativeSeedContract directory
     simplifiedChecked<-simpleContract directory executable
     require simplifiedChecked "interactive_wallet_mode_contract_failed"
-    importedChecked<-importContract directory executable (seed<>public)
+    importedChecked<-importContract directory executable
     require importedChecked "import_wallet_mode_contract_failed"
     -- A verified pre-created ATA has no local creation attempt. Do not block
     -- ordinary reconciliation, and never silently skip an existing corrupt file.
@@ -184,14 +184,19 @@ contract=bracket temporary removeDirectoryRecursive $ \directory->do
     hClose h;removeFile path;createDirectory path;setFileMode path 0o700
     pure path
 
--- Real configure-file command, published BIP-39 vector and disposable Solana key.
+-- Real configure-file command, published BIP-39 vectors and disposable keys.
 -- No RPC, node creation, signing, services or funded wallets are involved.
-importContract :: FilePath -> FilePath -> B.ByteString -> IO Bool
-importContract parent executable key=do
+importContract :: FilePath -> FilePath -> IO Bool
+importContract parent executable=do
   let phrase=unwords(replicate 11 "abandon"<>["about"])
-      fields=
+      solPhrase="legal winner thank year wave sausage worth useful legal winner thank yellow"
+  key<-either (const $ fail "fixture Solana mnemonic") pure (walletKey solPhrase)
+  -- Independent PBKDF2/HMAC vector, also covered by walletProperty below.
+  require (Hex.convertToBase Hex.Base16 (B.take 32 key)==("6987bdb06aa8a243a3019f41489ffa8e609c953a885a748d1849a8df760aa479"::B.ByteString))
+    "solana_import_derivation_vector_mismatch"
+  let fields=
         [("serverIp",show ("127.0.0.1"::String)),("domain",show ("bridge.example.invalid"::String))
-        ,("websiteDirectory","Nothing"),("cloudflareTunnelToken","Nothing"),("ecxSeedBip39",show phrase),("solKeyB58",show $ T.unpack $ base58 key)
+        ,("websiteDirectory","Nothing"),("cloudflareTunnelToken","Nothing"),("ecxSeedBip39",show phrase),("solSeedBip39",show solPhrase)
         ,("assetMintAddress",show $ T.unpack Bootstrap.canonicalMint)
         ,("feeRateWrapBps","100"),("feeRateUnwrapBps","100")
         ,("payoutThresholdEcx",show ("0.002"::String)),("payoutThresholdWrappedEcx",show ("0.003"::String))
@@ -226,7 +231,7 @@ importContract parent executable key=do
       output=parent</>"record-setup"
       conf=parent</>"server.conf"
       invoke path destination=readProcessWithExitCode executable ["configure-file",path,destination] ""
-      secretFree out=all (not . (`isInfixOf` out)) [phrase,T.unpack(base58 key),"test-backup-password-only"]
+      secretFree out=all (not . (`isInfixOf` out)) [phrase,solPhrase,T.unpack(base58 key),"test-backup-password-only"]
   forM_ [replace "serverIp" (show address) | address<-["::1","2001:DB8::1","::ffff:127.0.0.1"]] $ \values->do
     imported<-InstallConfig.validateInstallConfig (read $ record values)
     require (imported==key) "valid_ipv6_configuration_rejected"
@@ -319,11 +324,15 @@ importContract parent executable key=do
       [replicate 31 't',replicate 4097 't',replicate 32 't'<>"\n",replicate 32 't'<>"\f",replicate 32 't'<>"\x100"]
     <>map (replace "ownerSolPubkey" . show . T.unpack) [C.custodyOwner config,C.custodyAta config,C.mint config]
     <>map (replace "ownerEcxXpub" . show) badXpubs <>
-    [replace "ecxSeedBip39" (show (""::String)),replace "solKeyB58" (show (""::String))
+    map (replace "solSeedBip39" . show)
+      ["",unwords(replicate 12 "abandon"),unwords(take 11 $ words solPhrase),solPhrase<>" yellow"
+      ,solPhrase<>" "<>solPhrase,"notaword "<>unwords(drop 1 $ words solPhrase)
+      ,"Legal "<>unwords(drop 1 $ words solPhrase)," "<>solPhrase,solPhrase<>" ",solPhrase<>"\n"
+      ,"legal  "<>unwords(drop 1 $ words solPhrase),T.unpack(base58 key)] <>
+    [replace "ecxSeedBip39" (show (""::String))
     ,replace "ecxSeedBip39" (show $ unwords $ replicate 12 "abandon")
-    ,replace "solKeyB58" (show $ T.unpack $ base58 $ B.take 32 key<>B.replicate 32 0)
-    ,replace "solKeyB58" (show $ map (\c->toEnum(fromEnum c+256)::Char) $ T.unpack $ base58 key)
-    ,filter ((/="solKeyB58").fst) fields
+    ,filter ((/="solSeedBip39").fst) fields
+    ,map (\(name,value)->if name=="solSeedBip39" then ("solKeyB58",show $ T.unpack $ base58 key) else (name,value)) fields
     ,replace "backupRepositoryUrl" (show ("rest:https://"::String))
     ,replace "backupRepositoryUrl" (show ("rest:http://backup.example.invalid/repository"::String))
     ,replace "backupRepositoryUrl" (show ("rest:https://backup.example.invalid/repository\nother"::String))
@@ -341,7 +350,9 @@ importContract parent executable key=do
       savePrivate file (B8.pack $ record values)
       (code,stdout,stderr)<-invoke file dest
       exists<-doesDirectoryExist dest
-      pure(code/=ExitSuccess && not exists && secretFree(stdout<>stderr))
+      let entered=maybe "" read (lookup "solSeedBip39" values) :: String
+      pure(code/=ExitSuccess && not exists && secretFree(stdout<>stderr)
+        && (null entered || not(entered `isInfixOf` (stdout<>stderr))))
   let changed=parent</>"changed.conf"
   savePrivate changed (B8.pack $ record $ replace "minimumPayoutIntervalHours" "24")
   (changedCode,_,_)<-invoke changed output

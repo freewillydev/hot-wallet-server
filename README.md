@@ -19,7 +19,9 @@ Requires Ubuntu 24.04 x86_64, 8 GB RAM and a 256 GB SSD.
    sudo ./build/install.sh
    ```
 
-   Supply unused wallet keys, two independent Solana RPC URLs and backup settings.
+   Supply unused wallet seeds, two independent Solana RPC URLs and backup settings.
+   `solSeedBip39` takes 12 lowercase English BIP39 words separated by single spaces.
+   It uses Solana account `m/44'/501'/0'/0'`, with no additional passphrase.
 
 3. **Fund the SOL address** printed as `Fund SOL fees at:` with **0.01 SOL on
    Solana Mainnet**, in one operator-owned transfer. Wait for confirmation, then
