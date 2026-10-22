@@ -1607,3 +1607,28 @@ VM, saved local pilot node endpoint unavailable, AWS ecx-dev credentials expired
 Internal disk16GiB, external drives32MiB/1.4GiB available: insufficient for the
 27GiB snapshot. AWS login approval remains pending. No live custody, user node
 or public ingress changes.
+
+### Domain restored (2026-10-22)
+
+`https://bridge.bitnames.info` now serves the existing CanonicalBeta deployment
+`ecx-J9YrfMYK2uzydt2R` on `i-07c78660b1a5734b9` (current IP `18.222.49.160`).
+The former tunnel was down. A dedicated remotely managed tunnel now routes only
+this hostname to `http://127.0.0.1:8080`, with a 404 fallback. The installed
+`tunnel` component verified public deployment/mint/owner identity and enabled its
+service. SSM `9dce9132-495f-46cb-a729-acbf12abcfa3` exited 0. All seven saved and
+runtime configuration hashes matched their pre-change values; neither worker nor
+signer was restarted. No wallets, ledger records or payments were changed.
+
+Hosting inputs are root-private under `/root/bridge-hosting-20261022`, installed
+at `/etc/ecx-bridge/tunnel/`. The existing sealed installation record stays intact;
+changing it is not a supported way to reconfigure an initialized wallet. The old
+DNS target is saved locally in `~/.cloudflared/bridge-hosting-20261022/dns-before.json`.
+The new tunnel ID is `3ee36213-3615-4632-9bd3-456e100b719c`.
+
+Separate read-only `domain_verifier` PASS: HTTPS homepage/config/Info/CSS/JS
+respond correctly and match the expected deployment. Browser execution also
+shows the bridge interface. **Transfers remain paused** (`intake_paused`,
+`implementationReady=false`, stale reserve observations); optional `/funding`
+returns its documented unconfigured 503. Hosting success does not establish
+financial readiness or production approval. Next financial work must inspect the
+pause/readiness causes and custody evidence before any checked resume.
