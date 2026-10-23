@@ -69,11 +69,17 @@ data StoreSetup a where
   ProvisionDatabase :: Text -> StoreSetup ()
   ProvisionRestoredDatabase :: Text -> Int64 -> StoreSetup ()
   InitializeLedger :: Text -> StoreSetup ()
+  CheckInstallationArchive :: Text -> Text -> Int64 -> StoreSetup ()
+  ArchiveInstallationDatabase :: Text -> Text -> Int64 -> Text -> StoreSetup Text
 
 evalSetup :: PG.ConnectInfo -> StoreSetup a -> IO a
 evalSetup settings (ProvisionRestoredDatabase identity sequenceNo) = Provision.provisionRestoredDatabase settings identity sequenceNo
 evalSetup settings (ProvisionDatabase token) = Provision.provisionDatabase settings token
 evalSetup settings (InitializeLedger identity) = Provision.initializeLedger settings identity
+evalSetup settings (CheckInstallationArchive token identity sequenceNo) =
+  Provision.checkInstallationArchive settings token identity sequenceNo
+evalSetup settings (ArchiveInstallationDatabase token identity sequenceNo suffix) =
+  Provision.archiveInstallationDatabase settings token identity sequenceNo suffix
 
 -- Restoration needs database-creation authority; fence changes claim the paused
 -- ledger exclusively. No online handler receives these maintenance operations.

@@ -6,6 +6,27 @@ writer; review agents are read-only. New repository path:
 Original bridge stays clean at `6af7e73818c041669c5a5c1819f4c5c0be405d37`.
 Do not modify/deploy original runtime or touch live custody during extraction.
 
+## Current config updater checkpoint (2026-10-22)
+
+`build/update-config.sh` applies `/root/hot-wallet/server.conf` through the root-only
+Haskell lifecycle. Ordinary edits preserve the ledger. Wallet replacement keeps a
+private index in `/var/lib/hot-wallet-server/config-updates/`, retains old wallet
+folders under `.retired-<id>`, and retires the original PostgreSQL database/roles.
+New custody starts through the existing checked installer. Old balances are not
+transferred. See INSTALL.md for the exact supported settings and refusal cases.
+
+Application, configuration/file fixtures and PostgreSQL retirement contracts PASS;
+separate static review PASS. Full Ubuntu rotation/reboot/funded acceptance is still
+unverified. No live services were changed. An unrelated preexisting change to
+`src/src/Bridge/Operation/Internal.hs` remains uncommitted and currently prevents a
+normal full working-tree build. Validation compiled the committed Operation files
+in an isolated temporary overlay, without reverting or publishing that draft.
+
+Next: exercise this updater on an isolated Ubuntu installation before using wallet
+replacement on a funded server. Include preflight refusal, interrupted retirement,
+new setup/funding, repeat start, reboot, and inspection of retained old custody.
+Do not reset a ledger or weaken a refusal to pass those checks.
+
 ## Implemented and checked
 
 - 2026-10-14: retry approval, preparation cancellation and owner-fee selection now

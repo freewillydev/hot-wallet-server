@@ -32,15 +32,17 @@ Requires Ubuntu 24.04 x86_64, 8 GB RAM and a 256 GB SSD.
    Send ECX betanet coins to the printed ECX funding address, and the configured
    canonical wrapped ECX token on Solana Mainnet to the printed inventory owner.
 
-To update the config **before wallet setup**, edit `/root/hot-wallet/server.conf`
+To update the config, edit `/root/hot-wallet/server.conf`
 with `sudo nano`, then run:
 
 ```sh
-sudo ./build/update-config.sh && sudo ./build/install.sh
+sudo ./build/update-config.sh
 ```
 
-This backs up the saved config and accepts your edits. It refuses changes once
-wallet setup exists, even if the wallets are unfunded.
+This saves the old settings privately, applies supported changes and restarts
+through the normal checks. To replace initialized wallets, supply **two new unused
+seeds**; old keys and the ledger are retained with root-only access. Pending payments
+must finish first. Old balances stay in the old wallets. See [update details](Docs/INSTALL.md#changing-the-configuration).
 
 [Verification records](Docs/DONE.md) ·
 [Updates and installation details](Docs/INSTALL.md) · [Operations](Docs/OPERATIONS.md)

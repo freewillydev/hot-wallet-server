@@ -41,6 +41,28 @@ The prior funded deployment is stopped and preserved. Do not overwrite its ledge
 reuse retired custody or treat old schema tests as current. Details,
 source hashes and test scope are in [RESUME.md](RESUME.md) and the records below.
 
+## Config update and wallet replacement (2026-10-22)
+
+Implemented `sudo ./build/update-config.sh`, reading the protected record before
+or after initialization. Supported operational edits retain custody. Replacement
+archives keys, the ledger, fence and recovery records; it never sweeps old funds.
+Initialized/bound custody requires two new wallet identities; unresolved financial
+work and partially provisioned ledgers refuse replacement.
+
+PASS: current application rebuilt using the committed Operation baseline (the
+unrelated working-tree Operation/Internal.hs refactor remains untouched), complete
+local ConfigureCheck contract with the real rebuilt executable, private-file and
+directory interruption/replay fixtures, and disposable PostgreSQL retirement and
+fresh-provisioning contracts. Shell syntax and whitespace checks pass. Separate
+`config_rotation_verifier` PASS for scoped static implementation review, including
+prevalidation, private archives, database receipt binding and retry isolation.
+
+NOT VERIFIED: full Ubuntu/systemd rotation, reboot/interruption at every installer
+phase, or a funded replacement. No live deployment or custody was changed. This
+scoped review does not change the production gates above. Evidence is in
+`.audit/installer-update.tsv`; the existing incomplete capability refactor is not
+included in this change or its executable validation.
+
 ## Historical verification records
 
 ## Scoped repair and owner-fee Flow composition (2026-10-14)

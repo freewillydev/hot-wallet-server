@@ -7,6 +7,11 @@ umask 077
 . /etc/os-release
 [ "$ID:$VERSION_ID" = ubuntu:24.04 ] || { echo 'Ubuntu 24.04 is required.' >&2; exit 1; }
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+updating=false
+if [ "${1:-}" = --update-config ]; then
+  updating=true
+  set -- /root/hot-wallet/server.conf
+fi
 if [ "$#" = 0 ]; then
   result=0
   sh "$root/build/install/config" "$root/example.conf" || result=$?
@@ -34,6 +39,10 @@ else
 fi
 exec 9>"$state/install.lock"
 flock -n 9 || { echo 'Another installation is running.' >&2; exit 1; }
+if [ "$updating" = false ] && { [ -e "$state/reconfigure.pending" ] || [ -L "$state/reconfigure.pending" ]; }; then
+  echo 'Configuration update is incomplete; rerun build/update-config.sh with the same config.' >&2
+  exit 1
+fi
 # Publish only a complete bounded copy; an interrupted copy can be retried.
 copy=$(mktemp "$state/config.XXXXXXXX")
 trap 'rm -f -- "$copy"' EXIT
@@ -42,7 +51,17 @@ head -c 8193 <&8 > "$copy"
 exec 8<&-
 [ -s "$copy" ] && [ "$(wc -c < "$copy")" -le 8192 ] || { echo 'Configuration must contain 1 to 8192 bytes.' >&2; exit 1; }
 # Keep the caller's original. Refuse silently replacing a bound installation.
-if [ -e "$state/server.conf" ]; then
+if [ "$updating" = true ]; then
+  # Keep the old accepted record until the Haskell transaction has archived and
+  # applied the new record. The temporary request never becomes active settings.
+  requested=$state/requested.conf
+  if [ -e "$requested" ] || [ -L "$requested" ]; then
+    [ -f "$requested" ] && [ ! -L "$requested" ] && [ "$(stat -c '%u:%a:%h' "$requested")" = 0:600:1 ] || {
+      echo 'Unsafe pending configuration.' >&2; exit 1;
+    }
+  fi
+  mv -T -- "$copy" "$requested"
+elif [ -e "$state/server.conf" ]; then
   [ -f "$state/server.conf" ] && [ ! -L "$state/server.conf" ] &&
     [ "$(stat -c '%u:%a:%h' "$state/server.conf")" = 0:600:1 ] || {
       echo 'Saved configuration has unsafe ownership, permissions or links.' >&2; exit 1;
@@ -121,7 +140,24 @@ fi
 trap - EXIT HUP INT TERM
 binary=$(runuser -u "$account" -- sh -c 'cd "$1"; export PATH="$HOME/.ghcup/bin:$HOME/.cargo/bin:$PATH"; ghcup run --ghc 9.14.1 --cabal 3.16.1.0 -- cabal --project-dir=build list-bin exe:ecx-bridge' sh "$source")
 [ -x "$binary" ] || { echo 'Cabal did not produce the server executable.' >&2; exit 1; }
-"$binary" configure-file "$state/server.conf" "$state/.ecx-bridge" </dev/null
+if [ "$updating" = true ]; then
+  # The closed PostgreSQL retirement command runs as postgres. Publish this
+  # trusted build outside the private build home and outside retired /opt paths.
+  helper=$(mktemp "$backup_tools/.config-update.XXXXXXXX")
+  install -o root -g root -m 0755 "$binary" "$helper"
+  sync -f "$helper"
+  mv -T -- "$helper" "$backup_tools/config-update"
+  sync -f "$backup_tools"
+  "$backup_tools/config-update" update-config "$requested" </dev/null
+  rm -- "$requested"
+fi
+if [ -f "$state/.ecx-bridge/setup.json" ]; then
+  cmp -s "$state/server.conf" "$state/.ecx-bridge/install.conf" || {
+    echo 'Configuration differs from saved setup; run update-config.sh.' >&2; exit 1;
+  }
+else
+  "$binary" configure-file "$state/server.conf" "$state/.ecx-bridge" </dev/null
+fi
 "$binary" start "$state/.ecx-bridge" </dev/null
 # Public ingress is installed only after the bridge passes its readiness checks.
 sh "$source/build/install/tunnel" "$state/.ecx-bridge"

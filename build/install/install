@@ -12,7 +12,7 @@ absent() { [ ! -e "$1" ] && [ ! -L "$1" ]; }
 . /etc/os-release
 [ "$ID:$VERSION_ID" = ubuntu:24.04 ] || fail 'Ubuntu 24.04 required'
 mode=${1:-}; material=${2:-}
-case "$mode" in fresh|recover) [ "$#" = 2 ] || fail 'fresh/recover requires a private material directory';;
+case "$mode" in fresh|recover|rotate) [ "$#" = 2 ] || fail 'fresh/recover/rotate requires a private material directory';;
   upgrade|prepare-upgrade) [ "$#" = 1 ] || fail 'upgrade takes no material; existing custody is retained';;
   *) fail 'usage: fresh PRIVATE_MATERIAL_DIRECTORY | recover PRIVATE_MATERIAL_DIRECTORY | upgrade';;
 esac
@@ -20,6 +20,12 @@ bundle=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 [ "$(cat "$bundle/architecture")" = "$(uname -m)" ] || fail 'wrong architecture'
 (cd "$bundle" && sha256sum -c manifest.sha256 >/dev/null) || fail 'bundle changed'
 release=$(sha256sum "$bundle/manifest.sha256" | cut -d' ' -f1)
+rotating=false
+if [ "$mode" = rotate ]; then
+  "$bundle/bin/ecx-bridge" verify-wallet-replacement "$material"
+  rotating=true
+  mode=fresh
+fi
 prefix=/opt/ecx-bridge
 config=/etc/ecx-bridge
 state=/var/lib/ecx-bridge
@@ -94,7 +100,9 @@ if [ "$mode" = fresh ] || [ "$mode" = recover ]; then
   if [ "$resuming" = false ]; then
     absent "$config" && absent "$state" && absent "$prefix" || fail 'existing deployment: use upgrade or explicit recovery'
     for account in "$worker" "$signer"; do
-      ! getent passwd "$account" >/dev/null && ! getent group "$account" >/dev/null || fail 'service identities already exist'
+      if [ "$rotating" = false ]; then
+        ! getent passwd "$account" >/dev/null && ! getent group "$account" >/dev/null || fail 'service identities already exist'
+      fi
     done
   fi
 else

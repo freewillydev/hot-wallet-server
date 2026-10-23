@@ -3,6 +3,8 @@ import qualified Bridge.Config as C
 import qualified NodeSetup
 import qualified Bootstrap
 import qualified InstallConfig
+import qualified ReconfigureFiles as RF
+import qualified RotationFiles as RD
 import qualified Token
 import qualified Token.Operation as TO
 import Bridge.SDKBuild (sdkLibraryPath)
@@ -15,7 +17,7 @@ import GHC.IO.Handle (hDuplicate,hDuplicateTo)
 import qualified Data.Aeson.Key as Key
 import System.Posix.Signals (signalProcess,nullSignal)
 import System.Timeout (timeout)
-import Control.Exception (evaluate,finally,AsyncException(ThreadKilled))
+import Control.Exception (evaluate,finally,AsyncException(ThreadKilled),SomeException)
 import qualified Data.ByteString.Char8 as B8
 import Crypto.MAC.HMAC (hmac,HMAC)
 import Crypto.Hash (SHA256,Digest,hash)
@@ -52,7 +54,8 @@ import Data.Bits ((.&.),shiftR)
 import System.Directory
 import System.FilePath ((</>))
 import System.IO (openTempFile,hClose,hPutStrLn,hFlush,hGetChar,hGetContents,withBinaryFile,stdin,IOMode(ReadMode))
-import System.Posix.Files (setFileMode,getFileStatus,fileMode)
+import System.Posix.Files (setFileMode,getFileStatus,fileMode,linkCount,createLink,createSymbolicLink)
+import System.Posix.User (getEffectiveUserID,getEffectiveGroupID)
 import System.Process
 import System.Exit (ExitCode(..))
 
@@ -123,6 +126,9 @@ contract=bracket temporary removeDirectoryRecursive $ \directory->do
     require simplifiedChecked "interactive_wallet_mode_contract_failed"
     importedChecked<-importContract directory executable
     require importedChecked "import_wallet_mode_contract_failed"
+    reconfigureFilesContract
+    privateRecordCrashContract
+    rotationFilesContract
     -- A verified pre-created ATA has no local creation attempt. Do not block
     -- ordinary reconciliation, and never silently skip an existing corrupt file.
     externalAta<-Bootstrap.initialAccounting directory config "owned SOL"
@@ -178,9 +184,71 @@ contract=bracket temporary removeDirectoryRecursive $ \directory->do
     pure(all snd checks)
  where
   temporary=do
-    parent<-getTemporaryDirectory
+    -- Setup publications require protected, non-symlink ancestors. System temp
+    -- paths can be world-writable (or /var symlink aliases on macOS).
+    parent<-getCurrentDirectory
     (path,h)<-openTempFile parent "ecx-configure-test"
     hClose h;removeFile path;createDirectory path;setFileMode path 0o700
+    pure path
+
+-- Use a secure workspace parent: the publisher deliberately refuses /tmp's
+-- world-writable ancestor. No installed paths, services or credentials are used.
+reconfigureFilesContract :: IO ()
+reconfigureFilesContract=bracket temporary removeDirectoryRecursive $ \directory->do
+  uid<-getEffectiveUserID;gid<-getEffectiveGroupID
+  let first=directory</>"first";second=directory</>"second";journal=directory</>"journal"
+      large=B.replicate 32768 120
+      firstFile=RF.ConfigFile first (Just "old") "new" 0o640 uid gid
+      secondFile=RF.ConfigFile second Nothing large 0o600 uid gid
+      files=[firstFile,secondFile]
+      refuse action=do
+        result<-try(action >> pure ()) :: IO (Either SomeException ())
+        require (either (const True) (const False) result) "configuration_file_refusal_failed"
+  savePrivate first "old";setFileMode first 0o640
+  RF.stageConfigFiles journal files
+  saved<-RF.loadConfigFiles journal
+  before<-B.readFile first
+  absent<-not <$> doesFileExist second
+  require (saved==files && before=="old" && absent) "configuration_file_staging_mutated_target"
+  -- Resume an interruption after the first rename, preserving mode and group.
+  B.writeFile first "new"
+  RF.publishConfigFiles journal files
+  RF.publishConfigFiles journal files
+  actual<-mapM B.readFile [first,second]
+  modes<-mapM (fmap ((.&. 0o7777).fileMode) . getFileStatus) [first,second]
+  require (actual==["new",large] && modes==[0o640,0o600]) "configuration_file_publication_failed"
+  refuse (RF.publishConfigFiles journal [firstFile,secondFile {RF.configAfter="different"}])
+  B.writeFile first "third-party"
+  refuse (RF.publishConfigFiles journal files)
+  B.writeFile first "new";setFileMode first 0o600
+  refuse (RF.publishConfigFiles journal files)
+  setFileMode first 0o640
+  let alias=directory</>"hardlink"
+  createLink first alias
+  refuse (RF.publishConfigFiles journal files)
+  removeFile alias
+  let symbolic=directory</>"symlink"
+  createSymbolicLink first symbolic
+  refuse (RF.stageConfigFiles (directory</>"symlink-journal")
+    [firstFile {RF.configPath=symbolic,RF.configBefore=Just "new"}])
+  let snapshot=journal</>"0.old"
+  B.writeFile snapshot "tampered"
+  refuse (RF.loadConfigFiles journal)
+  B.writeFile snapshot "old"
+  manifest<-B.readFile(journal</>"manifest.json")
+  B.appendFile (journal</>"manifest.json") " "
+  refuse (RF.loadConfigFiles journal)
+  B.writeFile (journal</>"manifest.json") manifest
+  setFileMode directory 0o770
+  refuse (RF.publishConfigFiles journal files)
+  setFileMode directory 0o700
+  retained<-RF.loadConfigFiles journal
+  require (retained==files) "configuration_file_archive_changed"
+ where
+  temporary=do
+    parent<-getCurrentDirectory
+    (path,handle)<-openTempFile parent ".configuration-file-test"
+    hClose handle;removeFile path;createDirectory path;setFileMode path 0o700
     pure path
 
 -- Real configure-file command, published BIP-39 vectors and disposable keys.
@@ -235,6 +303,65 @@ importContract parent executable=do
     imported<-InstallConfig.validateInstallConfig (read $ record values)
     require (imported==key) "valid_ipv6_configuration_rejected"
   savePrivate conf (B8.pack $ record fields)
+  -- Updating operational settings retains custody. Compare derived identities,
+  -- including migration from a protected legacy record with the same keypair.
+  let legacy values=map (\(name,value)->if name=="solSeedBip39" then ("solKeyB58",show $ T.unpack $ base58 key) else (name,value)) values
+      quoted=replace "initialFundingOwnership" (show ("solKeyB58 and solSeedBip39 are quoted fixture text"::String))
+      bothChanged=map (\(name,value)->(name,case name of
+        "ecxSeedBip39"->show solPhrase
+        "solSeedBip39"->show phrase
+        _->value)) fields
+      acceptedUpdates=
+        [(fields,fields,(False,False))
+        ,(fields,replace "minimumPayoutIntervalHours" "24",(False,False))
+        ,(legacy fields,fields,(False,False))
+        ,(legacy quoted,quoted,(False,False))
+        ,(fields,replace "ecxSeedBip39" (show solPhrase),(True,False))
+        ,(fields,replace "solSeedBip39" (show phrase),(False,True))
+        ,(legacy fields,bothChanged,(True,True))]
+  forM_ (zip [0::Int ..] acceptedUpdates) $ \(n,(oldValues,newValues,expected))->do
+    let previous=parent</>("update-previous-"<>show n<>".conf")
+        candidate=parent</>("update-candidate-"<>show n<>".conf")
+        newBytes=B8.pack $ record newValues
+        newConfig=read(record newValues)::InstallConfig.InstallConfig
+    savePrivate previous (B8.pack $ record oldValues)
+    savePrivate candidate newBytes
+    (actualBytes,actualConfig,actualKey,changed)<-InstallConfig.readInstallConfigUpdate previous candidate
+    expectedKey<-either (const $ fail "update fixture mnemonic") pure (walletKey $ InstallConfig.solSeedBip39 newConfig)
+    require (actualBytes==newBytes && actualConfig==newConfig && actualKey==expectedKey && changed==expected)
+      "configuration_update_identity_classification_failed"
+    operational<-try(InstallConfig.validateOperationalUpdate previous candidate) :: IO (Either BridgeError ())
+    require (either (const False) (const True) operational==(expected==(False,False)))
+      "operational_update_identity_policy_failed"
+  forM_ (zip [0::Int ..]
+    [replace "backupPassword" (show ("changed-backup-password"::String))
+    ,replace "resticExecutable" (show ("/different/restic"::String))
+    ,replace "initialFundingOwnership" (show ("changed ownership statement"::String))]) $ \(n,values)->do
+      let candidate=parent</>("unsupported-update-"<>show n<>".conf")
+      savePrivate candidate (B8.pack $ record values)
+      refused<-try(InstallConfig.validateOperationalUpdate conf candidate) :: IO (Either BridgeError ())
+      require (either (const True) (const False) refused) "unsupported_operational_update_accepted"
+  let oldKey value=map (\(name,contents)->(name,if name=="solKeyB58" then show value else contents)) (legacy fields)
+      invalidUpdates=
+        [(oldKey "invalid",fields)
+        ,(oldKey (T.unpack $ base58 $ B.take 32 key),fields)
+        ,(oldKey (T.unpack $ base58 $ B.take 32 key<>B.replicate 32 0),fields)
+        ,(legacy (replace "ecxSeedBip39" (show $ unwords $ replicate 12 "abandon")),fields)
+        ,(legacy fields<>[("solSeedBip39",show solPhrase)],fields)
+        ,(filter ((/="solSeedBip39").fst) quoted,fields)
+        ,(fields,legacy fields)
+        ,(fields,replace "solSeedBip39" (show ("invalid"::String)))
+        ,(fields,replace "assetMintAddress" (show ("different"::String)))
+        ,(fields,replace "feeRateWrapBps" "101")
+        ,(fields,replace "feeRateUnwrapBps" "101")]
+  forM_ (zip [0::Int ..] invalidUpdates) $ \(n,(oldValues,newValues))->do
+    let previous=parent</>("invalid-update-previous-"<>show n<>".conf")
+        candidate=parent</>("invalid-update-candidate-"<>show n<>".conf")
+    savePrivate previous (B8.pack $ record oldValues)
+    savePrivate candidate (B8.pack $ record newValues)
+    result<-try(InstallConfig.readInstallConfigUpdate previous candidate)
+      :: IO (Either BridgeError (B.ByteString,InstallConfig.InstallConfig,B.ByteString,(Bool,Bool)))
+    require (either (const True) (const False) result) "invalid_configuration_update_accepted"
   (updateCode,updateOut,updateErr)<-readProcessWithExitCode executable ["update-settings",conf] ""
   require (updateCode==ExitSuccess && secretFree(updateOut<>updateErr)
     && (eitherDecodeStrict' (B8.pack updateOut) :: Either String Value)==Right
@@ -739,3 +866,118 @@ backupHandoffCancellation parent=do
   pure (first==Left ThreadKilled && second==Left ThreadKilled && before==after
     && length (filter (isPrefixOf "export-") before)==2
     && case third of Left (BridgeError "native_backup_spool_requires_cleanup")->True; _->False)
+
+-- Real inode-bound directory renames under a private workspace parent. No live
+-- installation, database, service, credential or external directory is touched.
+rotationFilesContract :: IO ()
+rotationFilesContract=bracket temporary removeDirectoryRecursive $ \directory->do
+  let first=directory</>"old-config";second=directory</>"old-state"
+      paths=[first,second];journal=directory</>"journal";tag=replicate 32 'a'
+      retired path=path<>".retired-"<>tag
+      make path mode=createDirectory path >> setFileMode path mode
+      refuse action=do
+        result<-try(action >> pure ()) :: IO (Either SomeException ())
+        require (either (const True) (const False) result) "rotation_directory_refusal_failed"
+  make first 0o755;make second 0o700
+  B.writeFile (first</>"retained") "old configuration";setFileMode (first</>"retained") 0o640
+  B.writeFile (second</>"retained") "old state";setFileMode (second</>"retained") 0o600
+  entries<-RD.stageRotationDirectories journal tag paths
+  require (map RD.rotationSource entries==paths && map RD.rotationDestination entries==map retired paths)
+    "rotation_directory_staging_changed_paths"
+  present<-mapM doesDirectoryExist paths
+  require (and present) "rotation_directory_staging_moved_source"
+  refuse(RD.publishRotationDirectories journal [first])
+  refuse(RD.stageRotationDirectories journal (replicate 32 'b') paths)
+  -- Crash after one rename, before its permission repair and completion.
+  renameDirectory first (retired first)
+  make first 0o700
+  refuse(RD.publishRotationDirectories journal paths)
+  removeDirectory first
+  RD.publishRotationDirectories journal paths
+  contents<-mapM (B.readFile . (</>"retained") . retired) paths
+  rootModes<-mapM (fmap ((.&. 0o7777).fileMode) . getFileStatus . retired) paths
+  leafModes<-mapM (fmap ((.&. 0o7777).fileMode) . getFileStatus . (</>"retained") . retired) paths
+  require (contents==["old configuration","old state"] && rootModes==[0o700,0o700]
+    && leafModes==[0o640,0o600]) "rotation_directory_archive_changed_contents"
+  -- After the global completion marker, replay must preserve a new generation.
+  make first 0o755;B.writeFile (first</>"new") "new installation"
+  replay<-RD.stageRotationDirectories journal tag paths
+  RD.publishRotationDirectories journal paths
+  current<-B.readFile(first</>"new")
+  require (replay==entries && current=="new installation") "rotation_directory_replay_moved_new_generation"
+  -- A substituted archive with identical contents is still the wrong inode.
+  let moved=directory</>"original-retired"
+  renameDirectory (retired second) moved
+  make (retired second) 0o700
+  B.writeFile (retired second</>"retained") "old state"
+  refuse(RD.publishRotationDirectories journal paths)
+  removeFile(retired second</>"retained");removeDirectory(retired second)
+  renameDirectory moved (retired second)
+  RD.publishRotationDirectories journal paths
+  let alias=directory</>"alias"
+  createSymbolicLink first alias
+  refuse(RD.stageRotationDirectories (directory</>"alias-journal") tag [alias])
+  refuse(RD.stageRotationDirectories (directory</>"overlap-journal") tag [first,first])
+  setFileMode directory 0o770
+  refuse(RD.publishRotationDirectories journal paths)
+  setFileMode directory 0o700
+  unchanged<-RD.loadRotationDirectories journal
+  require (unchanged==entries) "rotation_directory_receipt_changed"
+ where
+  temporary=do
+    parent<-getCurrentDirectory
+    (path,handle)<-openTempFile parent ".rotation-directory-test"
+    hClose handle;removeFile path;createDirectory path;setFileMode path 0o700
+    pure path
+
+-- Reconstruct both process-death boundaries of private journal publication.
+-- An orphan before rename is not authority; after rename the record is readable
+-- and replayable without unlinking any alias or weakening the single-link check.
+privateRecordCrashContract :: IO ()
+privateRecordCrashContract=bracket temporary removeDirectoryRecursive $ \directory->do
+  let before=directory</>"before-rename"
+      orphan=before<>".pending-"<>replicate 64 'a'
+      after=directory</>"after-rename"
+      staged=after<>".pending-"<>replicate 64 'b'
+      expected="retained private lifecycle receipt"
+      refuse action=do
+        result<-try(action >> pure ()) :: IO (Either SomeException ())
+        require (either (const True) (const False) result) "private_record_refusal_failed"
+  -- A process died while writing, before it had a complete fsynced temporary.
+  B.writeFile orphan "partial";setFileMode orphan 0o600
+  RF.savePrivateRecord before expected
+  RF.savePrivateRecord before expected
+  first<-readPrivate before
+  abandoned<-B.readFile orphan
+  firstLinks<-linkCount <$> getFileStatus before
+  require (first==expected && abandoned=="partial" && firstLinks==1)
+    "private_record_pre_rename_retry_failed"
+  -- A process died immediately after rename, before parent synchronization.
+  B.writeFile staged expected;setFileMode staged 0o600
+  renameFile staged after
+  RF.savePrivateRecord after expected
+  second<-readPrivate after
+  secondLinks<-linkCount <$> getFileStatus after
+  oldTemporary<-doesPathExist staged
+  require (second==expected && secondLinks==1 && not oldTemporary)
+    "private_record_post_rename_retry_failed"
+  refuse(RF.savePrivateRecord after "different receipt")
+  let alias=directory</>"untrusted-hardlink"
+  createLink after alias
+  refuse(RF.savePrivateRecord after expected)
+  removeFile alias
+  RF.savePrivateRecord after expected
+  let symbolic=directory</>"untrusted-symlink"
+  createSymbolicLink after symbolic
+  refuse(RF.savePrivateRecord symbolic expected)
+  setFileMode directory 0o755
+  refuse(RF.savePrivateRecord before expected)
+  setFileMode directory 0o700
+  retained<-mapM readPrivate [before,after]
+  require (retained==[expected,expected]) "private_record_refusal_changed_receipt"
+ where
+  temporary=do
+    parent<-getCurrentDirectory
+    (path,handle)<-openTempFile parent ".private-record-test"
+    hClose handle;removeFile path;createDirectory path;setFileMode path 0o700
+    pure path

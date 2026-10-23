@@ -12,7 +12,12 @@ private_file() {
 }
 private_file "$material/hosting.json"
 mode=$(jq -er '.tunnel | if type == "boolean" then tostring else error("invalid mode") end' "$material/hosting.json")
-[ "$mode" = true ] || exit 0
+if [ "$mode" != true ]; then
+  if [ -f /etc/systemd/system/ecx-bridge-tunnel.service ]; then
+    systemctl disable --now ecx-bridge-tunnel.service
+  fi
+  exit 0
+fi
 private_file "$material/tunnel.token"
 [ "$(stat -c %s "$material/tunnel.token")" -le 4096 ] || fail 'Oversized tunnel credential.'
 unit=/etc/systemd/system/ecx-bridge-tunnel.service

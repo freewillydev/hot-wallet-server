@@ -1,6 +1,6 @@
 {-# LANGUAGE DeriveGeneric #-}
 -- Root-only service orchestration. Financial work remains in closed CLI/DSL operations.
-module Upgrade (withLifecycle,verifyBundle) where
+module Upgrade (withLifecycle,verifyBundle,requireNoConfigurationUpdate) where
 import Bridge.AdminKey (privateParent,readPrivate,savePrivate,withFamily)
 import Bridge.Error (require,reject)
 import Bridge.Identity (digest)
@@ -56,6 +56,7 @@ withLifecycle directory start=do
     bracket (openFd (takeDirectory root) ReadOnly defaultFileFlags) closeFd fileSynchronise
   privateParent (root</>"pending")
   withFamily (root</>"lifecycle") $ do
+    requireNoConfigurationUpdate
     restoring<-doesFileExist "/var/lib/ecx-bridge-restore/pending"
     require (not restoring) "restore_pending_requires_reviewed_activation"
     pending<-doesFileExist(root</>"pending")
@@ -81,6 +82,16 @@ withLifecycle directory start=do
             -- Publish before any stop. Reruns cannot accidentally become fresh setup.
             savePrivate (root</>"pending") (L.toStrict $ encode plan)
             continue plan start
+
+-- Check while holding the shared lifecycle lock, before any setup, upgrade or
+-- restore effect. Any entry blocks ordinary activation, including a broken link.
+requireNoConfigurationUpdate :: IO ()
+requireNoConfigurationUpdate=do
+  result<-tryIOError $ getSymbolicLinkStatus "/var/lib/hot-wallet-server/reconfigure.pending"
+  case result of
+    Right _->reject "configuration_update_pending_resume_original_update_first"
+    Left failure | isDoesNotExistError failure->pure ()
+    Left failure->ioError failure
 
 continue :: Upgrade -> IO () -> IO ()
 continue plan start=do

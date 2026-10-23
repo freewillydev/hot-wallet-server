@@ -8,6 +8,7 @@ import qualified Bootstrap
 import qualified NodeSetup
 import qualified Upgrade
 import qualified InstallConfig as I
+import qualified ReconfigureFiles as ConfigFiles
 import qualified SetupPaths
 import qualified Token
 import qualified Token.Operation as TokenOp
@@ -110,7 +111,7 @@ configureFile input output=do
     publishSetup phrase (B8.pack $ I.ecxSeedBip39 settings<>"\n")
     verifySigningKey owner key
     exists<-doesFileExist unlock
-    when (not exists) $ getRandomBytes 32 >>= savePrivate unlock . B8.pack . T.unpack . base58
+    when (not exists) $ getRandomBytes 32 >>= ConfigFiles.savePrivateRecord unlock . B8.pack . T.unpack . base58
     verifyNativeUnlock unlock
     (admin,worker,signer)<-NodeSetup.credentials directory
     let repository=directory</>"backup.repository"
@@ -170,10 +171,7 @@ savedPrompt directory name label fallback validate=do
     pure value
 
 publishSetup :: FilePath -> B.ByteString -> IO ()
-publishSetup file bytes=do
-  exists<-doesFileExist file
-  if exists then readPrivate file >>= \saved->require (saved==bytes) "saved_setup_changed_requires_review"
-    else savePrivate file bytes
+publishSetup=ConfigFiles.savePrivateRecord
 
 simplified :: Bool -> FilePath -> IO ()
 simplified starting directory=do
@@ -282,7 +280,7 @@ configureAdvanced=advanced False >> pure ()
 -- Generating advanced custody is explicitly a startup operation. Import/restore
 -- configuration remains available offline without a new-wallet fallback.
 startAdvanced :: IO ()
-startAdvanced=advanced True >>= start
+startAdvanced=Upgrade.requireNoConfigurationUpdate >> advanced True >>= start
 
 advanced :: Bool -> IO FilePath
 advanced generating=do
@@ -663,21 +661,23 @@ startUnlocked path=do
     NodeSetup.provision directory
     initializeNative directory
     Bootstrap.complete directory
+    replacement<-doesFileExist(directory</>"wallet-replacement.json")
+    let installMode=if replacement then "rotate" else "fresh"
     case method of
       "source"->do
         root<-field "sourceRoot" value
         restic<-field "restic" value
         binaryPath<-getExecutablePath
-        execute "/bin/sh" [root</>"build/install/source",binaryPath,sdkLibraryPath,browserAssetsDirectory,restic,directory]
+        execute "/bin/sh" [root</>"build/install/source",binaryPath,sdkLibraryPath,browserAssetsDirectory,restic,directory,installMode]
       "bundle"->do
         root<-field "sourceRoot" value
-        execute "/bin/sh" [root</>"install","fresh",directory]
+        execute "/bin/sh" [root</>"install",installMode,directory]
       "release"->do
         installer<-field "installer" value
         trust<-field "trustKey" value
         candidate<-field "candidate" value
         architecture<-case arch of "aarch64"->pure "aarch64"; "x86_64"->pure "x86_64"; _->reject "unsupported_installer_architecture"
-        execute installer ["install",trust,candidate,architecture,"--","fresh",directory]
+        execute installer ["install",trust,candidate,architecture,"--",installMode,directory]
       _->reject "invalid_setup_method"
   requested<-C.loadConfig (directory</>"worker.json")
   installedConfig<-C.loadConfig config

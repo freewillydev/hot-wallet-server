@@ -5,6 +5,7 @@ import Bridge.AdminKey (privateParent,readPrivate,savePrivate,withFamily)
 import qualified Bridge.Config as C
 import qualified RestoreNative
 import qualified SetupPaths
+import qualified Upgrade
 import qualified Bridge.Wire as W
 import Bridge.Error (require,reject)
 import Bridge.Identity (digest)
@@ -49,6 +50,7 @@ restoreGuide=do
     unless exists $ P.createDirectory directory 0o700
     privateParent(directory</>"pending")
   withFamily (upgradeRoot</>"lifecycle") $ do
+    Upgrade.requireNoConfigurationUpdate
     upgrading<-doesFileExist(upgradeRoot</>"pending")
     require (not upgrading) "finish_or_review_pending_upgrade_first"
     stopped

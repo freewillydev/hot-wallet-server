@@ -1,21 +1,25 @@
 -- Closed offline installer operation. Never adopts, resumes or replaces a ledger.
-module Bridge.Store.Provision (provisionDatabase,provisionRestoredDatabase,initializeLedger) where
+module Bridge.Store.Provision (provisionDatabase,provisionRestoredDatabase,initializeLedger,checkInstallationArchive,archiveInstallationDatabase) where
 import Bridge.Error
 import qualified Bridge.Store.Schema as S
+import qualified Bridge.Store.Projection as P
 import Bridge.Store.Catalog (claimWorker,verifyReadRole)
 import Data.Int (Int64)
 import Bridge.Identity (digest)
-import Control.Exception (bracket)
-import Control.Monad (forM_,void)
+import Control.Exception (bracket,onException)
+import Control.Monad (forM_,void,when)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import qualified Opaleye.Exists as Exists
 import qualified Data.ByteString.Char8 as B
-import Data.Profunctor.Product (p2,p3,p8)
+import Data.Profunctor.Product (p2,p3,p4,p8)
+import Data.Scientific (Scientific)
+import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Database.PostgreSQL.Simple as PG
 import Database.PostgreSQL.Simple.Types (Identifier(..),Query(..))
 import qualified Opaleye as O
+import qualified Opaleye.Internal.Locking as Locking
 import Opaleye.Internal.Column (Field_(Column),unColumn)
 import qualified Opaleye.Internal.HaskellDB.PrimQuery as E
 import Paths_ecx_bridge (getDataFileName)
@@ -123,6 +127,287 @@ initializeLedger settings identity = do
         && S.criticalSequence r>=0 && S.backupSequence r>=0 && S.backupSequence r<=S.criticalSequence r
         && S.paused r `elem` [0,1]->pure ()
       _->reject "ledger_profile_or_schema_mismatch"
+
+-- Preflight uses the same ownership, exclusive worker and financial gates as
+-- retirement without changing any role, database property or ledger record.
+-- Success is not transferable authority: actual retirement repeats the checks.
+checkInstallationArchive :: PG.ConnectInfo -> Text -> Text -> Int64 -> IO ()
+checkInstallationArchive settings token identity sequenceNo = do
+  (source,restored,owner,label)<-archiveInputs settings token identity sequenceNo
+  let originals=["ecxbridgew","ecxbridger","ecxbridges"]
+  bracket (PG.connect settings {PG.connectDatabase="postgres"}) PG.close $ \admin->do
+    archiveProvisioningLock admin
+    when (not restored) $ archiveRoles admin [owner] False label
+    state<-archiveDatabaseState admin source
+    require (state==[(owner,True,Nothing)]) "foreign_installation_database"
+    archiveRoles admin originals True label
+    archiveConnectRoles admin source originals
+    bracket (PG.connect settings) PG.close $ \target->PG.withTransaction target $ do
+      pid<-archiveTargetGate target restored token identity sequenceNo
+      archiveNoSessions admin source (Just pid)
+
+-- A closed offline retirement, never a reset or a transfer. The installer must
+-- retain its verified custody archive and journal before invoking this operation.
+-- Catalog receipts bind retries to this exact old deployment and frozen sequence.
+-- Pending receipts may reopen only for postgres while all service roles remain
+-- NOLOGIN; sealed receipts never reopen the database. No ledger row is changed.
+archiveInstallationDatabase :: PG.ConnectInfo -> Text -> Text -> Int64 -> Text -> IO Text
+archiveInstallationDatabase settings token identity sequenceNo suffix = do
+  (source,restored,owner,label)<-archiveInputs settings token identity sequenceNo
+  require (archiveHex 32 suffix) "invalid_installation_archive"
+  let destination="ecx_archive_"<>suffix
+      originals=["ecxbridgew","ecxbridger","ecxbridges"]
+      archived=map (<>suffix) ["ecx_archived_w_","ecx_archived_r_","ecx_archived_s_"]
+      binding=T.intercalate ":" ["ecx-archive-v1",token,identity,T.pack(show sequenceNo),source,suffix]
+      pending=binding<>":pending"
+      sealed=binding<>":sealed"
+  bracket (PG.connect settings {PG.connectDatabase="postgres"}) PG.close $ \admin->do
+    archiveProvisioningLock admin
+    when (not restored) $ archiveRoles admin [owner] False label
+    destinationState<-archiveDatabaseState admin destination
+    if not(null destinationState) then do
+      require (destinationState==[(owner,False,Just sealed)]) "foreign_archive_database"
+      archiveRoles admin archived False sealed
+      archiveNoSessions admin destination Nothing
+    else do
+      collisions<-archiveRoleState admin archived
+      require (null collisions) "foreign_archive_roles"
+      initial<-archiveDatabaseState admin source
+      phase<-case initial of
+        [(saved,True,Nothing)] | saved==owner->pure Nothing
+        [(saved,_,Just receipt')] | saved==owner && receipt'==pending->pure(Just False)
+        [(saved,False,Just receipt')] | saved==owner && receipt'==sealed->pure(Just True)
+        _->reject "foreign_installation_database"
+      archiveRoles admin originals (phase==Nothing) label
+      archiveConnectRoles admin source originals
+      when (phase/=Just True) $ do
+        -- A pending retry can have died during its temporary postgres reopen.
+        -- Close it again and refuse surviving sessions before opening one here.
+        when (phase==Just False) $ do
+          void $ PG.execute admin "ALTER DATABASE ? ALLOW_CONNECTIONS false" (PG.Only $ Identifier source)
+          archiveNoSessions admin source Nothing
+          void $ PG.execute admin "ALTER DATABASE ? ALLOW_CONNECTIONS true" (PG.Only $ Identifier source)
+        let closePending=when (phase==Just False) $
+              void $ PG.execute admin "ALTER DATABASE ? ALLOW_CONNECTIONS false" (PG.Only $ Identifier source)
+        bracket (PG.connect settings `onException` closePending) PG.close $ \target->
+          (PG.withTransaction target $ do
+            pid<-archiveTargetGate target restored token identity sequenceNo
+            archiveNoSessions admin source (Just pid)
+            -- Commit the connection barrier before certifying the absence of
+            -- other sessions. A connection racing that commit cannot be missed.
+            PG.withTransaction admin $ do
+              forM_ originals $ \name->void $ PG.execute admin "ALTER ROLE ? NOLOGIN" (PG.Only $ Identifier name)
+              void $ PG.execute admin "REVOKE ALL ON DATABASE ? FROM PUBLIC" (PG.Only $ Identifier source)
+              void $ PG.execute admin "COMMENT ON DATABASE ? IS ?" (Identifier source,pending)
+              void $ PG.execute admin "ALTER DATABASE ? ALLOW_CONNECTIONS false" (PG.Only $ Identifier source)
+            archiveNoSessions admin source (Just pid)
+            void $ PG.execute admin "COMMENT ON DATABASE ? IS ?" (Identifier source,sealed)
+          ) `onException` closePending
+      -- Target session and its worker lock have closed. The sealed connection
+      -- barrier now preserves the checked ledger across process death or retry.
+      finalState<-archiveDatabaseState admin source
+      require (finalState==[(owner,False,Just sealed)]) "archive_database_not_sealed"
+      archiveRoles admin originals False label
+      archiveNoSessions admin source Nothing
+      PG.withTransaction admin $ do
+        void $ PG.execute admin "ALTER DATABASE ? RENAME TO ?" (Identifier source,Identifier destination)
+        forM_ (zip originals archived) $ \(old,new)->do
+          void $ PG.execute admin "ALTER ROLE ? RENAME TO ?" (Identifier old,Identifier new)
+          void $ PG.execute admin "COMMENT ON ROLE ? IS ?" (Identifier new,sealed)
+    pure destination
+
+archiveHex :: Int -> Text -> Bool
+archiveHex n value=T.length value==n && T.all (`elem` ("0123456789abcdef"::String)) value
+
+archiveInputs :: PG.ConnectInfo -> Text -> Text -> Int64 -> IO (Text,Bool,Text,Text)
+archiveInputs settings token identity sequenceNo=do
+  let source=T.pack $ PG.connectDatabase settings
+      restored=T.length source==44 && "ecx_restore_" `T.isPrefixOf` source && archiveHex 32 (T.drop 12 source)
+  require (archiveHex 32 token && archiveHex 64 identity && sequenceNo>=0) "invalid_installation_archive"
+  require (PG.connectUser settings=="postgres" && (source=="ecx_bridge" || restored)) "archive_requires_postgres_admin"
+  pure (source,restored,if restored then "postgres" else "ecx_setup_"<>token,"ecx-install:"<>token)
+
+-- Private implementation shared only by the two closed archival operations.
+archiveProvisioningLock :: PG.Connection -> IO ()
+archiveProvisioningLock c=do
+  locked<-O.runSelect c $ pure (Column(E.FunExpr "pg_catalog.pg_try_advisory_lock"
+    [unColumn(O.sqlInt4 1162041393),unColumn(O.sqlInt4 19)]) :: O.Field O.SqlBool)
+  require (locked==[True]) "database_provisioning_busy"
+
+archiveTargetGate :: PG.Connection -> Bool -> Text -> Text -> Int64 -> IO Int
+archiveTargetGate c restored token identity sequenceNo=do
+  claimWorker c >>= flip require "worker_already_running"
+  archiveLedgerGate c identity sequenceNo
+  when (not restored) $ do
+    checksum<-digest <$> (getDataFileName "schema.sql" >>= B.readFile)
+    saved<-O.runSelect c (O.selectTable receipt) :: IO [(Text,Text)]
+    require (saved==[(token,checksum)]) "installation_receipt_mismatch"
+  pids<-O.runSelect c $ pure (Column(E.FunExpr "pg_catalog.pg_backend_pid" []) :: O.Field O.SqlInt4)
+  case pids of [pid]->pure pid; _->reject "archive_backend_identity_missing"
+
+-- Terminal histories remain intact, including old replacement losers and payout
+-- cohorts. These queries cannot be submitted through an online reader or writer.
+archiveLedgerGate :: PG.Connection -> Text -> Int64 -> IO ()
+archiveLedgerGate c identity sequenceNo = do
+  locked<-O.runSelect c $ Locking.forUpdate $ do
+    row<-O.selectTable S.deployment
+    O.where_ (S.singleton row O..== O.sqlInt8 1)
+    pure (S.singleton row)
+  require (locked==[1::Int64]) "corrupt_deployment"
+  rows<-O.runSelect c (O.selectTable S.deployment) :: IO [S.Deployment]
+  require (case rows of
+    [row]->S.singleton row==1 && S.schemaVersion row==23 && S.fingerprint row==identity
+      && S.paused row==1 && S.criticalSequence row==sequenceNo && S.backupSequence row==sequenceNo
+    _->False) "archive_ledger_identity_or_state_mismatch"
+  let absent code query=O.runSelect c (Exists.exists query) >>= flip require code . (==[False])
+      text=O.sqlStrictText; num=O.sqlInt8
+  absent "archive_open_orders" $ P.openOrders >> pure ()
+  absent "archive_unresolved_payments" $ do
+    row<-O.selectTable S.paymentRoots
+    O.where_ (O.not $ O.in_ (map text ["settled","cancelled"]) (S.rootPhase row))
+    pure ()
+  absent "archive_principal_reserved" $ do
+    (_,_,_,phase)<-O.selectTable S.reservations
+    O.where_ (phase O../= text "released")
+    pure ()
+  absent "archive_operating_reserved" $ do
+    (_,_,_,_,phase)<-O.selectTable S.operatingReservations
+    O.where_ (O.in_ (map text ["quote","obligation"]) phase)
+    pure ()
+  absent "archive_fees_reserved" $ do
+    (_,_,released)<-S.feeReservations
+    O.where_ (released O..== num 0)
+    pure ()
+  absent "archive_cleanup_pending" $ do
+    (_,_,_,_,done)<-S.workCancellations
+    O.where_ (done O..== num 0)
+    pure ()
+  absent "archive_signature_outcome_unknown" $ do
+    (_,_,_,draft,_,cancelled)<-S.workPreparations
+    O.where_ (cancelled O..== num 1 O..&& O.not(O.isNull draft))
+    pure ()
+  absent "archive_replacement_pending" $ do
+    (key,_,_,_,_,_)<-S.replacementDrafts
+    cancelled<-Exists.exists $ do
+      (saved,_,_)<-S.replacementCancellations
+      O.where_ (saved O..== key)
+      pure ()
+    signed<-Exists.exists $ do
+      (saved,_,_)<-S.replacementMembers
+      O.where_ (saved O..== key)
+      pure ()
+    O.where_ (O.not cancelled O..&& O.not signed)
+    pure ()
+  absent "archive_chain_review" $ do
+    event<-O.selectTable S.chainEvents
+    O.where_ (S.eventReview event O../= num 0 O..|| S.eventKind event O..== text "awaiting_verifier")
+    pure ()
+  absent "archive_native_review" $ do
+    (_,state)<-S.nativeRecovery
+    O.where_ (state O../= text "reconfirmed")
+    pure ()
+  absent "archive_source_review" $ do
+    (key,state)<-S.sourceRecovery
+    covered<-Exists.exists $ do
+      saved<-S.accountedLosses
+      O.where_ (saved O..== key)
+      pure ()
+    O.where_ (state O../= text "restored" O..&& O.not covered)
+    pure ()
+  absent "archive_deposit_review" $ do
+    deposit<-O.selectTable S.deposits
+    covered<-Exists.exists $ do
+      saved<-S.accountedLosses
+      O.where_ (saved O..== S.depositId deposit)
+      pure ()
+    O.where_ ((S.depositAllocated deposit O..== num 0 O..|| S.depositEligible deposit O..== num 0) O..&& O.not covered)
+    pure ()
+  absent "archive_history_incomplete" $ do
+    (chain,_)<-O.selectTable S.checkpoints
+    O.where_ (O.in_ (map text ["history-progress-v1:Solana","history-progress-v1:SolanaOperating"]) chain)
+    pure ()
+  absent "archive_observation_incomplete" $ do
+    (_,_,problem,_)<-O.selectTable S.scanHealth
+    O.where_ (O.not(O.isNull problem))
+    pure ()
+  when (sequenceNo>0) $ do
+    custody<-O.runSelect c (O.selectTable S.custody) :: IO [(Int64,Int64,Maybe Int64,Maybe Int64,Maybe Text)]
+    require (case custody of
+      [(1,revision,Just checked,Just at,Nothing)]->checked==revision && at>=0
+      _->False) "archive_custody_not_reconciled"
+  booked<-O.runSelect c $ O.aggregate (p3(O.groupBy,O.groupBy,O.sumInt8)) $ do
+    (_,_,asset,account,delta)<-O.selectTable S.postings
+    pure (asset,account,delta)
+    :: IO [(Text,Text,Scientific)]
+  let totals=M.fromListWith (+) [(asset,n)|(asset,_,n)<-booked]
+      recognized=["external","principal","unallocated","float","earned","fee_pending","operating","backing","lp","source_deficit"]
+  require (all (==0) totals && all (\(asset,account,n)->asset `elem` ["Native","Wrapped","Sol"]
+    && account `elem` recognized && (account=="external" || n>=0)) booked) "archive_invalid_journal"
+  require (all (\(_,account,n)->account `notElem` ["principal","unallocated","fee_pending","source_deficit"] || n==0) booked)
+    "archive_unresolved_balances"
+
+archiveRoleState :: PG.Connection -> [Text] -> IO [(Text,Bool,Bool,Maybe Text)]
+archiveRoleState c names=O.runSelect c $ do
+  (name,super,db,role,replication,bypass,login,oid)<-O.selectTable rolesTable
+  O.where_ (O.in_ (map O.sqlStrictText names) name)
+  let comment=Column(E.FunExpr "pg_catalog.shobj_description" [unColumn oid,unColumn(O.sqlStrictText "pg_authid")]) :: O.FieldNullable O.SqlText
+  pure (name,super O..|| db O..|| role O..|| replication O..|| bypass,login,comment)
+
+archiveRoles :: PG.Connection -> [Text] -> Bool -> Text -> IO ()
+archiveRoles c names login label=do
+  rows<-archiveRoleState c names
+  require (length rows==length names && all (\(_,privileged,enabled,comment)->not privileged && enabled==login && comment==Just label) rows)
+    "foreign_installation_roles"
+  memberships<-O.runSelect c $ O.limit 1 $ do
+    (name,_,_,_,_,_,_,oid)<-O.selectTable rolesTable
+    (member,role)<-O.selectTable $ O.tableWithSchema "pg_catalog" "pg_auth_members" $ p2
+      (O.requiredTableField "member",O.requiredTableField "roleid")
+    O.where_ (O.in_ (map O.sqlStrictText names) name O..&& (member O..== oid O..|| role O..== oid))
+    pure name
+    :: IO [Text]
+  require (null memberships) "inherited_installation_role"
+
+archiveDatabaseState :: PG.Connection -> Text -> IO [(Text,Bool,Maybe Text)]
+archiveDatabaseState c expected=O.runSelect c $ do
+  (name,owner,enabled,oid)<-O.selectTable databaseCatalog
+  (role,_,_,_,_,_,_,roleOid)<-O.selectTable rolesTable
+  O.where_ (name O..== O.sqlStrictText expected O..&& owner O..== roleOid)
+  let comment=Column(E.FunExpr "pg_catalog.shobj_description" [unColumn oid,unColumn(O.sqlStrictText "pg_database")]) :: O.FieldNullable O.SqlText
+  pure (role,enabled,comment)
+
+archiveConnectRoles :: PG.Connection -> Text -> [Text] -> IO ()
+archiveConnectRoles c source allowed=do
+  foreignRoles<-O.runSelect c $ O.limit 1 $ do
+    (database,_,_,dbOid)<-O.selectTable databaseCatalog
+    (name,super,_,_,_,_,login,oid)<-O.selectTable rolesTable
+    let connect=Column(E.FunExpr "pg_catalog.has_database_privilege"
+          [unColumn oid,unColumn dbOid,unColumn(O.sqlStrictText "CONNECT")]) :: Flag
+    O.where_ (database O..== O.sqlStrictText source O..&& login O..&& O.not super O..&& connect
+      O..&& O.not(O.in_ (map O.sqlStrictText allowed) name))
+    pure name
+    :: IO [Text]
+  require (null foreignRoles) "foreign_installation_database_access"
+
+archiveNoSessions :: PG.Connection -> Text -> Maybe Int -> IO ()
+archiveNoSessions c source own=do
+  sessions<-O.runSelect c $ O.limit 1 $ do
+    (database,pid)<-O.selectTable $ O.tableWithSchema "pg_catalog" "pg_stat_activity" $ p2
+      (O.requiredTableField "datname",O.requiredTableField "pid")
+    O.where_ (database O..== O.sqlStrictText source)
+    forM_ own $ \expected->O.where_ (pid O../= O.sqlInt4 expected)
+    pure (pid :: O.Field O.SqlInt4)
+    :: IO [Int]
+  require (null sessions) "archive_database_connections_active"
+  prepared<-O.runSelect c $ O.limit 1 $ do
+    database<-O.selectTable $ O.tableWithSchema "pg_catalog" "pg_prepared_xacts" (O.requiredTableField "database")
+    O.where_ (database O..== O.sqlStrictText source)
+    pure database
+    :: IO [Text]
+  require (null prepared) "archive_prepared_transaction_pending"
+
+databaseCatalog :: O.Table (Txt,Oid,Flag,Oid) (Txt,Oid,Flag,Oid)
+databaseCatalog=O.tableWithSchema "pg_catalog" "pg_database" $ p4
+  (O.requiredTableField "datname",O.requiredTableField "datdba",O.requiredTableField "datallowconn",O.requiredTableField "oid")
 
 -- Closed recovery setup: grant service roles on an already restored paused ledger.
 -- No initialization, database rename or financial-row mutation is permitted.

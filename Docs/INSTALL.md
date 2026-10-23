@@ -504,6 +504,53 @@ bundle must carry the resulting SDK/assets, configuration templates, schema.sql
 and applicable dependency notices. `build/assets/toolchains.json` retains toolchain pins;
 that file is not an installation command or release certificate.
 
+## Changing the configuration
+
+Edit `/root/hot-wallet/server.conf`, then run `sudo ./build/update-config.sh` from
+the current repository. It builds the current committed version, applies the
+record, and continues the existing checked startup and optional tunnel setup.
+The record is parsed as data. It is never evaluated or sourced by a shell.
+
+Before wallet setup, any valid replacement record is accepted. For a completed
+installation, ordinary updates support the server IP/domain/tunnel token, both
+Solana RPC URLs, customer payout thresholds/interval, customer explorer links, and
+release-update paths. The ledger, saved quotes, attempts and wallet identities
+remain unchanged. Other financial/backup/website changes are refused rather than
+silently accepted. An incomplete sealed bootstrap must finish before applying an
+ordinary settings update.
+
+Changing initialized custody requires **both new derived wallet identities**.
+Replacing only one chain while starting a new ledger is deliberately refused:
+the unchanged chain's old addresses/history cannot be treated as fresh custody.
+The updater stops intake, takes a verified checkpoint and refuses unresolved
+orders, payments, reservations, review or recovery work. It retires the old
+PostgreSQL database and its service roles without deleting records, archives the
+old configuration, keys, runtime/fence and installer records, and prepares a new
+installation from the supplied seeds. Existing OS service users are reused only
+after the closed replacement receipt and their original identities are verified.
+An unfinished setup before ledger provisioning can also be archived; any saved
+ATA transaction stays with its original keys and is never replayed for new custody.
+Partially provisioned ledgers require completing or recovering the original
+installation first.
+
+The script does **not** transfer old balances. Keep the retained keys and backups
+to recover those balances or late deposits. The new wallet needs its own SOL
+funding and trading inventory. If startup waits for funding, rerun the same script;
+do not send a second funding transfer simply because startup needs another retry.
+
+The private index is `/var/lib/hot-wallet-server/config-updates/<id>/`; directories
+use mode `0700`, and secret snapshots use `0600`. Wallet directory archives are
+adjacent to their original paths with `.retired-<id>` appended, each behind a
+root-only archive directory. The native node and old native wallets are retained.
+Archive paths and the retired database are recorded in that index. These are
+retained recovery material, not temporary files to clean up. Do not run an archived
+setup directly: its historical file references intentionally retain the old paths.
+
+Interrupted publication blocks startup/upgrade/restore until the same update is
+resumed. Exact old/new bytes, ownership and recorded directory identities are
+checked on retry; unexpected edits are not overwritten. The update checks are
+additional to normal confirmation, reserve, backup and duplicate-payment checks.
+
 ## Required host configuration
 
 Building source does not provision database roles/ACLs, native RPC restrictions,

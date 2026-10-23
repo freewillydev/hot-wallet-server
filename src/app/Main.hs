@@ -5,6 +5,8 @@ import Data.Version (showVersion)
 import qualified Paths_ecx_bridge as Package
 import Menu (launch)
 import qualified InstallConfig
+import qualified Reconfigure
+import qualified WalletRotation
 import Configure (configure,configureAdvanced,configureFile,start,startAdvanced,initializeNative)
 import qualified Bridge.Config as C
 import qualified Bridge.Fence as Fence
@@ -43,6 +45,8 @@ main=(getArgs >>= command) `catch` (\(BridgeError code)->
   command [flag] | flag `elem` ["version","--version"] = putStrLn ("ecx-bridge " <> showVersion Package.version)
   command ["configure-file",input,directory]=configureFile input directory
   command ["update-settings",file]=InstallConfig.updateSettings file >>= LBS.putStrLn . encode
+  command ["update-config",file]=Reconfigure.updateConfig file
+  command ["verify-wallet-replacement",directory]=WalletRotation.verifyReplacement directory
   command ["configure"]=configure
   command ["configure","--advanced"]=configureAdvanced
   command ["initialize-native-wallet",directory]=initializeNative directory
@@ -135,6 +139,20 @@ main=(getArgs >>= command) `catch` (\(BridgeError code)->
     database<-databaseSettings
     evalSetup database (ProvisionDatabase $ T.pack $ B8.unpack $ BS.take 32 bytes)
     putStrLn "Database provisioned; ledger remains inactive."
+  command ["archive-installation-database",identity,sequenceText,suffix]=do
+    sequenceNo<-maybe (reject "invalid_installation_archive") pure (readMaybe sequenceText)
+    bytes<-BS.hGet stdin 34
+    require (BS.length bytes==32 || (BS.length bytes==33 && BS.last bytes==10)) "invalid_installation_token"
+    database<-databaseSettings
+    archived<-evalSetup database (ArchiveInstallationDatabase (T.pack $ B8.unpack $ BS.take 32 bytes) (T.pack identity) sequenceNo (T.pack suffix))
+    LBS.putStrLn $ encode $ object ["database" .= archived,"fingerprint" .= identity,"criticalSequence" .= sequenceNo,"retired" .= True]
+  command ["check-installation-archive",identity,sequenceText]=do
+    sequenceNo<-maybe (reject "invalid_installation_archive") pure (readMaybe sequenceText)
+    bytes<-BS.hGet stdin 34
+    require (BS.length bytes==32 || (BS.length bytes==33 && BS.last bytes==10)) "invalid_installation_token"
+    database<-databaseSettings
+    evalSetup database (CheckInstallationArchive (T.pack $ B8.unpack $ BS.take 32 bytes) (T.pack identity) sequenceNo)
+    LBS.putStrLn $ encode $ object ["fingerprint" .= identity,"criticalSequence" .= sequenceNo,"readyToArchive" .= True]
   command ["operator",path]=do
     c<-C.loadConfig path
     bytes<-BS.hGet stdin 4097
@@ -151,7 +169,7 @@ main=(getArgs >>= command) `catch` (\(BridgeError code)->
     database<-databaseSettings
     withProcessResources c database mode $ \reader process->
       bracket newRpcManager closeManager $ \manager->runProcess manager reader process
-  command _=die "Usage: ecx-bridge version | configure [--advanced] | initialize-native-wallet DIRECTORY | start [DIRECTORY | --advanced] | configure-file INPUT DIRECTORY | provision-database (postgres; installation token on stdin) | initialize-ledger CONFIG (fresh database owner; installer may pass --fingerprint ID) | upload-custody CONFIG BACKUP_CONFIG MANIFEST MINIMUM_SEQUENCE | recover-custody CONFIG BACKUP_CONFIG SNAPSHOT DIRECTORY MINIMUM_SEQUENCE | backup-custody CONFIG KEYFILE DIRECTORY (offline custody authority, PG* and PGREADUSER) | check-custody CONFIG MANIFEST MINIMUM_SEQUENCE | backup-native-wallet CONFIG DESTINATION | restore-native-wallet CONFIG MANIFEST (offline custody authority; never overwrites a wallet) | adopt-ledger CONFIG MINIMUM_SEQUENCE | retire-ledger CONFIG MINIMUM_SEQUENCE | recover-ledger CONFIG BACKUP_CONFIG SNAPSHOT STAGING MINIMUM_SEQUENCE | restore-ledger CONFIG MANIFEST MINIMUM_SEQUENCE (offline database owner) | check-config CONFIG | check-fence CONFIG (stopped worker) | check-signer CONFIG KEYFILE | signer CONFIG KEYFILE [BACKUP_CONFIG STAGING] (SELECT-only PGUSER) | checkpoint CONFIG (stopped worker, running signer; PG* and distinct PGREADUSER) | operator CONFIG (JSON on stdin) | serve CONFIG | observe CONFIG (PG* and distinct PGREADUSER; existing current-schema ledger and host fence required)"
+  command _=die "Usage: ecx-bridge version | configure [--advanced] | initialize-native-wallet DIRECTORY | start [DIRECTORY | --advanced] | configure-file INPUT DIRECTORY | provision-database (postgres; installation token on stdin) | archive-installation-database FINGERPRINT SEQUENCE SUFFIX (offline postgres; installation token on stdin) | initialize-ledger CONFIG (fresh database owner; installer may pass --fingerprint ID) | upload-custody CONFIG BACKUP_CONFIG MANIFEST MINIMUM_SEQUENCE | recover-custody CONFIG BACKUP_CONFIG SNAPSHOT DIRECTORY MINIMUM_SEQUENCE | backup-custody CONFIG KEYFILE DIRECTORY (offline custody authority, PG* and PGREADUSER) | check-custody CONFIG MANIFEST MINIMUM_SEQUENCE | backup-native-wallet CONFIG DESTINATION | restore-native-wallet CONFIG MANIFEST (offline custody authority; never overwrites a wallet) | adopt-ledger CONFIG MINIMUM_SEQUENCE | retire-ledger CONFIG MINIMUM_SEQUENCE | recover-ledger CONFIG BACKUP_CONFIG SNAPSHOT STAGING MINIMUM_SEQUENCE | restore-ledger CONFIG MANIFEST MINIMUM_SEQUENCE (offline database owner) | check-config CONFIG | check-fence CONFIG (stopped worker) | check-signer CONFIG KEYFILE | signer CONFIG KEYFILE [BACKUP_CONFIG STAGING] (SELECT-only PGUSER) | checkpoint CONFIG (stopped worker, running signer; PG* and distinct PGREADUSER) | operator CONFIG (JSON on stdin) | serve CONFIG | observe CONFIG (PG* and distinct PGREADUSER; existing current-schema ledger and host fence required)"
   initialize identity=do
     database<-databaseSettings
     evalSetup database (InitializeLedger identity)

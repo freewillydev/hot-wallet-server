@@ -36,6 +36,7 @@ worker="/etc/ecx-bridge/worker/config.json"
 
 activate :: IO ()
 activate=withFamily "/var/lib/ecx-bridge-upgrade/lifecycle" $ do
+  Upgrade.requireNoConfigurationUpdate
   privateParent(root</>"pending")
   pending<-doesFileExist(root</>"pending")
   require pending "no_pending_restoration"

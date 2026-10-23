@@ -1,6 +1,7 @@
 -- One-time local node provisioning, never a worker/signer runtime capability.
 module NodeSetup (credentials,checkConfig,serviceName,provision,persistRestoredWallet,signerPolicy,refreshSignerPolicy) where
 import Bridge.AdminKey (savePrivate,readPrivate,withFamily)
+import qualified ReconfigureFiles as ConfigFiles
 import Bridge.File (withHandle)
 import System.IO (hFlush)
 import Bridge.Error
@@ -53,7 +54,7 @@ credentials directory=do
         password<-base58 <$> getRandomBytes 32
         suffix<-base58 <$> getRandomBytes 8
         let bytes=B8.pack $ "ecx_"<>role<>"_"<>T.unpack suffix<>":"<>T.unpack password
-        savePrivate credential bytes
+        ConfigFiles.savePrivateRecord credential bytes
         pure bytes
       let (user,tailBytes)=B8.break (==':') auth
           password=B.drop 1 tailBytes
@@ -62,7 +63,7 @@ credentials directory=do
       salt<-base58 <$> getRandomBytes 16
       let digest=B8.unpack (Hex.convertToBase Hex.Base16 (hmac (B8.pack $ T.unpack salt) password::HMAC SHA256))
       pure $ "rpcauth="<>B8.unpack user<>":"<>T.unpack salt<>"$"<>digest<>"\nrpcwhitelist="<>B8.unpack user<>":"<>methods<>"\n"
-    savePrivate config (B8.pack $ concat rows)
+    ConfigFiles.savePrivateRecord config (B8.pack $ concat rows)
   case files of
     [admin,worker,signer]->pure(admin,worker,signer)
     _->reject "invalid_generated_credentials"
