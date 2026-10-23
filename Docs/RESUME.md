@@ -19,8 +19,15 @@ SSM receipts: 37621897-5c44-4935-8337-95eefa3416c4 (probe) and
 f9912feb-a105-489c-8eee-1e9d2f8531a0 (status), us-east-2. Sanitized local receipt:
 /tmp/hot-wallet-aws-rpc-reproduction-20261023.json. Fresh repro_inventory scoped
 source/evidence review PASS; reviewer did not independently retrieve SSM output.
-OnFinality genesis/history responded but transaction response was inconclusive;
-do not claim full verifier acceptance. No new startup, fresh install, or latest
+Follow-up at 23:54Z: OnFinality and public https://api.mainnet.solana.com both
+passed genesis/history/transaction reads plus mint/signature identity checks.
+The earlier inconclusive OnFinality result was gzip not decoded by the probe;
+the corrected probe decoded the declared Content-Encoding and received valid JSON.
+Receipt: /tmp/hot-wallet-alternative-rpc-20261023.json; SSM
+1357a2c9-8588-4658-a314-443f48fcd39e. No endpoint switch or resume performed.
+These bounded HTTP probes do not establish sustained availability or full bridge
+acceptance; the public endpoint is documented as unsuitable for production.
+No new startup, fresh install, or latest
 binary acceptance was performed, and localhost credential equivalence is unknown.
 Next: verify billing/usage allowance for the Alchemy team/app owning the configured
 key, then rerun bounded read-only provider checks before the normal checked resume.
