@@ -17,6 +17,14 @@ the unrelated dirty capability draft; no full dirty-tree Cabal, Ubuntu updater,
 user-record diagnosis or live-deployment acceptance is claimed. Evidence hashes
 are in `.audit/installer-update.tsv`; production gates below remain unchanged.
 
+2026-10-23 self owner destinations: scoped build/configuration and actual local
+PostgreSQL worker/signer contract PASS. Self fees remain Earned with no payment
+root, balance change or attempt; external owner payout still reserves correctly.
+Customer/manual safeguards unchanged. Fresh read-only `self_owner_review`
+source/evidence verdict PASS. Net +4 production lines across four files.
+Private test cluster stopped. Committed Operation overlay used as above; chain
+RPC is fixture data, not real-fund or Ubuntu deployment acceptance.
+
 Implemented: server-only layout, typed record setup, current schema23, customer
 wrap/unwrap API, dedicated signer, configurable customer payout rounds, immediate
 refunds, owner scheduling, custom frontend and optional tunnel setup. Local checks

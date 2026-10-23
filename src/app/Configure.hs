@@ -91,7 +91,7 @@ configureFile input output=do
   let owner=base58 (B.drop 32 keyBytes)
   sdk<-SetupPaths.sdkPath
   ata<-TokenOp.runSafe(TokenOp.Request $ Token.AssociatedAddress sdk owner Bootstrap.canonicalMint)
-  require (T.pack (I.ownerSolPubkey settings) `notElem` [owner,ata,Bootstrap.canonicalMint]) "bridge_owned_destination"
+  require (T.pack (I.ownerSolPubkey settings) `notElem` [ata,Bootstrap.canonicalMint]) "bridge_owned_destination"
   directory<-makeAbsolute output
   withFamily (directory<>"-configure") $ do
     let keys=directory<>"-keys"

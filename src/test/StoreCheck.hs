@@ -4647,6 +4647,7 @@ tlsMain=do
   barrier<-newIORef Nothing
   workerProbe<-newIORef (pure False :: IO Bool)
   workerRelease<-newEmptyMVar
+  selfNativeOwner<-newIORef False
   let rpcApplication request respond=do
         raw<-Wai.strictRequestBody request
         value<-either fail pure (eitherDecodeStrict' $ BL.toStrict raw)
@@ -4673,8 +4674,10 @@ tlsMain=do
             [String requested]->pure $ object ["descriptor" .= (requested<>"#fixture"),"hasprivatekeys" .= False,"isrange" .= False,"issolvable" .= True]
             _->fail "unexpected descriptor request"
           "deriveaddresses"->pure $ toJSON ["bc1qjh4xdrsry27enkk9fl7ujzyadrjkcw4p2uy76c"::T.Text]
-          "getaddressinfo"->let change=params==[String "fixture-change"] in
-            pure $ object ["ismine" .= change,"scriptPubKey" .= if change then changeScript else ownerScript]
+          "getaddressinfo"->do
+            self<-readIORef selfNativeOwner
+            let change=params==[String "fixture-change"]
+            pure $ object ["ismine" .= (change || self),"scriptPubKey" .= if change then changeScript else ownerScript]
           "decodescript"->pure $ object ["type" .= ("witness_v0_keyhash"::T.Text)]
           "listunspent"->pure $ toJSON [object ["safe" .= True,"spendable" .= True,"solvable" .= True,
             "confirmations" .= (100::Int),"address" .= ("fixture-change"::T.Text)]]
@@ -4758,6 +4761,36 @@ tlsMain=do
               bracket (newManager defaultManagerSettings {managerModifyRequest= \request->pure request {HTTP.secure=False,HTTP.host="127.0.0.1",HTTP.port=rpcPort}}) closeManager $ \manager->do
                 -- History capture owns its own manager and uses this URL directly.
                 let connectedNative=configuredNative {N.nativeRpc="http://127.0.0.1:"<>show rpcPort}
+                when (not activeNative) $ do
+                  -- Complete a real worker cycle with both owner destinations
+                  -- in custody. No fee hold, withdrawal or signer work may result.
+                  retained<-newEmptyMVar
+                  releaseRetained<-newEmptyMVar
+                  rootsBefore<-fixture fixtures PaymentRoots
+                  writeIORef calls []
+                  writeIORef selfNativeOwner True
+                  writeIORef workerProbe $ do
+                    finished<-elem "getaddressinfo" <$> readIORef calls
+                    when finished (void (tryPutMVar retained ()) >> takeMVar releaseRetained)
+                    pure False
+                  flip finally (writeIORef workerProbe (pure False) >> writeIORef selfNativeOwner False
+                    >> void (tryPutMVar releaseRetained ())) $
+                   withWorkerProcess manager reader writer (ObserverSettings connectedNative solana 1 headSignature headSignature) config
+                    (Just $ CustomerSettings public store sdk $ Just recipients {Config.solanaOwner=owner}) endpoint $ \_ _->do
+                      (timeout 45000000 (takeMVar retained) >>= check . (==Just ()))
+                        `onException` (evalRead reader ReadServiceStatus >>= print >> readIORef calls >>= print)
+                      evalRead reader ReadState >>= check . not . ledgerPaused
+                      fixture fixtures PaymentRoots >>= check . (==rootsBefore)
+                      evalRead reader ReadBalances >>= check . (==before)
+                      evalRead reader PendingAttempts >>= check . null
+                      methods<-readIORef calls
+                      check (all (`notElem` methods) ["walletcreatefundedpsbt","getLatestBlockhash",
+                        "getFeeForMessage","simulateTransaction","walletprocesspsbt","sendTransaction","sendrawtransaction"])
+                  writeIORef calls []
+                  putStrLn "PASS: self owner destinations retain earned fees without withdrawal, reservation, signing, sending or pause"
+                  -- Cancelling the following cycle at its RPC barrier invokes
+                  -- the normal pause guard. Start the external-owner fixture ready.
+                  fixture fixtures ReadyIntake
                 -- Stop the next cycle at its first identity RPC even if the
                 -- assertion thread is delayed; never race a signing attempt.
                 writeIORef workerProbe ((not.null) <$> saved)

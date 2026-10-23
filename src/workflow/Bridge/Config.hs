@@ -117,7 +117,7 @@ validateSetupConfig c = do
   forM_ (ownerFeeRecipients c) $ \recipients->do
     validOwnerDestination (profile c==L2LSignetDevnet) (nativeOwnerXpub recipients) >>= (`require` "invalid_owner_ecx_destination")
     either reject (const $ pure ()) (publicKey $ solanaOwner recipients)
-    require (solanaOwner recipients `notElem` [custodyOwner c,custodyAta c,mint c]) "bridge_owned_destination"
+    require (solanaOwner recipients `notElem` [custodyAta c,mint c]) "bridge_owned_destination"
     require (maxWithdrawal c>=nativePayoutThreshold (payoutPolicy c)
       && maxWithdrawal c>=wrappedPayoutThreshold (payoutPolicy c)) "automatic_withdrawal_limit_below_threshold"
   let identifier t=not(T.null t) && T.length t<=64 && T.all (`elem` ("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_"::String)) t

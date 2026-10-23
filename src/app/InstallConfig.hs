@@ -88,7 +88,7 @@ validateOperationalUpdate previous candidate=do
         , solanaRpcUrl=solanaRpcUrl config,solanaVerifierRpcUrl=solanaVerifierRpcUrl config
         , payoutThresholdEcx=payoutThresholdEcx config,payoutThresholdWrappedEcx=payoutThresholdWrappedEcx config
         , minimumPayoutIntervalHours=minimumPayoutIntervalHours config
-        , ownerEcxXpub=ownerEcxXpub config
+        , ownerEcxXpub=ownerEcxXpub config,ownerSolPubkey=ownerSolPubkey config
         , externalLinkSolscan=externalLinkSolscan config,externalLinkOrca=externalLinkOrca config
         , updatePublicKey=updatePublicKey config,updateReleaseDirectory=updateReleaseDirectory config
         , updateSetupDirectory=updateSetupDirectory config }
@@ -221,7 +221,6 @@ validateWithSolanaKey c readSolanaKey=do
   require (length(backupPassword c)>=16 && not(any (`elem` ['\n','\r','\0']) (backupPassword c))) "backup_password_minimum_16_characters"
   require (isAbsolute $ resticExecutable c) "absolute_reviewed_restic_path_required"
   _<-either reject pure (publicKey $ T.pack $ ownerSolPubkey c)
-  require (TE.encodeUtf8 (T.pack $ ownerSolPubkey c)/=B58.encodeBase58 B58.bitcoinAlphabet (B.drop 32 key)) "bridge_owned_destination"
   validOwnerDestination False (T.pack $ ownerEcxXpub c) >>= (`require` "owner_ecx_address_or_xpub_required")
   let labels=T.splitOn "." (T.pack $ domain c)
       alphanumeric character=character `elem` (['a'..'z']<>['0'..'9'])

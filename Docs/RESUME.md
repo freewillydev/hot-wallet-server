@@ -8,6 +8,21 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Current config updater checkpoint (2026-10-23)
 
+Owner fee destinations may now match custody. Solana self destinations are
+excluded from automatic candidates; Native owned/watched recipients are a no-op
+only in automatic owner selection. Fees stay Earned, without withdrawal/holds,
+signing, sending or reclassification. Both owner fields can change operationally;
+saved recipients, customer/manual self-payment guards and custody are unchanged.
+Application/config/store builds, complete ConfigureCheck and canonical-profile
+PostgreSQL/HTTPS worker-signer contract PASS. The worker test verifies unchanged
+balances/roots/attempts for self destinations, then ordinary external withdrawal.
+Fresh read-only `self_owner_review` source/evidence verdict PASS.
+Task PostgreSQL stopped; tests used offline chain fixtures and the committed
+Operation overlay below. No live updater or funded acceptance is claimed.
+Logs: `/tmp/hot-wallet-self-owner-{build,config,store-build,pg,pg-run}.log`.
+Initial fixture failures (barrier timing and paused cancellation between scenarios)
+are retained; corrected fixture timing/setup passed without changing runtime guards.
+
 Installation records now accept reordered fields and comments. Parse failures
 identify missing, duplicate, obsolete or mistyped fields, or the faulty line,
 without exposing values. Original private bytes remain unchanged. The new

@@ -368,6 +368,8 @@ importContract parent executable=do
         [(fields,fields,(False,False))
         ,(fields,replace "minimumPayoutIntervalHours" "24",(False,False))
         ,(fields,addressFields,(False,False))
+        ,(fields,replace "ownerSolPubkey" (show $ T.unpack $ base58 $ B.drop 32 key),(False,False))
+        ,(replace "ownerSolPubkey" (show $ T.unpack $ base58 $ B.drop 32 key),fields,(False,False))
         ,(addressFields,fields,(False,False))
         ,(addressFields,replace "ownerEcxXpub" (show ("1BoatSLRHtKNngkdXEeobR76b53LETtpyT"::String)),(False,False))
         ,(legacy fields,fields,(False,False))
@@ -453,12 +455,21 @@ importContract parent executable=do
   let normalized=addressConfig {C.nativeCookie=C.nativeCookie config,C.nativeUnlockFile=C.nativeUnlockFile config}
   require (normalized==config {C.ownerFeeRecipients=Just recipients {C.nativeOwnerXpub=T.pack receiveAddress}}
     && C.fingerprint addressConfig==C.fingerprint config) "owner_address_changed_custody_or_configuration"
+  let selfConf=parent</>"self-owner.conf"; selfOutput=parent</>"self-owner-setup"
+  savePrivate selfConf (B8.pack $ record $ replace "ownerSolPubkey" $ show $ T.unpack $ C.custodyOwner config)
+  (selfCode,selfOut,selfErr)<-invoke selfConf selfOutput
+  require (selfCode==ExitSuccess && secretFree(selfOut<>selfErr)) "self_owner_configuration_failed"
+  selfConfig<-Bootstrap.setupConfig selfOutput
+  C.validateSetupConfig selfConfig
+  let selfNormalized=selfConfig {C.nativeCookie=C.nativeCookie config,C.nativeUnlockFile=C.nativeUnlockFile config}
+  require (selfNormalized==config {C.ownerFeeRecipients=Just recipients {C.solanaOwner=C.custodyOwner config}}
+    && C.fingerprint selfConfig==C.fingerprint config) "self_owner_changed_custody_or_configuration"
   forM_ (map (\bad->recipients {C.nativeOwnerXpub=T.pack bad}) (badXpubs<>badAddresses)
     <>[recipients {C.solanaOwner="invalid"}]) $ \bad->do
       result<-try(C.validateSetupConfig config {C.ownerFeeRecipients=Just bad}) :: IO (Either BridgeError ())
       require (either (const True) (const False) result) "invalid_runtime_owner_accepted"
   forM_ ([config {C.ownerFeeRecipients=Just recipients {C.solanaOwner=destination}}
-      | destination<-[C.custodyOwner config,C.custodyAta config,C.mint config]]
+      | destination<-[C.custodyAta config,C.mint config]]
     <>[config {C.maxWithdrawal=either (error . T.unpack) id (amount 1)}]) $ \bad->do
       result<-try(C.validateSetupConfig bad) :: IO (Either BridgeError ())
       require (either (const True) (const False) result) "unsafe_automatic_payout_policy_accepted"
@@ -487,7 +498,7 @@ importContract parent executable=do
     <>map (replace "domain" . show) ([".",".example.org","example..org","example.org.","-bridge.example.org","bridge-.example.org",replicate 64 'a'<>".org"]::[String])
     <>map (replace "cloudflareTunnelToken" . ("Just "<>) . show)
       [replicate 31 't',replicate 4097 't',replicate 32 't'<>"\n",replicate 32 't'<>"\f",replicate 32 't'<>"\x100"]
-    <>map (replace "ownerSolPubkey" . show . T.unpack) [C.custodyOwner config,C.custodyAta config,C.mint config]
+    <>map (replace "ownerSolPubkey" . show . T.unpack) [C.custodyAta config,C.mint config]
     <>map (replace "ownerEcxXpub" . show) (badXpubs<>badAddresses) <>
     map (replace "solSeedBip39" . show)
       ["",unwords(replicate 12 "abandon"),unwords(take 11 $ words solPhrase),solPhrase<>" yellow"

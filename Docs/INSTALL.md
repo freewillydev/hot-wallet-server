@@ -522,13 +522,20 @@ Keep this file private; share only the error message when troubleshooting.
 
 Before wallet setup, any valid replacement record is accepted. For a completed
 installation, ordinary updates support the server IP/domain/tunnel token, both
-Solana RPC URLs, customer payout thresholds/interval, the ECX owner-fee receiving
-address (`ownerEcxXpub`, also accepting an xpub), customer explorer links, and
+Solana RPC URLs, customer payout thresholds/interval, owner-fee receiving
+addresses (`ownerEcxXpub`, also accepting an xpub, and `ownerSolPubkey`), customer explorer links, and
 release-update paths. A new owner-fee destination affects future reservations;
 already reserved payments retain their saved recipient. The ledger, saved quotes, attempts and wallet identities
 remain unchanged. Other financial/backup/website changes are refused rather than
 silently accepted. An incomplete sealed bootstrap must finish before applying an
 ordinary settings update.
+
+Owner destinations may match the bridge wallets. For that asset, automatic fee
+withdrawals are skipped: fees remain recorded as earned and unwithdrawn, with no
+self-transfer or extra network fee. They are not reclassified as available
+inventory. ECX destinations owned or watched by the node are retained this way;
+on Solana use the wallet's public address, not its token account or the mint.
+Customer and explicit withdrawal recipient checks are unchanged.
 
 Changing initialized custody requires **both new derived wallet identities**.
 Replacing only one chain while starting a new ledger is deliberately refused:

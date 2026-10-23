@@ -1048,13 +1048,15 @@ instance Typeable result => CycleSteps (WorkerCommand 'Critical result) where
 -- This optional reservation never signs. All resulting work uses the ordinary
 -- payout pipeline, and a commit ends this cycle so custody can be reconciled.
 instance OwnerFeeSteps (WorkerCommand 'Critical result) where
-  ownerFeeCandidates _ = workerEffect False $ \(CriticalEnvironment _ _ _ configured _ reader _) ->
+  ownerFeeCandidates _ = workerEffect False $ \(CriticalEnvironment _ _ config configured _ reader _) ->
     case configured of
       Just c | Just recipients<-ownerFeeRecipients c->do
         priority<-evalRead reader ReadAutomaticFeePriority
         nativeWork<-evalRead reader ReadNativeLockWork
         -- Never contest active native inputs. Saved history determines priority.
-        pure [OwnerFeeWork c recipients asset | asset<-priority,asset/=Native || nativeWork==Nothing]
+        -- A self destination retains earned fees; it is not a withdrawal.
+        pure [OwnerFeeWork c recipients asset | asset<-priority,asset/=Native || nativeWork==Nothing
+          ,asset/=Wrapped || C.solanaOwner recipients/=H.custodyOwner config]
       _->pure []
   reserveOwnerFee _ (OwnerFeeWork c recipients asset) = workerEffect False $ \environment@(CriticalEnvironment rpc settings config _ _ reader writer) -> do
     let policy=customerPolicy c
@@ -1087,6 +1089,9 @@ instance OwnerFeeSteps (WorkerCommand 'Critical result) where
         case outcome of
           Right (Just _)->pure True
           Right Nothing->pure False
+          -- Native ownership is resolved by the node. Keep these fees earned,
+          -- with no reservation or transfer, when its destination is custody.
+          Left (BridgeError "bridge_owned_destination") | asset==Native->pure False
           Left (BridgeError code) | code `elem` ["native_admission_funds_unavailable","native_fee_budget_exceeded",
             "insufficient_operating_sol","insufficient_custody_tokens"]->pure False
           Left failure->throwIO failure
