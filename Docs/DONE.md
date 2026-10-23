@@ -1,5 +1,14 @@
 # Production acceptance
 
+2026-10-23 AWS RPC investigation: scoped reproduction PASS; RPC readiness FAIL.
+The existing Ubuntu server's Alchemy endpoint returned HTTP429 / JSON-RPC429
+with a monthly-capacity classification on getGenesisHash, the first startup
+preflight read. Actual operator status is paused: rpc_rate_limited:SolanaOperating.
+Setup/runtime endpoint fingerprints match; configuration hash unchanged; no
+service/fund changes. Fresh repro_inventory source/evidence review PASS, based on
+owner-retrieved SSM results. This is not a fresh-install or localhost-key test.
+The provider entitlement issue remains unresolved; all release gates are unchanged.
+
 2026-10-23 README update command: `git pull --ff-only && sudo ./build/update-config.sh`
 documented for latest repository changes plus config application. Separate
 read-only readme_update_check accuracy PASS; no runtime changes or tests needed.

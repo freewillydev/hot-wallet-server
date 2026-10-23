@@ -8,6 +8,27 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Current config updater checkpoint (2026-10-23)
 
+Latest RPC investigation: reproduced the primary provider refusal on the existing
+AWS Ubuntu 24.04 deployment at 2026-10-23T23:20Z. Read-only getGenesisHash returned
+HTTP429 / JSON-RPC429 with Alchemy's monthly-capacity classification. Operator
+status confirms paused=True, pauseReason=rpc_rate_limited:SolanaOperating,
+criticalSequence=backupSequence=2. Setup, worker and signer endpoint fingerprints
+match. The worker, signer and native node were already active; no services,
+configuration or funds were changed. Config hash stayed identical.
+SSM receipts: 37621897-5c44-4935-8337-95eefa3416c4 (probe) and
+f9912feb-a105-489c-8eee-1e9d2f8531a0 (status), us-east-2. Sanitized local receipt:
+/tmp/hot-wallet-aws-rpc-reproduction-20261023.json. Fresh repro_inventory scoped
+source/evidence review PASS; reviewer did not independently retrieve SSM output.
+OnFinality genesis/history responded but transaction response was inconclusive;
+do not claim full verifier acceptance. No new startup, fresh install, or latest
+binary acceptance was performed, and localhost credential equivalence is unknown.
+Next: verify billing/usage allowance for the Alchemy team/app owning the configured
+key, then rerun bounded read-only provider checks before the normal checked resume.
+Despite the reported upgrade, the configured AWS endpoint currently returns this
+refusal; its account/app equivalence to localhost is unverified. Do not replace
+endpoints, weaken preflight, or repeatedly retry monthly exhaustion.
+
+Earlier transport-diagnostics checkpoint (localhost failure independently unverified):
 Latest user report: localhost `update-config.sh` emits
 `rpc_transport_unknown_outcome`; exact preceding phase is still unknown. Added
 terminal-only operation/transport diagnostics without exposing URLs/keys or
