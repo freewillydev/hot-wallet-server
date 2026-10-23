@@ -510,6 +510,15 @@ Edit `/root/hot-wallet/server.conf`, then run `sudo ./build/update-config.sh` fr
 the current repository. It builds the current committed version, applies the
 record, and continues the existing checked startup and optional tunnel setup.
 The record is parsed as data. It is never evaluated or sourced by a shell.
+Fields may be reordered; `--` line comments and `{- -}` block comments are allowed.
+All fields remain required. Use double quotes for text/amount strings and
+`Nothing` or `Just "text"` for optional values. Parse errors identify the field
+or line without printing its contents. `solKeyB58` is obsolete in the edited
+record: supply the actual 12 recovery words in `solSeedBip39`, not a renamed key.
+
+With the updated binary installed, check edits without restarting services:
+`sudo ecx-bridge check-install-config /root/hot-wallet/server.conf`.
+Keep this file private; share only the error message when troubleshooting.
 
 Before wallet setup, any valid replacement record is accepted. For a completed
 installation, ordinary updates support the server IP/domain/tunnel token, both

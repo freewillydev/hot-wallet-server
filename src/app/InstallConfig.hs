@@ -10,11 +10,12 @@ import Bridge.RPC (independentHttps)
 import Bridge.NativeKey (validOwnerDestination)
 import Bridge.Wallet (nativeDescriptors,walletKey,protectWalletProcess)
 import Control.Exception (catch)
-import Control.Monad (forM_,guard)
+import Control.Monad (forM_,unless,when)
 import Crypto.Error (CryptoFailable(..))
 import qualified Crypto.PubKey.Ed25519 as Ed
 import qualified Data.ByteArray as BA
-import Data.List (isPrefixOf,stripPrefix)
+import Data.List (isPrefixOf,stripPrefix,intercalate)
+import Data.Char (isSpace)
 import Data.Maybe (fromMaybe,isJust)
 import Data.IP (IP)
 import Data.Aeson (Value,object,(.=))
@@ -25,7 +26,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Network.HTTP.Client (parseRequest,HttpException,secure,host)
 import System.FilePath (isAbsolute,normalise)
-import Text.Read (readEither,readMaybe)
+import Text.Read (readMaybe)
 
 data InstallConfig = InstallConfig
   { serverIp :: String, domain :: String
@@ -46,8 +47,9 @@ data InstallConfig = InstallConfig
 
 readInstallConfig :: FilePath -> IO (B.ByteString,InstallConfig)
 readInstallConfig file=do
+  protectWalletProcess
   bytes<-readPrivate file
-  config<-either (const $ reject "invalid_haskell_install_record") pure (readEither $ B8.unpack bytes)
+  (config,_)<-either reject pure (parseInstallRecord False $ B8.unpack bytes)
   _<-validateInstallConfig config
   pure(bytes,config)
 
@@ -58,7 +60,7 @@ readInstallConfigUpdate :: FilePath -> FilePath -> IO (B.ByteString,InstallConfi
 readInstallConfigUpdate previous candidate=do
   protectWalletProcess
   bytes<-readPrivate candidate
-  config<-either (const $ reject "invalid_haskell_install_record") pure (readEither $ B8.unpack bytes)
+  (config,_)<-either reject pure (parseInstallRecord False $ B8.unpack bytes)
   key<-validateInstallConfig config
   (old,oldKey)<-readPreviousInstallConfig previous
   oldNative<-nativeDescriptors False (ecxSeedBip39 old) >>= either reject pure
@@ -68,14 +70,9 @@ readInstallConfigUpdate previous candidate=do
 readPreviousInstallConfig :: FilePath -> IO (InstallConfig,B.ByteString)
 readPreviousInstallConfig previous=do
   oldBytes<-readPrivate previous
-  case readMaybe (B8.unpack oldBytes) of
-    Just current->do
-      currentKey<-validateInstallConfig current
-      pure(current,currentKey)
-    Nothing->do
-      legacy<-maybe (reject "invalid_previous_install_record") pure (legacyInstallConfig $ B8.unpack oldBytes)
-      legacyKey<-validateWithSolanaKey legacy (readLegacyKey $ solSeedBip39 legacy)
-      pure(legacy,legacyKey)
+  (old,legacy)<-either (reject . ("Saved installation: "<>)) pure (parseInstallRecord True $ B8.unpack oldBytes)
+  key<-if legacy then validateWithSolanaKey old (readLegacyKey $ solSeedBip39 old) else validateInstallConfig old
+  pure(old,key)
 
 -- Runtime publication currently supports this explicit operational subset. Other
 -- changes need their own custody/backup/recipient/website workflow, even when the
@@ -97,20 +94,88 @@ validateOperationalUpdate previous candidate=do
         , updateSetupDirectory=updateSetupDirectory config }
   require (allowed==config) "operational_update_field_requires_review"
 
--- Tokenize before translating the single old field name: strings, including
--- passwords and ownership statements, must never be searched/replaced as text.
--- The temporary record stays private to this module; its renamed field contains
--- the old key only until validation/comparison, and is never used as a mnemonic.
-legacyInstallConfig :: String -> Maybe InstallConfig
-legacyInstallConfig input=do
-  tokens<-tokenize input
-  guard (length(filter (=="solKeyB58") tokens)==1 && "solSeedBip39" `notElem` tokens)
-  readMaybe $ unwords [if token=="solKeyB58" then "solSeedBip39" else token | token<-tokens]
+-- Read still decodes every value and the final record; no Haskell is evaluated.
+-- Normalize only for parsing: preserve original private bytes in saved records.
+-- Diagnostic text contains only static names/instructions and line numbers,
+-- never values, unknown identifiers, or the underlying Read error.
+parseInstallRecord :: Bool -> String -> Either T.Text (InstallConfig,Bool)
+parseInstallRecord allowLegacy input=do
+  tokens<-tokenize 1 input
+  fields<-case unwrap tokens of
+    (_,"InstallConfig"):(_,"{"):rest->assignments [] rest
+    _->bad 1 "expected InstallConfig { field = value, ... }"
+  let legacy=any ((=="solKeyB58").fst) fields
+      normalized=[(if name=="solKeyB58" then "solSeedBip39" else name,value) | (name,value)<-fields]
+      missing=[name | name<-fieldNames,not(isJust $ lookup name normalized)]
+  unless (null missing) (bad 0 $ "missing fields: "<>intercalate ", " missing)
+  when (legacy && isJust(lookup "solSeedBip39" fields)) (bad 0 "use only solSeedBip39, not both Solana key fields")
+  let record="InstallConfig {"<>intercalate "," [name<>" = "<>value | name<-fieldNames,Just value<-[lookup name normalized]]<>"}"
+  case readMaybe record of
+    Just config->Right(config,legacy)
+    Nothing->bad 0 "check field value types against example.conf"
  where
-  tokenize remaining=case lex remaining of
-    [("","")]->Just []
-    [(token,rest)] | not(null token)->(token:) <$> tokenize rest
-    _->Nothing
+  -- Declaration order for derived Read. Every field remains mandatory; no
+  -- missing credential, fee, or custody setting is silently defaulted.
+  fieldNames=words $ "serverIp domain websiteDirectory cloudflareTunnelToken ecxSeedBip39 solSeedBip39 assetMintAddress "<>
+    "feeRateWrapBps feeRateUnwrapBps payoutThresholdEcx payoutThresholdWrappedEcx minimumPayoutIntervalHours "<>
+    "ownerEcxXpub ownerSolPubkey externalLinkSolscan externalLinkOrca solanaRpcUrl solanaVerifierRpcUrl "<>
+    "backupRepositoryUrl backupPassword resticExecutable updatePublicKey updateReleaseDirectory updateSetupDirectory "<>
+    "freshCustodyAttestation initialFundingOwnership"
+  bad :: Int -> String -> Either T.Text a
+  bad line message=Left $ T.pack $ "Invalid Haskell install record"<>
+    (if line==0 then "" else " at line "<>show line)<>": "<>message<>". Config values are hidden."
+  unwrap tokens@((_,"("):rest)=case reverse rest of
+    (_, pin):more | pin==")"->unwrap(reverse more)
+    _->tokens
+  unwrap tokens=tokens
+  assignments _ []=bad 0 "missing closing }"
+  assignments fields [(_,"}")]=Right fields
+  assignments fields ((line,name):(_,"="):rest)=do
+    when (name=="solKeyB58" && not allowLegacy) $
+      bad line "solKeyB58 is obsolete; use solSeedBip39 with your 12 recovery words (do not rename a base58 key value)"
+    unless (name `elem` fieldNames || (allowLegacy && name=="solKeyB58")) (bad line "unknown field name; compare with example.conf")
+    when (isJust $ lookup name fields) (bad line $ "duplicate field "<>name)
+    (value,ending)<-valueTokens line name [] [] rest
+    validateValue line name value
+    case ending of
+      (_,","):more@(_:_)->case more of
+        (_,"}"):_ ->bad line "remove the trailing comma before }"
+        _->assignments ((name,value):fields) more
+      [(_,"}")]->Right ((name,value):fields)
+      _->bad line "expected a comma between fields or a final } with no trailing text"
+  assignments _ ((line,_):_)=bad line "expected field = value; check commas, quotes and braces"
+  valueTokens line name _ _ []=bad line $ "missing closing delimiter after "<>name
+  valueTokens line name stack values remaining@((position,token):rest)
+    | null stack && token `elem` [",","}"]=Right(unwords $ reverse values,remaining)
+    | token `elem` ["(","[","{"]=valueTokens line name (token:stack) (token:values) rest
+    | token `elem` [")","]","}"]=case stack of
+        open:more | (open,token) `elem` [("(",")"),("[","]"),("{","}")]->valueTokens line name more (token:values) rest
+        _->bad position $ "mismatched delimiter in "<>name
+    | otherwise=valueTokens line name stack (token:values) rest
+  validateValue line name value
+    | name `elem` ["websiteDirectory","cloudflareTunnelToken"]=
+        unless (isJust(readMaybe value :: Maybe (Maybe String))) (bad line $ name<>" requires Nothing or Just \"text\"")
+    | name `elem` ["feeRateWrapBps","feeRateUnwrapBps","minimumPayoutIntervalHours"]=do
+        number<-maybe (bad line $ name<>" requires an unquoted whole number") Right (readMaybe value :: Maybe Integer)
+        when (name/="minimumPayoutIntervalHours" && (number<toInteger(minBound::Int) || number>toInteger(maxBound::Int))) $
+          bad line (name<>" is outside the supported integer range")
+    | otherwise=unless (isJust(readMaybe value :: Maybe String)) (bad line $ name<>" requires a double-quoted string")
+  tokenize line source=do
+    let (space,rest)=span isSpace source
+        current=line+length(filter (=='\n') space)
+    case rest of
+      []->Right []
+      '-':'-':more->tokenize current (dropWhile (/='\n') more)
+      '{':'-':more->do (next,remaining)<-comment current (1::Int) more;tokenize next remaining
+      _->case lex rest of
+        [(token,remaining)] | not(null token)->do
+          let next=current+length(filter (=='\n') $ take (length rest-length remaining) rest)
+          ((current,token):) <$> tokenize next remaining
+        _->bad current "invalid token or unclosed string; use straight double quotes"
+  comment line _ []=bad line "unclosed {- -} comment"
+  comment line depth ('{':'-':rest)=comment line (depth+1) rest
+  comment line depth ('-':'}':rest)=if depth==1 then Right(line,rest) else comment line (depth-1) rest
+  comment line depth (c:rest)=comment (if c=='\n' then line+1 else line) depth rest
 
 readLegacyKey :: String -> IO B.ByteString
 readLegacyKey encoded=do

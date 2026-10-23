@@ -6,7 +6,23 @@ writer; review agents are read-only. New repository path:
 Original bridge stays clean at `6af7e73818c041669c5a5c1819f4c5c0be405d37`.
 Do not modify/deploy original runtime or touch live custody during extraction.
 
-## Current config updater checkpoint (2026-10-22)
+## Current config updater checkpoint (2026-10-23)
+
+Installation records now accept reordered fields and comments. Parse failures
+identify missing, duplicate, obsolete or mistyped fields, or the faulty line,
+without exposing values. Original private bytes remain unchanged. The new
+`check-install-config FILE` command validates offline without changing services.
+All existing semantic, custody and update checks remain in place.
+
+Application/test rebuilds and the complete local ConfigureCheck contract PASS,
+including seven valid syntax variants and sixteen malformed variants through
+the real executable. Fresh `config_record_review` source/evidence review PASS.
+This used the committed Operation overlay below, not a full dirty-tree Cabal
+build. Logs: `/tmp/hot-wallet-record-{build,test-build,contract}.log`; hashes are
+in `.audit/installer-update.tsv`. No test processes, live updates or fund moves.
+The user's localhost record has not been inspected: after pulling this fix and
+rerunning `sudo ./build/update-config.sh`, troubleshoot only the new error text,
+never request the record containing seeds. Full Ubuntu acceptance remains open.
 
 `ownerEcxXpub` now accepts a normal ECX Receive address or the existing xpub.
 Offline network/checksum validation precedes the existing node/custody checks.

@@ -8,6 +8,15 @@ Configuration-based updater: focused Cabal checks and separate static review PAS
 (see `.audit/installer-update.tsv`). `update.sh` takes no arguments; live upgrade
 acceptance is still pending. Older binaries need the documented bootstrap route.
 
+2026-10-23 scoped config diagnostics PASS: application/test rebuilds and complete
+local ConfigureCheck, including reordered/commented records and secret-safe
+malformed-input errors through the real executable. Separate read-only
+`config_record_review` source/evidence PASS. Original record bytes and custody
+checks preserved. Validation used the committed Operation overlay because of
+the unrelated dirty capability draft; no full dirty-tree Cabal, Ubuntu updater,
+user-record diagnosis or live-deployment acceptance is claimed. Evidence hashes
+are in `.audit/installer-update.tsv`; production gates below remain unchanged.
+
 Implemented: server-only layout, typed record setup, current schema23, customer
 wrap/unwrap API, dedicated signer, configurable customer payout rounds, immediate
 refunds, owner scheduling, custom frontend and optional tunnel setup. Local checks

@@ -303,6 +303,55 @@ importContract parent executable=do
       conf=parent</>"server.conf"
       invoke path destination=readProcessWithExitCode executable ["configure-file",path,destination] ""
       secretFree out=all (not . (`isInfixOf` out)) [phrase,solPhrase,T.unpack(base58 key),"test-backup-password-only"]
+      commented values="-- private configuration\nInstallConfig {- outer {- nested -} comment -}\n  { "<>
+        concat [name<>" {- assignment -} = "<>value<>" -- field comment\n"<>separator
+          | ((name,value),separator)<-zip values (replicate (length values-1) ","<>[""])]<>"}\n"
+      punctuation="fixture , = { } -- {- -} \\\" password"::String
+      acceptedRecords=
+        [(record(reverse fields),fields)
+        ,(commented(reverse fields),fields)
+        ,("(("<>record fields<>"))",fields)
+        ,(record $ replace "backupPassword" (show punctuation),replace "backupPassword" (show punctuation))
+        ,(record $ replace "backupPassword" "\"fixture\\\n  \\password-12345678\"",replace "backupPassword" (show ("fixturepassword-12345678"::String)))
+        ,(record $ replace "websiteDirectory" "(Nothing)",fields)
+        ,(record $ replace "initialFundingOwnership" "['f','i','x','t','u','r','e']",replace "initialFundingOwnership" (show ("fixture"::String)))]
+  forM_ (zip [0::Int ..] acceptedRecords) $ \(n,(source,expected))->do
+    let path=parent</>("record-syntax-"<>show n<>".conf")
+        bytes=B8.pack source
+    savePrivate path bytes
+    (retained,parsed)<-InstallConfig.readInstallConfig path
+    require (retained==bytes && parsed==read(record expected)) "record_normalization_changed_values_or_bytes"
+    (code,out,err)<-readProcessWithExitCode executable ["check-install-config",path] ""
+    require (code==ExitSuccess && out=="Installation configuration valid; no services changed.\n"
+      && null err && secretFree out) "record_validation_command_failed"
+  let marker="secretSentinelNeverPrintThis"
+      malformed=
+        [(record $ filter ((/="solSeedBip39").fst) fields,"missing fields: solSeedBip39")
+        ,(record $ fields<>[("domain",show marker)],"duplicate field domain")
+        ,(record $ fields<>[(marker,show marker)],"unknown field name")
+        ,(record $ replace "cloudflareTunnelToken" (show marker),"cloudflareTunnelToken requires Nothing or Just")
+        ,(record $ replace "payoutThresholdEcx" "0.001","payoutThresholdEcx requires a double-quoted string")
+        ,(record $ replace "feeRateWrapBps" (show marker),"feeRateWrapBps requires an unquoted whole number")
+        ,(record $ replace "feeRateWrapBps" (show $ toInteger(maxBound::Int)+1),"feeRateWrapBps is outside")
+        ,(record fields<>marker,"no trailing text")
+        ,("("<>record fields,"expected InstallConfig")
+        ,(init(record fields),"missing closing delimiter")
+        ,(init(record fields)<>",}","trailing comma")
+        ,(record $ replace "domain" ("("<>show marker<>"]"),"mismatched delimiter in domain")
+        ,("InstallConfig {\n serverIp = \""<>marker,"at line 2")
+        ,("{-\n"<>marker,"unclosed {- -} comment")
+        ,(record [(name,if name=="serverIp" then show marker<>" domain = \"localhost\"" else value) | (name,value)<-fields],"serverIp requires a double-quoted string")
+        ,(record [(if name=="solSeedBip39" then "solKeyB58" else name,value) | (name,value)<-fields],"solKeyB58 is obsolete")]
+  forM_ (zip [0::Int ..] malformed) $ \(n,(source,expected))->do
+    let path=parent</>("record-invalid-"<>show n<>".conf"); destination=parent</>("record-refused-"<>show n)
+    savePrivate path (B8.pack source)
+    (code,out,err)<-readProcessWithExitCode executable ["check-install-config",path] ""
+    require (code/=ExitSuccess && null out && expected `isInfixOf` err && not(marker `isInfixOf` err) && secretFree err)
+      "record_diagnostic_missing_or_exposed_value"
+    (importCode,importOut,importErr)<-invoke path destination
+    created<-doesPathExist destination
+    require (importCode/=ExitSuccess && not created && null importOut && expected `isInfixOf` importErr
+      && not(marker `isInfixOf` importErr) && secretFree importErr) "invalid_record_published_or_exposed_values"
   forM_ [replace "serverIp" (show address) | address<-["::1","2001:DB8::1","::ffff:127.0.0.1"]] $ \values->do
     imported<-InstallConfig.validateInstallConfig (read $ record values)
     require (imported==key) "valid_ipv6_configuration_rejected"
@@ -322,6 +371,7 @@ importContract parent executable=do
         ,(addressFields,fields,(False,False))
         ,(addressFields,replace "ownerEcxXpub" (show ("1BoatSLRHtKNngkdXEeobR76b53LETtpyT"::String)),(False,False))
         ,(legacy fields,fields,(False,False))
+        ,(reverse $ legacy fields,fields,(False,False))
         ,(legacy quoted,quoted,(False,False))
         ,(fields,replace "ecxSeedBip39" (show solPhrase),(True,False))
         ,(fields,replace "solSeedBip39" (show phrase),(False,True))
