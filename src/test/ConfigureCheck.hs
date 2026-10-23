@@ -295,6 +295,10 @@ importContract parent executable=do
         ,encoded (B.take 45 payload<>B.singleton 4<>B.replicate 32 0)
         ,encoded (B.take 45 payload<>B.singleton 2<>B.replicate 32 255)
         ,encoded (B.take 45 payload<>B.singleton 2<>B.replicate 32 0)]
+      receiveAddress="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"::String
+      addressFields=replace "ownerEcxXpub" (show receiveAddress)
+      badAddresses=[init receiveAddress<>"5","tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"," "<>receiveAddress
+        ,"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"]
       output=parent</>"record-setup"
       conf=parent</>"server.conf"
       invoke path destination=readProcessWithExitCode executable ["configure-file",path,destination] ""
@@ -314,6 +318,9 @@ importContract parent executable=do
       acceptedUpdates=
         [(fields,fields,(False,False))
         ,(fields,replace "minimumPayoutIntervalHours" "24",(False,False))
+        ,(fields,addressFields,(False,False))
+        ,(addressFields,fields,(False,False))
+        ,(addressFields,replace "ownerEcxXpub" (show ("1BoatSLRHtKNngkdXEeobR76b53LETtpyT"::String)),(False,False))
         ,(legacy fields,fields,(False,False))
         ,(legacy quoted,quoted,(False,False))
         ,(fields,replace "ecxSeedBip39" (show solPhrase),(True,False))
@@ -386,7 +393,17 @@ importContract parent executable=do
   let recipients=C.OwnerFeeRecipients (T.pack xpub) "5oNDL3swdJJF1g9DzJiZ4ynHXgszjAEpUkxVYejchzrY"
   require (C.ownerFeeRecipients config==Just recipients
     && (eitherDecodeStrict' (L.toStrict $ encode config) :: Either String C.Config)==Right config) "owner_policy_not_retained"
-  forM_ (map (\bad->recipients {C.nativeOwnerXpub=T.pack bad}) badXpubs
+  let addressConf=parent</>"address.conf"; addressOutput=parent</>"address-setup"
+  savePrivate addressConf (B8.pack $ record addressFields)
+  (addressCode,addressOut,addressErr)<-invoke addressConf addressOutput
+  require (addressCode==ExitSuccess && secretFree(addressOut<>addressErr)) "owner_address_configuration_failed"
+  addressConfig<-Bootstrap.setupConfig addressOutput
+  C.validateSetupConfig addressConfig
+  -- Each disposable installation has its own credential paths.
+  let normalized=addressConfig {C.nativeCookie=C.nativeCookie config,C.nativeUnlockFile=C.nativeUnlockFile config}
+  require (normalized==config {C.ownerFeeRecipients=Just recipients {C.nativeOwnerXpub=T.pack receiveAddress}}
+    && C.fingerprint addressConfig==C.fingerprint config) "owner_address_changed_custody_or_configuration"
+  forM_ (map (\bad->recipients {C.nativeOwnerXpub=T.pack bad}) (badXpubs<>badAddresses)
     <>[recipients {C.solanaOwner="invalid"}]) $ \bad->do
       result<-try(C.validateSetupConfig config {C.ownerFeeRecipients=Just bad}) :: IO (Either BridgeError ())
       require (either (const True) (const False) result) "invalid_runtime_owner_accepted"
@@ -421,7 +438,7 @@ importContract parent executable=do
     <>map (replace "cloudflareTunnelToken" . ("Just "<>) . show)
       [replicate 31 't',replicate 4097 't',replicate 32 't'<>"\n",replicate 32 't'<>"\f",replicate 32 't'<>"\x100"]
     <>map (replace "ownerSolPubkey" . show . T.unpack) [C.custodyOwner config,C.custodyAta config,C.mint config]
-    <>map (replace "ownerEcxXpub" . show) badXpubs <>
+    <>map (replace "ownerEcxXpub" . show) (badXpubs<>badAddresses) <>
     map (replace "solSeedBip39" . show)
       ["",unwords(replicate 12 "abandon"),unwords(take 11 $ words solPhrase),solPhrase<>" yellow"
       ,solPhrase<>" "<>solPhrase,"notaword "<>unwords(drop 1 $ words solPhrase)

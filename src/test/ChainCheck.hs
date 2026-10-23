@@ -1,6 +1,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 -- Offline protocol contracts. They do not emulate a network or prove live flows.
-module ChainCheck (checks) where
+module ChainCheck (checks,ownerAddressChecks) where
 import qualified Bridge.Config as Config
 import qualified Bridge.Store as Store
 import qualified Bridge.SolanaHelper as Helper
@@ -28,6 +28,7 @@ import qualified NativePaymentCheck
 import Bridge.Domain
 import Bridge.Error
 import Bridge.Native
+import Bridge.NativeKey (validNativeAddress)
 import qualified Bridge.Solana as Solana
 import qualified Bridge.SolanaObservation as Scan
 import Bridge.Identity (publicKey,digest)
@@ -61,7 +62,7 @@ import Test.QuickCheck hiding (label)
 import Numeric (showHex)
 
 checks :: IO [Result]
-checks = (\deployment native solana identity observation administration common->deployment<>native<>solana<>identity<>observation<>administration<>common) <$> deploymentChecks <*> NativePaymentCheck.checks <*> SolanaPaymentCheck.checks <*> ((<>) <$> solanaIdentityChecks <*> solanaPairChecks) <*> ObservationCheck.checks <*> administrationChecks <*> sequence
+checks = (\owners deployment native solana identity observation administration common->owners<>deployment<>native<>solana<>identity<>observation<>administration<>common) <$> ownerAddressChecks <*> deploymentChecks <*> NativePaymentCheck.checks <*> SolanaPaymentCheck.checks <*> ((<>) <$> solanaIdentityChecks <*> solanaPairChecks) <*> ObservationCheck.checks <*> administrationChecks <*> sequence
   [ check "durable bounded Solana observation catch-up preserves anchored order and strict absence proofs" $ once $ ioProperty historyCatchupContract
   , check "native history validates full HTTP capture before replay and exceeds aggregate RPC bound" $ once $ ioProperty $
       withPrivateDirectory $ \directory->do
@@ -189,20 +190,6 @@ checks = (\deployment native solana identity observation administration common->
           && BL.length(encode projected)<512*1024 && captureHash/=otherHash
           && conflictCount==111112 && BL.length(encode manyConflicts)<1024 && invalidConflict
           && case projected of Object fields->not(KM.member "hex" fields); _->False)
-  , check "owner descriptor resolution is public-only, fixed-path and refuses custody destinations" $ \(private::Bool) (ranged::Bool) (solvable::Bool) (owned::Bool)->
-      forAll (elements [0,1,2::Int]) $ \count->ioProperty $ do
-        let key="xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz"
-            requested="wpkh("<>key<>"/0/0)"; descriptor=requested<>"#12345678"
-            call False "getdescriptorinfo" [String value] | value==requested=pure $ object
-              ["descriptor" .= descriptor,"hasprivatekeys" .= private,"isrange" .= ranged,"issolvable" .= solvable]
-            call False "deriveaddresses" [String value] | value==descriptor=pure $ toJSON (replicate count ("fixture-owner"::T.Text))
-            call True "getaddressinfo" [String "fixture-owner"]=pure $ object ["ismine" .= owned,"iswatchonly" .= False,"scriptPubKey" .= ("0014"<>T.replicate 40 "1")]
-            call False "decodescript" [_]=pure $ object ["type" .= ("witness_v0_keyhash"::T.Text)]
-            call _ _ _=fail "unexpected owner RPC (wallet mutation forbidden)"
-        result<-try (ownerAddressWith call W.CanonicalBeta key) :: IO (Either BridgeError T.Text)
-        pure $ case result of
-          Right address->not private && not ranged && solvable && not owned && count==1 && address=="fixture-owner"
-          Left _->private || ranged || not solvable || owned || count/=1
   , check "native observation requires the correct ready descriptor wallet, without signing authority" $ \(sameName::Bool) (descriptors::Bool) (scanning::Bool)->ioProperty $ do
       let wallet=object ["walletname" .= (if sameName then nativeWallet settings else "other"),"descriptors" .= descriptors,"scanning" .= scanning]
           call scoped method args=if (scoped,method,args)==(True,"getwalletinfo",[]) then pure wallet else fail "unexpected wallet RPC"
@@ -626,6 +613,78 @@ checks = (\deployment native solana identity observation administration common->
   ]
  where
   check description p=putStrLn description >> quickCheckWithResult stdArgs {maxSuccess=100} p
+
+-- Published BIP173/BIP350 vectors plus legacy Base58Check destinations.
+-- These fixtures are public test data, never destinations for real payments.
+ownerAddressChecks :: IO [Result]
+ownerAddressChecks=sequence
+  [ check "owner receive-address checksum, network, witness version and padding" $ once $ property $
+      and [validNativeAddress signet address && not(validNativeAddress (not signet) address) | (signet,address)<-valid]
+      && all (\address->not(validNativeAddress False address || validNativeAddress True address)) invalid
+  , check "a one-character address mutation fails its checksum" $
+      forAll (elements valid) $ \(signet,address)->
+      forAll (chooseInt (0,T.length address-1)) $ \position->
+      forAll (elements "123456789abcdefghjkmnpqrstuvwxyz") $ \character->
+        character/=T.index address position ==>
+          not(validNativeAddress signet (T.take position address<>T.singleton character<>T.drop (position+1) address))
+  , check "owner descriptor resolution is public-only, fixed-path and refuses custody destinations" $ \(private::Bool) (ranged::Bool) (solvable::Bool) (owned::Bool)->
+      forAll (elements [0,1,2::Int]) $ \count->ioProperty $ do
+        let key="xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz"
+            requested="wpkh("<>key<>"/0/0)"; descriptor=requested<>"#12345678"
+            call False "getdescriptorinfo" [String value] | value==requested=pure $ object
+              ["descriptor" .= descriptor,"hasprivatekeys" .= private,"isrange" .= ranged,"issolvable" .= solvable]
+            call False "deriveaddresses" [String value] | value==descriptor=pure $ toJSON (replicate count ("fixture-owner"::T.Text))
+            call True "getaddressinfo" [String "fixture-owner"]=pure $ object ["ismine" .= owned,"iswatchonly" .= False,"scriptPubKey" .= ("0014"<>T.replicate 40 "1")]
+            call False "decodescript" [_]=pure $ object ["type" .= ("witness_v0_keyhash"::T.Text)]
+            call _ _ _=fail "unexpected owner RPC (wallet mutation forbidden)"
+        result<-try (ownerAddressWith call W.CanonicalBeta key) :: IO (Either BridgeError T.Text)
+        pure $ case result of
+          Right address->not private && not ranged && solvable && not owned && count==1 && address=="fixture-owner"
+          Left _->private || ranged || not solvable || owned || count/=1
+  , check "normal owner address uses only read-only validation and refuses custody or unsupported scripts" $ once $ ioProperty $ do
+      outcomes<-mapM (\(signet,address,owned,watched,supported)->do
+        calls<-newIORef ([]::[Text])
+        let call scoped method arguments=do
+              modifyIORef' calls (method:)
+              case (scoped,method,arguments) of
+                (True,"getaddressinfo",[String value]) | value==address->pure $ object
+                  ["ismine" .= owned,"iswatchonly" .= watched,"scriptPubKey" .= ("0014"<>T.replicate 40 "1")]
+                (False,"decodescript",[_])->pure $ object ["type" .= (if supported then "witness_v0_keyhash" else "nonstandard"::Text)]
+                _->fail "unexpected owner RPC (descriptor derivation and wallet mutation forbidden)"
+        result<-try(ownerAddressWith call (if signet then L2LSignetDevnet else CanonicalBeta) address) :: IO (Either BridgeError Text)
+        methods<-reverse <$> readIORef calls
+        pure $ if owned || watched then isLeft result && methods==["getaddressinfo"]
+          else methods==["getaddressinfo","decodescript"] && case result of
+            Right actual->supported && actual==address
+            Left _->not supported)
+        [(network,address,owned,watched,supported) | (network,address)<-valid,owned<-[False,True],watched<-[False,True],supported<-[False,True]]
+      refusals<-mapM (\(network,address)->rejects "invalid_owner_ecx_destination" $
+        ownerAddressWith (\_ _ _->fail "invalid destination reached RPC")
+          (if network then L2LSignetDevnet else CanonicalBeta) address)
+        ([(not network,address) | (network,address)<-valid]<>[(False,address) | address<-invalid])
+      pure(and $ outcomes<>refusals)
+  ]
+ where
+  check description p=putStrLn description >> quickCheckWithResult stdArgs {maxSuccess=100} p
+  valid=
+    [(False,"1BoatSLRHtKNngkdXEeobR76b53LETtpyT")
+    ,(False,"3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy")
+    ,(True,"mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn")
+    ,(False,"bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4")
+    ,(False,"BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4")
+    ,(True,"tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sl5k7")
+    ,(True,"tb1pqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesf3hn0c")
+    ,(False,"bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0")]
+  invalid=
+    ["","1BoatSLRHtKNngkdXEeobR76b53LETtpyU"," bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+    ,"BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7\x212A\&V8F3T4"
+    ,"bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqh2y7hd"
+    ,"bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kemeawh","bc1pw5dgrnzv"
+    ,"tb1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vq47Zagq"
+    ,"bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7v07qwwzcrf"
+    ,"tb1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vpggkg4j"
+    ,"bc1zw508d6qejxtdg4y5r3zarvaryvaxxpcs","bc1gmk9yu",T.replicate 91 "a"
+    ,"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"]
 
 settings :: NativeSettings
 settings=NativeSettings L2LSignetDevnet "http://127.0.0.1:29432" "/unused/credential" "ecx-bridge-test"

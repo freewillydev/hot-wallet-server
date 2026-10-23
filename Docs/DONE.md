@@ -43,6 +43,12 @@ source hashes and test scope are in [RESUME.md](RESUME.md) and the records below
 
 ## Config update and wallet replacement (2026-10-22)
 
+Owner ECX receiving-address support: scoped PASS for offline validation, legacy
+xpub behavior, custody refusal and real executable configuration import/update
+classification. Rebuilt application and full local ConfigureCheck pass; independent
+`owner_address_review` source/evidence PASS. Existing production gates remain open;
+this change has not been deployed or tested with live funds.
+
 Implemented `sudo ./build/update-config.sh`, reading the protected record before
 or after initialization. Supported operational edits retain custody. Replacement
 archives keys, the ledger, fence and recovery records; it never sweeps old funds.

@@ -163,7 +163,8 @@ configurationFiles old bytes settings initialized installed=do
       configChange value=case value of
         Object fields->Object $ M.union (M.fromList
           ["solanaRpc" .= I.solanaRpcUrl settings,"solanaVerifierRpc" .= I.solanaVerifierRpcUrl settings
-          ,"payoutPolicy" .= policy]) fields
+          ,"payoutPolicy" .= policy
+          ,"ownerFeeRecipients" .= C.OwnerFeeRecipients (T.pack $ I.ownerEcxXpub settings) (T.pack $ I.ownerSolPubkey settings)]) fields
         _->value
       interfaceChange value=case value of
         Object fields->Object $ M.union (M.fromList

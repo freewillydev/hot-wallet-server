@@ -8,7 +8,7 @@ import Bridge.Domain (Amount,amount,units)
 import Bridge.Wire (Profile(..),InterfaceConfig(..),PublicConfiguration(..),Availability(..),PaymentTerms(..),PolicySnapshot(..),CostLimits(..),PayoutPolicy(..),defaultPayoutPolicy)
 import Bridge.Lifecycle (checkPayoutPolicy)
 import Bridge.Identity (digest,publicKey)
-import Bridge.NativeKey (validNetworkXpub)
+import Bridge.NativeKey (validOwnerDestination)
 import Bridge.SolanaMessage (signatureBytes)
 import Bridge.Error
 import qualified Bridge.Native as N
@@ -32,6 +32,7 @@ import System.FilePath (isAbsolute,normalise)
 import System.IO (withBinaryFile,IOMode(ReadMode))
 
 -- Public destinations only. Custody keys never enter the owner payout policy.
+-- nativeOwnerXpub keeps its saved JSON name; its value may also be a receive address.
 data OwnerFeeRecipients = OwnerFeeRecipients
   { nativeOwnerXpub :: !Text, solanaOwner :: !Text }
   deriving (Eq,Show,Generic,ToJSON)
@@ -114,7 +115,7 @@ validateSetupConfig :: Config -> IO ()
 validateSetupConfig c = do
   either reject pure (checkPayoutPolicy $ payoutPolicy c)
   forM_ (ownerFeeRecipients c) $ \recipients->do
-    validNetworkXpub (profile c==L2LSignetDevnet) (nativeOwnerXpub recipients) >>= (`require` "invalid_owner_ecx_xpub")
+    validOwnerDestination (profile c==L2LSignetDevnet) (nativeOwnerXpub recipients) >>= (`require` "invalid_owner_ecx_destination")
     either reject (const $ pure ()) (publicKey $ solanaOwner recipients)
     require (solanaOwner recipients `notElem` [custodyOwner c,custodyAta c,mint c]) "bridge_owned_destination"
     require (maxWithdrawal c>=nativePayoutThreshold (payoutPolicy c)

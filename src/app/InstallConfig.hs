@@ -7,7 +7,7 @@ import Bridge.Domain (parseCoins,units)
 import Bridge.Error
 import Bridge.Identity (publicKey)
 import Bridge.RPC (independentHttps)
-import Bridge.NativeKey (validMainnetXpub)
+import Bridge.NativeKey (validOwnerDestination)
 import Bridge.Wallet (nativeDescriptors,walletKey,protectWalletProcess)
 import Control.Exception (catch)
 import Control.Monad (forM_,guard)
@@ -35,7 +35,7 @@ data InstallConfig = InstallConfig
   , feeRateWrapBps :: Int, feeRateUnwrapBps :: Int
   , payoutThresholdEcx :: String, payoutThresholdWrappedEcx :: String
   , minimumPayoutIntervalHours :: Integer
-  , ownerEcxXpub :: String, ownerSolPubkey :: String
+  , ownerEcxXpub :: String, ownerSolPubkey :: String -- ECX receive address or legacy xpub
   , externalLinkSolscan :: String, externalLinkOrca :: String
   , solanaRpcUrl :: String, solanaVerifierRpcUrl :: String
   , backupRepositoryUrl :: String, backupPassword :: String
@@ -91,6 +91,7 @@ validateOperationalUpdate previous candidate=do
         , solanaRpcUrl=solanaRpcUrl config,solanaVerifierRpcUrl=solanaVerifierRpcUrl config
         , payoutThresholdEcx=payoutThresholdEcx config,payoutThresholdWrappedEcx=payoutThresholdWrappedEcx config
         , minimumPayoutIntervalHours=minimumPayoutIntervalHours config
+        , ownerEcxXpub=ownerEcxXpub config
         , externalLinkSolscan=externalLinkSolscan config,externalLinkOrca=externalLinkOrca config
         , updatePublicKey=updatePublicKey config,updateReleaseDirectory=updateReleaseDirectory config
         , updateSetupDirectory=updateSetupDirectory config }
@@ -156,7 +157,7 @@ validateWithSolanaKey c readSolanaKey=do
   require (isAbsolute $ resticExecutable c) "absolute_reviewed_restic_path_required"
   _<-either reject pure (publicKey $ T.pack $ ownerSolPubkey c)
   require (TE.encodeUtf8 (T.pack $ ownerSolPubkey c)/=B58.encodeBase58 B58.bitcoinAlphabet (B.drop 32 key)) "bridge_owned_destination"
-  validMainnetXpub (T.pack $ ownerEcxXpub c) >>= (`require` "owner_ecx_xpub_required")
+  validOwnerDestination False (T.pack $ ownerEcxXpub c) >>= (`require` "owner_ecx_address_or_xpub_required")
   let labels=T.splitOn "." (T.pack $ domain c)
       alphanumeric character=character `elem` (['a'..'z']<>['0'..'9'])
       label value=not(T.null value) && T.length value<=63

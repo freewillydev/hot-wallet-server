@@ -8,6 +8,13 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Current config updater checkpoint (2026-10-22)
 
+`ownerEcxXpub` now accepts a normal ECX Receive address or the existing xpub.
+Offline network/checksum validation precedes the existing node/custody checks.
+The updater changes future owner-fee reservations, preserving saved recipients.
+Application rebuild, four owner-address groups and complete ConfigureCheck PASS;
+fresh `owner_address_review` source/evidence PASS. Validation used the committed
+Operation overlay noted below; no live update or funded acceptance was performed.
+
 `build/update-config.sh` applies `/root/hot-wallet/server.conf` through the root-only
 Haskell lifecycle. Ordinary edits preserve the ledger. Wallet replacement keeps a
 private index in `/var/lib/hot-wallet-server/config-updates/`, retains old wallet

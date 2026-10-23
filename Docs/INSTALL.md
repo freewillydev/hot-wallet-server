@@ -513,8 +513,10 @@ The record is parsed as data. It is never evaluated or sourced by a shell.
 
 Before wallet setup, any valid replacement record is accepted. For a completed
 installation, ordinary updates support the server IP/domain/tunnel token, both
-Solana RPC URLs, customer payout thresholds/interval, customer explorer links, and
-release-update paths. The ledger, saved quotes, attempts and wallet identities
+Solana RPC URLs, customer payout thresholds/interval, the ECX owner-fee receiving
+address (`ownerEcxXpub`, also accepting an xpub), customer explorer links, and
+release-update paths. A new owner-fee destination affects future reservations;
+already reserved payments retain their saved recipient. The ledger, saved quotes, attempts and wallet identities
 remain unchanged. Other financial/backup/website changes are refused rather than
 silently accepted. An incomplete sealed bootstrap must finish before applying an
 ordinary settings update.
