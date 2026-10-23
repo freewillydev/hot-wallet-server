@@ -1,5 +1,12 @@
 # Production acceptance
 
+2026-10-23 RPC diagnostics: scoped application/test builds and nine transport
+failure cases through real rpc dispatch PASS (PTY and redirected stderr, secret
+redaction, unchanged error code and retry counts). Separate read-only
+rpc_transport_trace source review PASS. The user's localhost connection failure
+has not been diagnosed or resolved. No chain calls, live updates or fund moves;
+committed Operation overlay used, not a full dirty-tree Cabal build.
+
 **NOT READY.** This checklist supersedes the chronological status notes below.
 Application checkpoint: `240b974`; local acceptance recorded through `a80b7c5`.
 Public source publication is authorized; public service activation remains gated.

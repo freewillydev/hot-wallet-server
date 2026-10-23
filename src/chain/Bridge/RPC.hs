@@ -1,8 +1,8 @@
 {-# LANGUAGE ScopedTypeVariables, LambdaCase #-}
-module Bridge.RPC (newRpcManager, rpcManagerSettings, rpcHost, withSolanaRpc, independentHttps, rpc, retryRpcRead, parseValue, fieldValue, boundedBody) where
+module Bridge.RPC (newRpcManager, rpcManagerSettings, rpcHost, withSolanaRpc, independentHttps, rpc, rpcTransportFailure, retryRpcRead, parseValue, fieldValue, boundedBody) where
 
 import Bridge.Error
-import Control.Exception (bracket, catch, try, throwIO, onException)
+import Control.Exception (IOException, bracket, catch, try, throwIO, onException)
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar
 import Control.Monad (when)
@@ -23,6 +23,7 @@ import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types.Status (statusCode)
 import GHC.Clock (getMonotonicTimeNSec)
 import System.Environment (lookupEnv)
+import System.IO (hIsTerminalDevice,hPutStrLn,stderr)
 import Text.Read (readMaybe)
 
 newRpcManager :: IO Manager
@@ -133,7 +134,7 @@ fieldValue :: FromJSON a => Key -> Value -> IO a
 fieldValue k = parseValue (withObject "object" (.: k))
 rpc :: Manager -> String -> Maybe (BS.ByteString,BS.ByteString) -> Text -> [Value] -> IO Value
 rpc manager url auth methodName params = retryRpcRead threadDelay methodName run
-  `catch` (\(_ :: HttpException) -> reject "rpc_transport_unknown_outcome")
+  `catch` rpcTransportFailure methodName
  where
   run = do
     base <- parseRequest url
@@ -162,6 +163,32 @@ rpc manager url auth methodName params = retryRpcRead threadDelay methodName run
             require (statusCode (responseStatus response)==200) "rpc_http_status"
             Right <$> fieldValue "result" value
 
+-- Interactive diagnostics only: subprocess callers require exactly one JSON
+-- error on captured stderr. Never render an exception/request (it contains keys,
+-- RPC credentials and sometimes wallet descriptors). Logging cannot change the
+-- stable error or grant a retry after an unknown wallet mutation outcome.
+rpcTransportFailure :: Text -> HttpException -> IO a
+rpcTransportFailure methodName failure = do
+  (do terminal<-hIsTerminalDevice stderr
+      when terminal $ hPutStrLn stderr $ "RPC transport: "<>operation<>"; "<>cause)
+    `catch` (\(_::IOException)->pure ())
+  reject "rpc_transport_unknown_outcome"
+ where
+  operation=if readOnlyMethod methodName || methodName `elem`
+      ["getdescriptorinfo","deriveaddresses","listdescriptors","listwalletdir"
+      ,"createwallet","importdescriptors","getnewaddress","walletpassphrase","walletlock"
+      ,"backupwallet","restorewallet","walletprocesspsbt","sendrawtransaction","sendTransaction"]
+    then T.unpack methodName else "unlisted operation"
+  cause=case failure of
+    InvalidUrlException _ _->"invalid URL; check the configured RPC URL"
+    HttpExceptionRequest _ reason->case reason of
+      ConnectionTimeout->"connection timed out; check endpoint availability and network/firewall access"
+      ResponseTimeout->"response timed out; check RPC provider or ECX node availability"
+      ConnectionFailure _->"connection failed; check DNS, endpoint port, network/firewall access and TLS trust"
+      ConnectionClosed->"connection closed before completion; check RPC provider or ECX node availability"
+      NoResponseDataReceived->"connection returned no response; check RPC provider or ECX node availability"
+      _->"HTTP/TLS transport failed; check the RPC URL and certificate trust"
+
 -- Explicit allowlist: a typo/new method cannot accidentally retry a wallet
 -- mutation. Closed reads, rate limits and unavailable Solana history storage
 -- share at most two retries;
@@ -170,13 +197,7 @@ rpc manager url auth methodName params = retryRpcRead threadDelay methodName run
 retryRpcRead :: (Int -> IO ()) -> Text -> IO (Either (Maybe Int) a) -> IO a
 retryRpcRead wait methodName action = go (0::Int)
  where
-  readsOnly=methodName `elem`
-    ["getGenesisHash","getAccountInfo","getMultipleAccounts","getLatestBlockhash","getBlock"
-    ,"getBlockHeight","getSlot","isBlockhashValid","getFeeForMessage","getMinimumBalanceForRentExemption"
-    ,"getSignatureStatuses","getTransaction","getSignaturesForAddress"
-    ,"getblockchaininfo","getblockhash","getblockheader","getwalletinfo","getbalances"
-    ,"getaddressinfo","getaddressesbylabel","gettransaction","listsinceblock","gettxout","listlockunspent","listunspent","decodescript"
-    ,"decoderawtransaction","decodepsbt","estimatesmartfee","getmempoolinfo","getmempoolentry"]
+  readsOnly=readOnlyMethod methodName
   closed NoResponseDataReceived=True
   closed ConnectionClosed=True
   closed _=False
@@ -196,3 +217,12 @@ retryRpcRead wait methodName action = go (0::Int)
       require (readsOnly && tries<2 && seconds>=0 && seconds<=15) "rpc_rate_limited"
       wait (max 1 seconds*1000000)
       go (tries+1)
+
+readOnlyMethod :: Text -> Bool
+readOnlyMethod methodName=methodName `elem`
+  ["getGenesisHash","getAccountInfo","getMultipleAccounts","getLatestBlockhash","getBlock"
+  ,"getBlockHeight","getSlot","isBlockhashValid","getFeeForMessage","getMinimumBalanceForRentExemption"
+  ,"getSignatureStatuses","getTransaction","getSignaturesForAddress"
+  ,"getblockchaininfo","getblockhash","getblockheader","getwalletinfo","getbalances"
+  ,"getaddressinfo","getaddressesbylabel","gettransaction","listsinceblock","gettxout","listlockunspent","listunspent","decodescript"
+  ,"decoderawtransaction","decodepsbt","estimatesmartfee","getmempoolinfo","getmempoolentry"]

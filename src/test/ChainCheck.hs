@@ -1,6 +1,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 -- Offline protocol contracts. They do not emulate a network or prove live flows.
-module ChainCheck (checks,ownerAddressChecks) where
+module ChainCheck (checks,ownerAddressChecks,rpcTransportContract) where
 import qualified Bridge.Config as Config
 import qualified Bridge.Store as Store
 import qualified Bridge.SolanaHelper as Helper
@@ -14,12 +14,14 @@ import System.Directory (removeFile,removeDirectoryRecursive,listDirectory,renam
 import qualified System.Posix.Directory as PD
 import System.Posix.Files (setFileMode,createSymbolicLink,createLink,createNamedPipe)
 import qualified System.Posix.IO as Posix
+import System.Posix.Terminal (openPseudoTerminal,getTerminalName)
 import System.Posix.Process (forkProcess,getProcessStatus,exitImmediately,ProcessStatus(..))
 import System.Posix.Signals (signalProcess,sigKILL)
 import System.Exit (ExitCode(..))
 import System.Timeout (timeout)
 import System.FilePath ((</>))
-import System.IO (openTempFile,hClose)
+import System.IO (openTempFile,hClose,hGetLine,hFlush,stderr,withFile,IOMode(WriteMode))
+import GHC.IO.Handle (hDuplicate,hDuplicateTo)
 import qualified ObservationCheck
 import qualified Network.Wai as Wai
 import qualified Network.Wai.Handler.Warp as Warp
@@ -34,7 +36,7 @@ import qualified Bridge.SolanaObservation as Scan
 import Bridge.Identity (publicKey,digest)
 import Bridge.RPC
 import Bridge.Wire (Profile(..))
-import Control.Exception (try,bracket,SomeException,throwIO,fromException,AsyncException(ThreadKilled))
+import Control.Exception (try,bracket,finally,toException,SomeException,throwIO,fromException,AsyncException(ThreadKilled))
 import Control.Concurrent (forkFinally,killThread)
 import Control.Concurrent.Async (mapConcurrently)
 import Control.Concurrent.MVar
@@ -285,6 +287,7 @@ checks = (\owners deployment native solana identity observation administration c
       writeIORef chunks ["abc","defg"]
       oversized <- rejects "rpc_response_too_large" (boundedBody 6 readChunk)
       pure (body=="abcdef" && oversized)
+  , check "RPC terminal diagnostics hide credentials and preserve captured errors and mutation retry policy" $ once $ ioProperty rpcTransportContract
   , check "read rate limits retry twice with bounded waits" $ once $ ioProperty $ do
       calls <- newIORef (0::Int); waits <- newIORef []
       let action=do
@@ -616,6 +619,57 @@ checks = (\owners deployment native solana identity observation administration c
 
 -- Published BIP173/BIP350 vectors plus legacy Base58Check destinations.
 -- These fixtures are public test data, never destinations for real payments.
+-- Exercise the real RPC catch with private-looking request material, without
+-- connecting to a chain. A pseudo-terminal also checks the interactive branch;
+-- captured subprocess stderr must stay empty until Main writes its JSON error.
+rpcTransportContract :: IO Bool
+rpcTransportContract=withPrivateDirectory $ \directory->do
+  let secret="DO_NOT_LOG_RPC_SECRET"
+      hidden=toException(userError secret)
+      cases=
+        [("getGenesisHash",Right HTTP.ResponseTimeout,"response timed out",1)
+        ,("getGenesisHash",Right HTTP.ConnectionTimeout,"connection timed out",1)
+        ,("getGenesisHash",Right $ HTTP.ConnectionFailure hidden,"connection failed",1)
+        ,("getblockchaininfo",Right HTTP.NoResponseDataReceived,"no response",3)
+        ,("getTransaction",Right HTTP.ConnectionClosed,"connection closed",3)
+        ,("sendTransaction",Right HTTP.ConnectionClosed,"connection closed",1)
+        ,("walletpassphrase",Right $ HTTP.InternalException hidden,"HTTP/TLS transport failed",1)
+        ,(T.pack secret,Right HTTP.ConnectionClosed,"connection closed",1)
+        ,("getGenesisHash",Left $ HTTP.InvalidUrlException secret secret,"invalid URL",1)]
+      run method failure expected=do
+        calls<-newIORef (0::Int)
+        let settings=HTTP.defaultManagerSettings {HTTP.managerWrapException= \request _->do
+              modifyIORef' calls (+1)
+              throwIO $ either id (HTTP.HttpExceptionRequest request) failure}
+        stopped<-bracket (HTTP.newManager settings) HTTP.closeManager $ \manager->
+          rejects "rpc_transport_unknown_outcome" $ rpc manager
+            ("https://"<>secret<>".invalid/"<>secret<>"?key="<>secret)
+            (Just("private-user",TE.encodeUtf8 $ T.pack secret)) method [String $ T.pack secret]
+        count<-readIORef calls
+        pure(stopped && count==expected)
+      redirected output action=bracket (hDuplicate stderr) hClose $ \saved->
+        (hDuplicateTo output stderr >> action) `finally` (hFlush stderr >> hDuplicateTo saved stderr)
+  results<-mapM (\(method,failure,category,expected)->do
+    (terminalOK,line)<-bracket (do
+      (master,slave)<-openPseudoTerminal
+      output<-bracket (pure slave) Posix.closeFd $ \fd->
+        getTerminalName fd >>= \path->Posix.openFd path Posix.WriteOnly Posix.defaultFileFlags
+      (,) <$> Posix.fdToHandle master <*> Posix.fdToHandle output)
+      (\(master,slave)->hClose slave >> hClose master) $ \(master,slave)->do
+        ok<-redirected slave (run method failure expected)
+        line<-timeout 1000000 (hGetLine master)
+        pure(ok,line)
+    let path=directory</>"rpc-stderr"
+    capturedOK<-withFile path WriteMode $ \output->redirected output (run method failure expected)
+    captured<-BS.readFile path
+    let label=if method==T.pack secret then "unlisted operation" else method
+    pure $ terminalOK && capturedOK && BS.null captured && case line of
+      Just output->let text=T.pack output in
+        ("RPC transport: "<>label<>"; ") `T.isPrefixOf` text
+          && category `T.isInfixOf` text && not(T.pack secret `T.isInfixOf` text)
+      Nothing->False) cases
+  pure(and results)
+
 ownerAddressChecks :: IO [Result]
 ownerAddressChecks=sequence
   [ check "owner receive-address checksum, network, witness version and padding" $ once $ property $

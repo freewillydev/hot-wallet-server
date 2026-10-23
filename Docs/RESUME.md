@@ -8,6 +8,17 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Current config updater checkpoint (2026-10-23)
 
+Latest user report: localhost `update-config.sh` emits
+`rpc_transport_unknown_outcome`; exact preceding phase is still unknown. Added
+terminal-only operation/transport diagnostics without exposing URLs/keys or
+changing the stable error/retry policy. Nonterminal stderr retains machine JSON
+compatibility. App and test builds PASS using the committed Operation overlay;
+nine injected transport cases each cover PTY and file output plus attempt counts.
+Fresh read-only rpc_transport_trace static review PASS. No local provider access
+or underlying failure resolution claimed. Next: ask for the new `RPC transport:`
+line plus preceding phase after pulling/rerunning the updater, never the config.
+Logs: /tmp/hot-wallet-rpc-{build,test-build,contract}.log. No task services left.
+
 Owner fee destinations may now match custody. Solana self destinations are
 excluded from automatic candidates; Native owned/watched recipients are a no-op
 only in automatic owner selection. Fees stay Earned, without withdrawal/holds,

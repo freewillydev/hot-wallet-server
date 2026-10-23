@@ -5,7 +5,7 @@ module Bridge.NativeHistory (readHistory,readTransaction) where
 
 import Bridge.Error
 import Bridge.File (hashHandle)
-import Bridge.RPC (fieldValue,parseValue,retryRpcRead)
+import Bridge.RPC (fieldValue,parseValue,retryRpcRead,rpcTransportFailure)
 import Control.Concurrent (threadDelay)
 import Control.Exception (bracket,catch,onException)
 import Control.Monad (unless)
@@ -62,7 +62,7 @@ withCapture url (username,password) methodName params validate consume =
   bracket (newManager $ managerSetProxy noProxy tlsManagerSettings
     {managerRetryableException=const False,managerConnCount=1
     ,managerResponseTimeout=responseTimeoutMicro 15000000}) closeManager $ \manager->do
-    base<-parseRequest url
+    base<-parseRequest url `catch` rpcTransportFailure methodName
     let request=applyBasicAuth username password base
           {method="POST",redirectCount=0,checkResponse= \_ _->pure ()
           ,requestHeaders=[("Content-Type","application/json")]
@@ -93,7 +93,7 @@ withCapture url (username,password) methodName params validate consume =
                     pure (Right anchor)) `catch` (\(BridgeError reason)->
                   if reason=="rpc_error_429" then pure (Left delay) else reject reason)
       anchor<-retryRpcRead threadDelay methodName fetch
-        `catch` (\(_::HttpException)->reject "rpc_transport_unknown_outcome")
+        `catch` rpcTransportFailure methodName
       -- Never retry a consumer: it may already have inspected some entries.
       consume capture anchor
 

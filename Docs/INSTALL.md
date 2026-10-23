@@ -520,6 +520,13 @@ With the updated binary installed, check edits without restarting services:
 `sudo ecx-bridge check-install-config /root/hot-wallet/server.conf`.
 Keep this file private; share only the error message when troubleshooting.
 
+If startup reports `rpc_transport_unknown_outcome`, the RPC connection failed;
+this does not prove that a wallet operation failed. An interactive terminal also
+prints `RPC transport: <operation>; <cause>` without URLs or credentials. Share
+that line and the preceding setup step (primary/verifier/node). Captured stderr
+keeps its single JSON error for automation. Check the indicated provider/node;
+do not resend a payment or remove saved state to work around this error.
+
 Before wallet setup, any valid replacement record is accepted. For a completed
 installation, ordinary updates support the server IP/domain/tunnel token, both
 Solana RPC URLs, customer payout thresholds/interval, owner-fee receiving
