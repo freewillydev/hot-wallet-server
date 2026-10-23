@@ -1,5 +1,10 @@
 # Production acceptance
 
+2026-10-23 README update command: `git pull --ff-only && sudo ./build/update-config.sh`
+documented for latest repository changes plus config application. Separate
+read-only readme_update_check accuracy PASS; no runtime changes or tests needed.
+This does not claim replacement of already installed server binaries.
+
 2026-10-23 RPC diagnostics: scoped application/test builds and nine transport
 failure cases through real rpc dispatch PASS (PTY and redirected stderr, secret
 redaction, unchanged error code and retry counts). Separate read-only

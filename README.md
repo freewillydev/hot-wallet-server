@@ -36,11 +36,11 @@ Requires Ubuntu 24.04 x86_64, 8 GB RAM and a 256 GB SSD.
    Send ECX betanet coins to the printed ECX funding address, and the configured
    canonical wrapped ECX token on Solana Mainnet to the printed inventory owner.
 
-To update the config, edit `/root/hot-wallet/server.conf`
-with `sudo nano`, then run:
+To get the latest repository changes and apply your configuration, run from the repository
+directory. Edit `/root/hot-wallet/server.conf` with `sudo nano` first if needed:
 
 ```sh
-sudo ./build/update-config.sh
+git pull --ff-only && sudo ./build/update-config.sh
 ```
 
 This saves the old settings privately, applies supported changes and restarts
