@@ -1,5 +1,15 @@
 # Production acceptance
 
+2026-10-23 Mac backup endpoint: Cloudflare HTTPS restic initialization, backup,
+exact restore and read-data check PASS for a new isolated repository and harmless
+fixture. Private credentials remain outside Git. Existing auth/repositories and
+Cloudflare settings are preserved. This does not establish funded recovery,
+independent physical storage for a same-Mac VM, or application of the new backup
+fields to the user's saved Ubuntu setup; the current updater refuses that change.
+Fresh read-only mac_backup_verify PASS: HTTPS authentication/isolation, private
+permissions, preserved auth entries, exact fixture restore and wrong-password refusal.
+Existing production gates below are unchanged.
+
 2026-10-23 AWS RPC investigation: scoped reproduction PASS; RPC readiness FAIL.
 The existing Ubuntu server's Alchemy endpoint returned HTTP429 / JSON-RPC429
 with a monthly-capacity classification on getGenesisHash, the first startup

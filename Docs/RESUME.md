@@ -8,6 +8,25 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Current config updater checkpoint (2026-10-23)
 
+Mac backup endpoint now works through the existing Cloudflare tunnel at
+backup-bridge.bitnames.info. A separate private repository was initialized for
+the user's localhost installation; prior repositories/auth entries were preserved.
+Public HTTPS restic backup, exact restore and read-data check passed using a
+79-byte harmless fixture. Private credentials are outside Git at
+`/Volumes/T705/SERVERRR/bridge-backup/private/localhost-20261023/backup-fields.conf`.
+Directory0700/files0600; origin refuses unauthenticated and cross-repository reads.
+Fresh read-only mac_backup_verify PASS: public HTTPS authentication/isolation,
+exact restore, wrong-password refusal, permissions and prior-auth preservation.
+Sanitized receipt: /tmp/hot-wallet-mac-backup-tunnel-20261023.json; hash in audit log.
+The generic Python HTTP probe got Cloudflare1010, but the actual restic client
+works; no Cloudflare security settings or tunnel routes were changed.
+This is endpoint acceptance, not a funded restore or Ubuntu installation pass.
+Next: securely apply the two backup fields on the user's Ubuntu host. Current
+Reconfigure/InstallConfig refuses backup-field changes and sealed incomplete setup;
+do not recommend deleting its state or claim the updater already supports this.
+The Mac and attached backup drive must remain available. Same-Mac VM deployment
+shares the Mac's physical failure domain. Existing AWS backup settings are unchanged.
+
 Latest RPC investigation: reproduced the primary provider refusal on the existing
 AWS Ubuntu 24.04 deployment at 2026-10-23T23:20Z. Read-only getGenesisHash returned
 HTTP429 / JSON-RPC429 with Alchemy's monthly-capacity classification. Operator
