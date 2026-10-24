@@ -1,7 +1,7 @@
 -- Fixed root service interlocks and checked custody checkpoints. No publication
 -- or database reset occurs here; callers retain the shared lifecycle lock.
 module ReconfigureServices
-  (beginUpdate,setPending,finishUpdate,installInterlocks,stop,checkpoint,checkFence) where
+  (beginUpdate,beginBackupUpdate,completeBackupUpdate,setPending,finishUpdate,installInterlocks,stop,checkpoint,checkFence) where
 import Bridge.AdminKey (readPrivate)
 import Bridge.Error (require,reject)
 import Bridge.File (withHandle,readBounded)
@@ -10,6 +10,7 @@ import qualified Bridge.Config as C
 import qualified Bridge.Wire as W
 import ReconfigureFiles (savePrivateRecord)
 import Control.Exception (bracket,finally)
+import Control.Concurrent (threadDelay)
 import Control.Monad (forM_,unless,when)
 import Crypto.Random (getRandomBytes)
 import Data.Aeson hiding (decode)
@@ -20,6 +21,7 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy as L
 import qualified Data.Text as T
+import qualified Network.Socket as Socket
 import System.Directory (removeFile,renameFile)
 import System.Exit (ExitCode(..))
 import System.FilePath ((</>),takeDirectory)
@@ -32,6 +34,7 @@ import System.Posix.Types (FileMode,GroupID)
 import System.Posix.Unistd (fileSynchronise)
 import System.Posix.User (getGroupEntryForName,groupID)
 import System.Process (readProcessWithExitCode)
+import System.Timeout (timeout)
 
 state,pending,signerBlocked,worker,binary :: FilePath
 state="/var/lib/hot-wallet-server"
@@ -53,6 +56,38 @@ beginUpdate journal=do
   checkFence receipt
   pure receipt
 
+-- A dead old repository must not prevent replacing it. Stop all paying work
+-- before credential publication; only the new repository can satisfy this
+-- update's checkpoint. Pending blocks worker/tunnel across failure and reboot.
+beginBackupUpdate :: FilePath -> IO ()
+beginBackupUpdate journal=do
+  installInterlocks
+  setPending journal
+  mark signerBlocked (B8.pack journal)
+  command "systemctl" ["daemon-reload"]
+  stop "ecx-bridge-tunnel.service" True
+  stop "ecx-bridge-worker.service" False
+  blockSigner journal
+
+completeBackupUpdate :: FilePath -> IO ()
+completeBackupUpdate journal=do
+  readPrivate pending >>= \saved->require (saved==B8.pack journal) "configuration_update_pending_changed"
+  -- The caller publishes and verifies every new credential before entering.
+  -- This journal never receives an old-repository checkpoint. A cached receipt
+  -- is reusable only while the frozen fence and immutable candidate still match.
+  completed<-exists(journal</>"backup-checkpoint.json")
+  unless completed $ do
+    readPrivate signerBlocked >>= \saved->require (saved==B8.pack journal) "configuration_update_signer_block_changed"
+    removeFile signerBlocked
+    syncDirectory state
+  receipt<-checkpointNamed "backup-checkpoint" journal `finally` blockSigner journal
+  checkFence receipt
+
+blockSigner :: FilePath -> IO ()
+blockSigner journal=do
+  mark signerBlocked (B8.pack journal)
+  stop "ecx-bridge-signer.service" False
+
 setPending :: FilePath -> IO ()
 setPending journal=mark pending (B8.pack journal)
 
@@ -68,11 +103,14 @@ finishUpdate journal=do
   syncDirectory state
 
 checkpoint :: FilePath -> IO W.BackupReceipt
-checkpoint journal=do
+checkpoint=checkpointNamed "checkpoint"
+
+checkpointNamed :: String -> FilePath -> IO W.BackupReceipt
+checkpointNamed name journal=do
   configBytes<-readWorkerConfig
   config<-decode configBytes :: IO C.Config
-  let receiptPath=journal</>"checkpoint.json"
-      configPath=journal</>"checkpoint-config.json"
+  let receiptPath=journal</>(name<>".json")
+      configPath=journal</>(name<>"-config.json")
   present<-exists receiptPath
   unless present $ do
     -- A reboot before the receipt may restart only the old signer. Intake remains
@@ -81,6 +119,7 @@ checkpoint journal=do
     require (not blocked) "configuration_update_signer_block_without_checkpoint"
     mark configPath configBytes
     command "systemctl" ["start","ecx-bridge-signer.service"]
+    waitForSigner (C.signerPort config)
     db<-B8.unpack . B8.strip <$> readPrivate "/var/lib/ecx-bridge-install/database"
     require (db=="ecx_bridge" || length db==44 && take 12 db=="ecx_restore_"
       && all (`elem` ("0123456789abcdef"::String)) (drop 12 db)) "invalid_installed_database"
@@ -94,6 +133,20 @@ checkpoint journal=do
   receipt<-readPrivate receiptPath >>= decode
   validateReceipt savedConfig receipt
   pure receipt
+
+-- systemd Type=simple becomes active before Warp listens. Retry only the TCP
+-- readiness probe, never a checkpoint request whose outcome may be unknown.
+waitForSigner :: Int -> IO ()
+waitForSigner port=timeout (10*1000000) wait >>= maybe (reject "configuration_update_signer_start_timeout") pure
+ where
+  wait=do
+    result<-tryIOError $ bracket (Socket.socket Socket.AF_INET Socket.Stream Socket.defaultProtocol) Socket.close $ \socket->
+      Socket.connect socket (Socket.SockAddrInet (fromIntegral port) (Socket.tupleToHostAddress (127,0,0,1)))
+    case result of
+      Right ()->pure ()
+      Left _->do
+        threadDelay 100000
+        wait
 
 validateReceipt :: C.Config -> W.BackupReceipt -> IO ()
 validateReceipt config receipt=require (W.receiptIdentity receipt==C.fingerprint config

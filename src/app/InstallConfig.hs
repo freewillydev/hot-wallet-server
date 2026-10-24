@@ -1,7 +1,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 -- Installation input is data, parsed by Read; it is never evaluated as Haskell.
 -- Deliberately no Show instance: the record contains credentials and private keys.
-module InstallConfig (InstallConfig(..),readInstallConfig,readInstallConfigUpdate,backupSetupUpdate,validateOperationalUpdate,validateInstallConfig,installGasTopUp,updateSettings) where
+module InstallConfig (InstallConfig(..),readInstallConfig,readInstallConfigUpdate,readPreviousRecord,validateOperationalUpdate,validateInstallConfig,installGasTopUp,updateSettings) where
 import Bridge.AdminKey (readPrivate)
 import Bridge.Domain (GasTopUp,amount,mkGasTopUp,parseCoins,parseNatural,units)
 import Bridge.Error
@@ -79,17 +79,9 @@ readPreviousRecord oldBytes=do
   key<-if legacy then validateWithSolanaKey old (readLegacyKey $ solSeedBip39 old) else validateInstallConfig old
   pure(old,key)
 
--- Only credential correction, not a runtime backup migration or custody change.
--- The caller must additionally prove that installation has not progressed.
-backupSetupUpdate :: B.ByteString -> InstallConfig -> IO (Maybe InstallConfig)
-backupSetupUpdate bytes config=do
-  (old,_)<-readPreviousRecord bytes
-  pure $ if old/=config && old {backupRepositoryUrl=backupRepositoryUrl config
-    ,backupPassword=backupPassword config}==config then Just old else Nothing
-
 -- Runtime publication currently supports this explicit operational subset. Other
--- changes need their own custody/backup/recipient/website workflow, even when the
--- replacement record is individually valid.
+-- changes need their own custody/website workflow. Backup changes additionally
+-- require Reconfigure's stopped-worker target checkpoint before restart.
 validateOperationalUpdate :: FilePath -> FilePath -> IO ()
 validateOperationalUpdate previous candidate=do
   (_,config,_,changed)<-readInstallConfigUpdate previous candidate
@@ -99,6 +91,7 @@ validateOperationalUpdate previous candidate=do
         { serverIp=serverIp config,domain=domain config,cloudflareTunnelToken=cloudflareTunnelToken config
         , ecxSeedBip39=ecxSeedBip39 config,solSeedBip39=solSeedBip39 config
         , solanaRpcUrl=solanaRpcUrl config,solanaVerifierRpcUrl=solanaVerifierRpcUrl config
+        , backupRepositoryUrl=backupRepositoryUrl config,backupPassword=backupPassword config
         , payoutThresholdEcx=payoutThresholdEcx config,payoutThresholdWrappedEcx=payoutThresholdWrappedEcx config
         , minimumPayoutIntervalHours=minimumPayoutIntervalHours config
         , solGasTopUp=solGasTopUp config,solGasTopUpFeeEcx=solGasTopUpFeeEcx config

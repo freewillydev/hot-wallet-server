@@ -533,18 +533,32 @@ Solana RPC URLs, customer payout thresholds/interval, owner-fee receiving
 addresses (`ownerEcxXpub`, also accepting an xpub, and `ownerSolPubkey`), customer explorer links, and
 release-update paths. A new owner-fee destination affects future reservations;
 already reserved payments retain their saved recipient. The ledger, saved quotes, attempts and wallet identities
-remain unchanged. Other financial/backup/website changes are refused rather than
+remain unchanged. Other financial/website changes are refused rather than
 silently accepted. An incomplete sealed bootstrap must finish before applying an
-ordinary settings update.
+ordinary settings update unless correcting backup settings through the flow below.
 
-If initial setup stopped at encrypted backup access, the same updater can correct
-**only** `backupRepositoryUrl` and `backupPassword`. Edit those two fields and run
-`git pull --ff-only && sudo ./build/update-config.sh`. It archives the old values
-privately and preserves the wallet keys and setup seal. Correction is refused if
-node/wallet setup or runtime installation has progressed; it never migrates an
-initialized server's backups or resets saved state. A Solana RPC URL is not a
-backup repository: supply an authenticated HTTPS restic repository and its separate
-encryption password.
+To change backup servers, edit `backupRepositoryUrl` and `backupPassword`, then run
+`git pull --ff-only && sudo ./build/update-config.sh`. Other supported settings may
+be edited at the same time. The updater verifies access to the new HTTPS restic
+repository (initializing an empty repository if needed), archives the old values
+privately, and preserves wallet keys and existing backups. A wrong password cannot
+replace or re-encrypt an existing repository; use its correct password or a new URL.
+
+On an installed server it stops the worker and signer, publishes the new credentials,
+then runs the existing custody checkpoint through the signer. That exports the current
+ledger and keys, uploads them, downloads and verifies the full custody bundle, and
+checks the frozen sequence before normal startup/reconciliation. The old backup
+server need not be available. Worker/tunnel interlocks stay in place on failure or
+reboot: fix external availability and rerun the same command with the same config.
+Do not delete saved state or pending markers. Old snapshots remain on the old server;
+the new server starts with a fresh recoverable checkpoint, not a copy of all history.
+
+Before low-level runtime installation begins, the same command also corrects backup
+settings after node or wallet initialization without replacing those wallets. A
+partly completed low-level installation must finish before changing its content-sealed
+inputs (`finish_partial_installation_before_changing_backup`). A Solana RPC URL is
+not a backup repository: supply authenticated HTTPS restic storage and its encryption
+password.
 
 Owner destinations may match the bridge wallets. For that asset, automatic fee
 withdrawals are skipped: fees remain recorded as earned and unwithdrawn, with no

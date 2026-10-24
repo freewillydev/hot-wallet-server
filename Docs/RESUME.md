@@ -8,6 +8,27 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Current config updater checkpoint (2026-10-23)
 
+2026-10-24 backup-server switch implemented: update-config.sh accepts backup
+URL/password changes together with other supported operational edits. It probes
+the candidate using private journal files, stops worker/signer, publishes fixed
+setup and signer credential copies, forces a target-repository custody checkpoint
+with full readback, and checks fence/files before clearing service interlocks.
+It does not depend on the old server, rotate a repository's password, copy all old
+snapshots, change custody or reset the ledger. Old credentials/snapshots remain.
+Interrupted updates re-stop the signer before preflight; target receipts are
+distinct from ordinary old-repository checkpoints. Cold signer startup now waits
+for its loopback listener before issuing one checkpoint request.
+Pre-runtime setup also supports correction after node/ATA initialization; a
+partial low-level installer still refuses changed content-sealed inputs.
+ConfigureCheck (including real restic) and full disposable PostgreSQL regression
+PASS; fresh backup_switch_verifier PASS. Scoped builds exclude the unchanged
+Operation/Internal.hs draft. No Ubuntu systemd or funded update was performed.
+Next on the user's host: edit /root/hot-wallet/server.conf, then run
+`git pull --ff-only && sudo ./build/update-config.sh`. Preserve pending state if
+target backup checks fail and rerun with the same input after correcting access.
+Evidence /tmp/ecx-backup-migration-*.log and Docs/.audit/installer-update.tsv.
+This supersedes the earlier early-setup-only restriction described below.
+
 2026-10-24 SOL top-up feature: the latest requested fixed defaults are
 `solGasTopUp = "0.005"` / `solGasTopUpFeeEcx = "0.005"`; no exchange rates.
 Missing fields retain disabled behavior for existing installations. New orders

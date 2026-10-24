@@ -156,6 +156,7 @@ contract=bracket temporary removeDirectoryRecursive $ \directory->do
     B.writeFile attempt "{}"
     corruptAta<-try(Bootstrap.initialAccounting directory config "owned SOL") :: IO (Either BridgeError (Maybe Value))
     historyPreflight<-preflightContract
+    backupAccessContract directory
     backupChecked<-backupTimeoutContract directory
     handoffChecked<-backupHandoffCancellation directory
     expectedKey<-either (const $ fail "fixture mnemonic") pure (walletKey phrase)
@@ -404,8 +405,7 @@ importContract parent executable=do
     require (either (const False) (const True) operational==(expected==(False,False)))
       "operational_update_identity_policy_failed"
   forM_ (zip [0::Int ..]
-    [replace "backupPassword" (show ("changed-backup-password"::String))
-    ,replace "resticExecutable" (show ("/different/restic"::String))
+    [replace "resticExecutable" (show ("/different/restic"::String))
     ,replace "initialFundingOwnership" (show ("changed ownership statement"::String))]) $ \(n,values)->do
       let candidate=parent</>("unsupported-update-"<>show n<>".conf")
       savePrivate candidate (B8.pack $ record values)
@@ -615,76 +615,100 @@ gasTopUpAmountsContract config=do
   forM_ refused $ \value->
     require (either (const True) (const False) $ InstallConfig.installGasTopUp value) "gas_top_up_invalid_amount_accepted"
 
--- Exercise the actual four-file correction plan and private journal, without
--- provisioning a node, contacting a network or modifying a real installation.
+-- Fixed credential plans before/after installation, plus interrupted private
+-- publication. Real restic access is checked separately; no live custody here.
 backupSetupContract :: FilePath -> FilePath -> B.ByteString -> B.ByteString -> InstallConfig.InstallConfig -> IO ()
 backupSetupContract parent imported previous candidate settings=do
   let state="/var/lib/hot-wallet-server"; setup=state</>".ecx-bridge"
-      names=["bootstrap.json","setup.json","sources.json","interface.json"]
-      change name (Object fields)=Object $ case name of
-        "setup.json"->KM.insert "nativeSeedFile" (toJSON $ setup<>"-keys/ecx-recovery.txt") fields
-        "sources.json"->KM.insert "backup.repository" (toJSON $ setup</>"backup.repository") $
-          KM.insert "backup.password" (toJSON $ setup</>"backup.password") fields
-        _->fields
-      change _ value=value
-  records<-forM names $ \name->B.readFile(imported</>name) >>= either fail (pure . change name) . eitherDecodeStrict'
+      signer="/etc/ecx-bridge/signer"
+      repository="rest:https://corrected.example.invalid/new-repository"
+      password="corrected-fixture-password"
   credentials<-mapM (B.readFile . (imported</>)) ["backup.repository","backup.password"]
-  let table=M.fromList $ [(setup</>name,L.toStrict $ encode value) | (name,value)<-zip names records]
-        <>[(state</>"server.conf",previous),(setup</>"install.conf",previous)
-          ,(setup</>"bootstrap-bound.json",L.toStrict $ encode records)]
-        <>zip (map (setup</>) ["backup.repository","backup.password"]) credentials
+  let sources=object ["backup.repository" .= (setup</>"backup.repository"),"backup.password" .= (setup</>"backup.password")]
+      runtime=object ["restic" .= ("/opt/ecx-bridge/current/bin/restic"::String)
+        ,"repositoryFile" .= (signer</>"backup.repository"),"passwordFile" .= (signer</>"backup.password")]
+      table=M.fromList $ [(state</>"server.conf",previous),(setup</>"install.conf",previous)
+        ,(setup</>"sources.json",L.toStrict $ encode sources),(signer</>"backup.json",L.toStrict $ encode runtime)]
+        <>concat [zip (map (directory</>) ["backup.repository","backup.password"]) credentials | directory<-[setup,signer]]
       view values path=pure $ M.lookup path values
-      present extra path=pure $ path `elem` (setup</>"native-rpc.conf"):extra
-      plan values evidence=Reconfigure.backupSetupFiles (view values) (present evidence) candidate settings
+      plan values installed=Reconfigure.backupCredentialChanges (view values) installed settings
       refuse reason action=do
-        result<-try action :: IO (Either BridgeError [RF.ConfigFile])
-        require (case result of Left(BridgeError actual)->actual==reason; _->False) "backup_setup_refusal_contract_failed"
-      targets=map (state</>) ["server.conf",".ecx-bridge/install.conf",".ecx-bridge/backup.repository",".ecx-bridge/backup.password"]
-  files<-plan table []
-  unsealed<-plan (M.delete (setup</>"bootstrap-bound.json") table) []
-  require (files==unsealed && map RF.configPath files==targets
-    && map RF.configAfter files==[candidate,candidate,"rest:https://corrected.example.invalid/new-repository","corrected-fixture-password"]
-    && all ((==0o600).RF.configMode) files) "backup_setup_plan_contract_failed"
-  -- Seals and keys are absent from the write set. Every later-progress marker
-  -- refuses, including partial installation without a completed installed marker.
-  forM_ (map (setup</>) ["node-config.before","ata-creation.json","bootstrap-complete.json","worker.json","signer.json","wallet-replacement.json"]
-    <>[setup<>"-keys/ecx-recovery.txt.initialized.json","/var/lib/ecx-bridge-install","/etc/ecx-bridge"
-      ,"/var/lib/ecx-bridge-setup/installed-directory.json"]) $ \marker->
-      refuse "backup_change_after_initialization_requires_recovery" (plan table [marker])
-  refuse "backup_setup_update_requires_fresh_import" $
-    Reconfigure.backupSetupFiles (view table) (const $ pure False) candidate settings
-  forM_ ["backup.repository","backup.password"] $ \name->do
-    refuse "backup_setup_credentials_changed" (plan (M.insert (setup</>name) "unexpected" table) [])
-    let value=change "sources.json" (object ["backup.repository" .= ("other-path"::String)])
-        changed=M.insert (setup</>"sources.json") (L.toStrict $ encode value) $ M.delete (setup</>"bootstrap-bound.json") table
-    -- Override after normalization to exercise refusal of a noncanonical path.
-        Object sourceFields=value
-        bad=Object $ KM.insert (Key.fromString name) (String "/other/credential") sourceFields
-    refuse "backup_setup_update_requires_fresh_import" (plan (M.insert (setup</>"sources.json") (L.toStrict $ encode bad) changed) [])
-  refuse "bootstrap_saved_configuration_changed" (plan (M.insert (setup</>"bootstrap-bound.json") "[]" table) [])
-  forM_ [settings {InstallConfig.domain="other.example.invalid"},settings {InstallConfig.resticExecutable="/other/restic"}
-    ,settings {InstallConfig.solGasTopUp="0"}
-    ,settings {InstallConfig.solSeedBip39=unwords(replicate 11 "abandon"<>["about"])}] $ \combined->
-      refuse "backup_setup_update_only_backup_fields" $
-        Reconfigure.backupSetupFiles (view table) (present []) candidate combined
+        result<-try action :: IO (Either BridgeError [(FilePath,B.ByteString)])
+        require (case result of Left(BridgeError actual)->actual==reason; _->False) "backup_update_refusal_contract_failed"
+      expected directories=concat [[(directory</>"backup.repository",repository),(directory</>"backup.password",password)] | directory<-directories]
+  fresh<-plan table False
+  installed<-plan table True
+  require (fresh==expected [setup] && installed==expected [setup,signer]) "backup_update_plan_contract_failed"
+  let previousPath=parent</>"backup-previous.conf";candidatePath=parent</>"backup-candidate.conf"
+  savePrivate previousPath previous
+  savePrivate candidatePath candidate
+  InstallConfig.validateOperationalUpdate previousPath candidatePath
+  -- The backup branch also accepts other supported settings, rather than
+  -- accidentally treating a mixed edit as an ordinary credential-free update.
+  combined<-Reconfigure.backupCredentialChanges (view table) True settings {InstallConfig.solGasTopUp="0"}
+  require (combined==installed) "backup_update_combined_settings_failed"
+  forM_ [setup,signer] $ \directory->forM_ ["backup.repository","backup.password"] $ \name->
+    refuse "backup_setup_credentials_changed" (plan (M.insert (directory</>name) "unexpected" table) True)
+  refuse "backup_update_source_paths_changed" (plan (M.insert (setup</>"sources.json") "{}" table) False)
+  refuse "backup_update_runtime_paths_changed" (plan (M.insert (signer</>"backup.json") "{}" table) True)
+  forM_ ["/var/lib/ecx-bridge-install","/etc/ecx-bridge","/var/lib/ecx-bridge-setup/installed-directory.json"] $ \marker->do
+    result<-try(Reconfigure.validateBackupPhase (pure . (==marker)) False) :: IO (Either BridgeError ())
+    require (case result of Left(BridgeError "finish_partial_installation_before_changing_backup")->True; _->False)
+      "backup_partial_installer_accepted"
+    Reconfigure.validateBackupPhase (pure . (==marker)) True
+  -- Initialized wallets and a saved ATA attempt do not require a fresh wallet.
+  Reconfigure.validateBackupPhase (pure . (`elem` map (setup</>) ["node-config.before","ata-creation.json","bootstrap-complete.json"])) False
   uid<-getEffectiveUserID;gid<-getEffectiveGroupID
-  forM_ [0..4::Int] $ \cut->do
-    let directory=parent</>("backup-repair-"<>show cut);journal=directory</>"journal"
-        local=[file {RF.configPath=directory</>show n,RF.configOwner=uid,RF.configGroup=gid}
-          | (n,file)<-zip [0::Int ..] files]
+  let changes=[(state</>"server.conf",candidate),(setup</>"install.conf",candidate)]<>installed
+      files=[RF.ConfigFile path (M.lookup path table) bytes 0o600 uid gid | (path,bytes)<-changes]
+  forM_ [0..length files] $ \cut->do
+    let directory=parent</>("backup-update-"<>show cut);journal=directory</>"journal"
+        local=[file {RF.configPath=directory</>show n} | (n,file)<-zip [0::Int ..] files]
     createDirectory directory;setFileMode directory 0o700
     forM_ local $ \file->mapM_ (savePrivate $ RF.configPath file) (RF.configBefore file)
     RF.stageConfigFiles journal local
-    -- Simulate interruption after each possible publication boundary.
     forM_ (take cut local) $ \file->B.writeFile (RF.configPath file) (RF.configAfter file)
     saved<-RF.loadConfigFiles journal
     RF.publishConfigFiles journal saved
     RF.publishConfigFiles journal saved
     actual<-mapM (B.readFile . RF.configPath) local
     modes<-mapM (fmap ((.&. 0o777).fileMode) . getFileStatus . RF.configPath) local
-    require (actual==map RF.configAfter local && all(==0o600)modes && saved==local) "backup_setup_replay_contract_failed"
+    require (actual==map RF.configAfter local && all(==0o600)modes && saved==local) "backup_update_replay_contract_failed"
+    -- Every old credential is still present in the private journal after replay.
+    archived<-mapM (B.readFile . (journal</>) . (<>".old") . show) [0..length files-1]
+    require (map Just archived==map RF.configBefore local) "backup_update_lost_old_credentials"
     denied<-try(RF.publishConfigFiles journal (case saved of f:fs->f {RF.configAfter="changed-input"}:fs; _->[])) :: IO (Either BridgeError ())
-    require (either (const True) (const False) denied) "backup_setup_changed_replay_accepted"
+    require (either (const True) (const False) denied) "backup_update_changed_replay_accepted"
+
+-- Exercise the updater's shared access preflight with real encrypted restic
+-- repositories and distinct passwords. No live server or wallet is involved.
+backupAccessContract :: FilePath -> IO ()
+backupAccessContract parent=do
+  executable<-findExecutable "restic" >>= maybe (fail "restic required for backup update contract") pure
+  let root=parent</>"backup-access"
+  mapM_ (\path->createDirectory path >> setFileMode path 0o700) [root,root</>"share"]
+  checksum<-withBinaryFile executable ReadMode hashHandle
+  savePrivate (root</>"share/toolchains.json") $ L.toStrict $ encode $ object
+    ["restic-reviewed" .= Object(KM.singleton(Key.fromString arch)(String checksum))]
+  let spec=object ["restic" .= executable,"sourceRoot" .= root,"method" .= ("bundle"::String)]
+      repository=root</>"repository"; password=root</>"password"
+      old=root</>"old"; target=root</>"target"
+  savePrivate repository (B8.pack old)
+  savePrivate password "old-fixture-password"
+  Bootstrap.checkBackupAccess spec repository password
+  before<-B.readFile(old</>"config")
+  B.writeFile repository (B8.pack target)
+  B.writeFile password "new-fixture-password"
+  Bootstrap.checkBackupAccess spec repository password
+  Bootstrap.checkBackupAccess spec repository password
+  targetBefore<-B.readFile(target</>"config")
+  B.writeFile password "incorrect-fixture-password"
+  refused<-try(Bootstrap.checkBackupAccess spec repository password) :: IO (Either BridgeError ())
+  require (case refused of Left(BridgeError "backup_initialization_failed_use_new_repository_or_advanced_setup")->True; _->False)
+    "backup_update_wrong_password_accepted"
+  oldAfter<-B.readFile(old</>"config")
+  targetAfter<-B.readFile(target</>"config")
+  require (before==oldAfter && targetBefore==targetAfter) "backup_update_preflight_replaced_repository"
 
 -- An unavailable backup must not stall setup or leave its subprocess running.
 -- This executable is a process fixture, not a simulated chain or accepted backup.

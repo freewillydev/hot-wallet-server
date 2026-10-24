@@ -1,7 +1,7 @@
 {-# LANGUAGE GADTs #-}
 -- Fresh unused custody only, before installation. No customer or runtime entry.
 -- Closed, saved-before-send ATA setup; no minting operations.
-module Bootstrap (preflight,checkHistoryWith,canonicalMint,interface,validateOrigin,setupConfig,bind,complete,initializeBackup,agreedOrigin,initialAccounting) where
+module Bootstrap (preflight,checkHistoryWith,canonicalMint,interface,validateOrigin,setupConfig,bind,complete,initializeBackup,checkBackupAccess,agreedOrigin,initialAccounting) where
 import qualified Bridge.Config as C
 import Bridge.Domain (units)
 import Bridge.File (hashHandle)
@@ -262,6 +262,14 @@ initializeBackup directory=do
   when pending $ do
     setup<-readRecord (directory</>"setup.json") :: IO Value
     sources<-readRecord (directory</>"sources.json") :: IO Value
+    repository<-fieldValue "backup.repository" sources
+    password<-fieldValue "backup.password" sources
+    checkBackupAccess setup repository password
+
+-- Also used by the configuration updater with private candidate credentials,
+-- before changing the active repository or stopping any service.
+checkBackupAccess :: Value -> FilePath -> FilePath -> IO ()
+checkBackupAccess setup repository password=do
     executable<-fieldValue "restic" setup
     root<-fieldValue "sourceRoot" setup
     method<-fieldValue "method" setup :: IO String
@@ -271,8 +279,6 @@ initializeBackup directory=do
     expected<-fieldValue (fromString arch) reviewed :: IO T.Text
     actual<-withBinaryFile executable ReadMode hashHandle
     require (actual==expected) "unreviewed_restic_binary"
-    repository<-fieldValue "backup.repository" sources
-    password<-fieldValue "backup.password" sources
     environment<-getEnvironment
     let clean=filter (\(name,_)->not ("RESTIC_" `isPrefixOf` name)) environment
         run args=withCreateProcess ((proc executable ("--no-cache":args))
@@ -297,4 +303,4 @@ initializeBackup directory=do
       require (created==ExitSuccess) "backup_initialization_failed_use_new_repository_or_advanced_setup"
     verified<-run ["cat","config"]
     require (verified==ExitSuccess) "backup_repository_not_readable"
-    putStrLn "Encrypted backup repository is readable. Continuing node setup."
+    putStrLn "Encrypted backup repository is readable."

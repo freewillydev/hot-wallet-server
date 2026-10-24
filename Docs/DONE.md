@@ -1,5 +1,19 @@
 # Production acceptance
 
+2026-10-24 backup-server updates: scoped app/config/store builds, ConfigureCheck
+and the full disposable PostgreSQL regression PASS. Coverage includes fixed
+setup/signer credential paths, mismatched old credentials, partial-installer
+refusal, all six-file publication cuts, retained private originals, real restic
+initialization/replay/wrong-password refusal, and exact ledger restoration from
+two repositories with distinct passwords while retaining the old snapshot.
+Fresh read-only backup_switch_verifier PASS for the six source/test files
+(diff SHA256 `4e54a487dca7eba787974a341949b224e6c2f1b574a23dfaa1f090356c1d70e4`).
+Uses the committed Operation overlay and cached Cabal dependencies, excluding the
+unchanged unrelated capability draft. No full dirty-tree Cabal build, Ubuntu
+systemd update lifecycle or funded deployment is claimed. Temporary PostgreSQL
+stopped. Evidence is in `.audit/installer-update.tsv`; production gates remain
+unchanged. This supersedes the early-setup-only backup restriction below.
+
 2026-10-24 optional SOL top-up: scoped native application/test builds, full bridge
 test suite, Rust SDK tests (10), GHC JavaScript build and actual Chrome fixtures
 PASS. Separate disposable PostgreSQL gas accounting/restart/replay/refund/daily

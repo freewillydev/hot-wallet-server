@@ -5879,6 +5879,26 @@ archiveContract settings fixtures reader = do
       restore (manifestPath recovered)
     (sort <$> listDirectory directory) >>= check . (==filesBefore)
     fixture fixtures RestoreDatabases >>= check . (==databasesBefore)
+    -- A new destination/password must recover the same frozen ledger without
+    -- relying on or overwriting the old repository. Coverage stays unchanged.
+    let targetDirectory=directory</>"replacement-backup"
+    createDirectory targetDirectory
+    setFileMode targetDirectory 0o700
+    (_,newRepository,newPassword,_)<-testRepository targetDirectory
+    oldSecret<-BS.readFile password
+    newSecret<-BS.readFile newPassword
+    check (oldSecret/=newSecret)
+    targetReceipt<-Backup.uploadArchive program newRepository newPassword archive
+    check (receiptSequence targetReceipt==receiptSequence receipt && receiptArchiveHash targetReceipt==receiptArchiveHash receipt)
+    let recoverTarget=Backup.downloadArchive program newRepository newPassword (receiptSnapshot targetReceipt)
+          "contract" (archiveSequence archive) targetDirectory
+    bracket recoverTarget clean $ \recovered->restore(manifestPath recovered)
+    protected newPassword oldSecret
+    expectStore "backup_process_failed" recoverTarget
+    protected newPassword newSecret
+    bracket (download snapshot "contract" (archiveSequence archive)) clean $ \recovered->
+      BS.readFile (archivePath recovered) >>= check . (==bytes)
+    removeDirectoryRecursive targetDirectory
     protected password "wrong-passphrase"
     expectStore "backup_process_failed" (upload archive)
     expectStore "backup_process_failed" (download snapshot "contract" 0)

@@ -49,7 +49,10 @@ git pull --ff-only && sudo ./build/update-config.sh
 ```
 
 This saves the old settings privately, applies supported changes and restarts
-through the normal checks. To replace initialized wallets, supply **two new unused
+through the normal checks. Changing `backupRepositoryUrl` or `backupPassword`
+checks the new repository and, on an installed server, verifies a fresh custody
+backup there before restarting payments. The old credentials and backups are kept.
+To replace initialized wallets, supply **two new unused
 seeds**; old keys and the ledger are retained with root-only access. Pending payments
 must finish first. Old balances stay in the old wallets. See [update details](Docs/INSTALL.md#changing-the-configuration).
 
