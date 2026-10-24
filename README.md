@@ -27,6 +27,11 @@ Requires Ubuntu 24.04 x86_64, 8 GB RAM and a 256 GB SSD.
    xpubs. `ownerSolPubkey` is your Solana wallet's Receive address. These can match
    the bridge wallets; matching destinations keep earned fees in the bridge.
 
+   Optional SOL top-ups use `solGasTopUp = "0.005"` and
+   `solGasTopUpFeeEcx = "0.005"`: the customer receives that SOL amount for the
+   extra ECX fee, deducted alongside the 1% wrapping fee. Set `solGasTopUp = "0"`
+   to disable. New empty Solana wallets may require a larger top-up.
+
 3. **Fund the SOL address** printed as `Fund SOL fees at:` with **0.01 SOL on
    Solana Mainnet**, in one operator-owned transfer. Wait for confirmation, then
    rerun `sudo ./build/install.sh` with the same configuration. Do not send again

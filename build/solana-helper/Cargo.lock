@@ -325,6 +325,7 @@ dependencies = [
  "solana-message",
  "solana-pubkey",
  "solana-signer",
+ "solana-system-interface",
  "solana-transaction",
  "spl-associated-token-account-interface",
  "spl-memo-interface",
@@ -961,6 +962,8 @@ version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8df4e8fcba01d7efa647ed20a081c234475df5e11a93acb4393cc2c9a7b99bab"
 dependencies = [
+ "bincode",
+ "serde",
  "solana-define-syscall 3.0.0",
  "solana-instruction-error",
  "solana-pubkey",
@@ -1009,6 +1012,15 @@ dependencies = [
  "solana-sdk-ids",
  "solana-short-vec",
  "solana-transaction-error",
+]
+
+[[package]]
+name = "solana-msg"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "726b7cbbc6be6f1c6f29146ac824343b9415133eee8cce156452ad1db93f8008"
+dependencies = [
+ "solana-define-syscall 5.2.0",
 ]
 
 [[package]]
@@ -1111,6 +1123,21 @@ dependencies = [
  "solana-pubkey",
  "solana-signature",
  "solana-transaction-error",
+]
+
+[[package]]
+name = "solana-system-interface"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e1790547bfc3061f1ee68ea9d8dc6c973c02a163697b24263a8e9f2e6d4afa2"
+dependencies = [
+ "num-traits",
+ "serde",
+ "serde_derive",
+ "solana-instruction",
+ "solana-msg",
+ "solana-program-error",
+ "solana-pubkey",
 ]
 
 [[package]]

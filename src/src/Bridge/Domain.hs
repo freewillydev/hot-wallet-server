@@ -4,13 +4,14 @@
 module Bridge.Domain
   ( Amount, units, amount, parseUnits, parseCoins, renderCoins, parseNatural
   , Asset(..), Direction(..), sourceAsset, destinationAsset
-  , Quote, gross, fee, net, quote, historicalQuote
+  , GasTopUp, mkGasTopUp, gasLamports, gasEcxFee
+  , Quote, gross, fee, net, quote, historicalQuote, quoteWithGas, quoteGasTopUp
   , Funding(Conversion,Refund,EarnedFees), conversion, refund, earnedFees
-  , Payment, payment, paymentId, paymentFunding, paymentRecipient, paymentAsset, paymentAmount
+  , Payment, payment, paymentId, paymentFunding, paymentRecipient, paymentAsset, paymentAmount, paymentGasLamports
   , Account(..), Posting(..), settlement, reserveEarned, releaseEarned
   ) where
 
-import Data.Aeson (ToJSON(..),FromJSON(..),Value(String),withText,withObject,(.:),(.=),object)
+import Data.Aeson (ToJSON(..),FromJSON(..),Value(String),withText,withObject,(.:),(.:?),(.=),object)
 import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -61,27 +62,54 @@ sourceAsset WrappedToNative = Wrapped
 destinationAsset NativeToWrapped = Wrapped
 destinationAsset WrappedToNative = Native
 
-data Quote = Quote !Amount !Amount !Amount deriving (Eq,Show)
+-- A small, explicitly purchased gas credit. Its fee is fixed at admission;
+-- the signed payout carries exactly these lamports in the same transaction.
+data GasTopUp = GasTopUp { gasLamports :: !Amount, gasEcxFee :: !Amount } deriving (Eq,Show)
+mkGasTopUp :: Amount -> Amount -> Either Text GasTopUp
+mkGasTopUp lamports charge
+  | units lamports>0 && units lamports<=10000000 && units charge>0 = Right (GasTopUp lamports charge)
+  | otherwise = Left "invalid_gas_top_up"
+instance ToJSON GasTopUp where
+  toJSON g=object ["gasLamports" .= gasLamports g,"gasEcxFee" .= gasEcxFee g]
+instance FromJSON GasTopUp where
+  parseJSON=withObject "gas top-up" $ \o->do
+    lamports<-o .: "gasLamports"
+    charge<-o .: "gasEcxFee"
+    either (fail . T.unpack) pure (mkGasTopUp lamports charge)
+
+data Quote = Quote !Amount !Amount !Amount !(Maybe GasTopUp) deriving (Eq,Show)
 gross, fee, net :: Quote -> Amount
-gross (Quote g _ _) = g
-fee (Quote _ f _) = f
-net (Quote _ _ n) = n
+gross (Quote g _ _ _) = g
+fee (Quote _ f _ _) = f
+net (Quote _ _ n _) = n
+quoteGasTopUp :: Quote -> Maybe GasTopUp
+quoteGasTopUp (Quote _ _ _ gas) = gas
 instance ToJSON Quote where
-  toJSON q = object ["gross" .= gross q, "fee" .= fee q, "net" .= net q]
+  toJSON q = object $ ["gross" .= gross q, "fee" .= fee q, "net" .= net q]
+    <> maybe [] (\gas->["gasTopUp" .= gas]) (quoteGasTopUp q)
 instance FromJSON Quote where
   parseJSON = withObject "quote" $ \o -> do
     g <- o .: "gross"
     f <- o .: "fee"
     n <- o .: "net"
-    q <- either (fail . T.unpack) pure (historicalQuote g f)
+    gas <- o .:? "gasTopUp"
+    q <- either (fail . T.unpack) pure (savedQuote g f gas)
     if net q == n then pure q else fail "inconsistent_quote"
 -- New terms are always 1%. Existing terms are loaded verbatim, never repriced.
 quote :: Amount -> Either Text Quote
-quote input = amount ((toInteger (units input)+99) `div` 100) >>= historicalQuote input
+quote input = quoteWithGas input Nothing
+quoteWithGas :: Amount -> Maybe GasTopUp -> Either Text Quote
+quoteWithGas input gas = do
+  charge<-amount $ (toInteger (units input)+99) `div` 100 + maybe 0 (toInteger . units . gasEcxFee) gas
+  savedQuote input charge gas
 historicalQuote :: Amount -> Amount -> Either Text Quote
-historicalQuote input charge = do
+historicalQuote input charge = savedQuote input charge Nothing
+savedQuote :: Amount -> Amount -> Maybe GasTopUp -> Either Text Quote
+savedQuote input charge gas = do
+  if maybe False ((>charge) . gasEcxFee) gas then Left "inconsistent_gas_fee" else pure ()
+  if charge>=input then Left "nonpositive_net" else pure ()
   remaining <- amount (toInteger (units input)-toInteger (units charge))
-  if units remaining==0 then Left "nonpositive_net" else Right (Quote input charge remaining)
+  if units remaining==0 then Left "nonpositive_net" else Right (Quote input charge remaining gas)
 
 data Funding
   = ConversionFunding !Text !Text !Direction !Quote
@@ -102,6 +130,7 @@ conversion :: Text -> Text -> Direction -> Quote -> Either Text Funding
 conversion order receipt direction terms = do
   identifier order
   identifier receipt
+  if direction/=NativeToWrapped && quoteGasTopUp terms/=Nothing then Left "gas_top_up_wrap_only" else pure ()
   pure (ConversionFunding order receipt direction terms)
 refund :: Text -> Text -> Asset -> Amount -> Either Text Funding
 refund order receipt asset quantity = do
@@ -146,6 +175,10 @@ paymentAmount p = case paymentFunding p of
   ConversionFunding _ _ _ terms -> net terms
   RefundFunding _ _ _ quantity -> quantity
   EarnedFunding _ _ quantity -> quantity
+paymentGasLamports :: Payment -> Maybe Amount
+paymentGasLamports p = case paymentFunding p of
+  ConversionFunding _ _ NativeToWrapped terms -> gasLamports <$> quoteGasTopUp terms
+  _ -> Nothing
 
 data Account = External | Principal | Unallocated | Float | Earned | FeePending | Operating | Backing | Liquidity | SourceDeficit
   deriving (Eq,Ord,Show)

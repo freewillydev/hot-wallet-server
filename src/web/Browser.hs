@@ -16,6 +16,8 @@ foreign import javascript unsafe "((id,value) => { document.getElementById(id).t
   setText :: JSVal -> JSVal -> IO ()
 foreign import javascript unsafe "((id) => document.getElementById(id).value)"
   getValue :: JSVal -> IO JSVal
+foreign import javascript unsafe "((id) => document.getElementById(id).checked)"
+  getChecked :: JSVal -> IO Bool
 foreign import javascript unsafe "((id,value) => { document.getElementById(id).value=value; })"
   setValue :: JSVal -> JSVal -> IO ()
 foreign import javascript unsafe "((id,key,value) => { document.getElementById(id)[key]=value; })"

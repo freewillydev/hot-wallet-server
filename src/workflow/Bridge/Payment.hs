@@ -48,7 +48,7 @@ prepareUnsigned clock native solana profile config reader writer identifier = pr
           Wrapped -> do
             recent <- getRecentBlockhash solana
             let value=SolanaPlan identity (paymentRecipient outgoing) (paymentAmount outgoing)
-                  (payoutReference identity identifier) recent (savedSolanaFee costs) (savedSolanaRent costs)
+                  (payoutReference identity identifier) recent (savedSolanaFee costs) (savedSolanaRent costs) (paymentGasLamports outgoing)
             allowance <- either reject pure (solanaOperatingLimit value)
             pure (allowance,encodeSaved value)
           Sol -> reject "invalid_payout_asset"
@@ -87,6 +87,7 @@ resolveSigningPlan profile config prepared = do
       allowance <- either reject pure (solanaOperatingLimit plan)
       require (solPlanFingerprint plan==H.fingerprint config && solanaCommitment policy=="finalized"
         && solPlanRecipient plan==paymentRecipient outgoing && solPlanAmount plan==paymentAmount outgoing
+        && solPlanGasLamports plan==paymentGasLamports outgoing
         && solPlanReference plan==payoutReference (H.fingerprint config) (paymentId outgoing)
         && allowance==preparedFee prepared && units(solPlanFeeLimit plan)>0
         && solPlanFeeLimit plan<=savedSolanaFee costs && solPlanRentLimit plan<=savedSolanaRent costs

@@ -227,7 +227,7 @@ pendingSolanaEffect native solana profile config reader saved = do
     recorded
     outcome<-either reject pure (verifySolanaOutcome config signed proof)
     let n=if outcomeSucceeded outcome then toInteger(units $ solPlanAmount $ signedSolanaPlan signed) else 0
-        cost=toInteger(units $ outcomeFee outcome)+toInteger(units $ outcomeRent outcome)
+        cost=toInteger(units $ outcomeFee outcome)+toInteger(units $ outcomeRent outcome)+toInteger(units $ outcomeGasLamports outcome)
         anchor=T.pack(show $ outcomeSlot outcome)
     forM_ [("Solana",negate n),("SolanaOperating",negate cost)] $ \(stream,delta)->do
       (kind,actualAnchor,evidence)<-evalRead reader (ReadCustodyEvent stream txid)

@@ -79,6 +79,7 @@ configureFile input output=do
   keyBytes<-I.validateInstallConfig settings
   nativeThreshold<-either reject pure (parseCoins $ T.pack $ I.payoutThresholdEcx settings)
   wrappedThreshold<-either reject pure (parseCoins $ T.pack $ I.payoutThresholdWrappedEcx settings)
+  gasTopUp<-either reject pure (I.installGasTopUp settings)
   defaultsLinks<-either (const $ reject "invalid_interface_defaults") pure $
     parseEither parseJSON (Bootstrap.interface Nothing)
   let origin=case I.cloudflareTunnelToken settings of
@@ -133,6 +134,7 @@ configureFile input output=do
           ,"solanaRpc" .= I.solanaRpcUrl settings,"solanaVerifierRpc" .= I.solanaVerifierRpcUrl settings
           ,"nativeCookie" .= worker,"nativeUnlockFile" .= unlock
           ,"payoutPolicy" .= W.PayoutPolicy nativeThreshold wrappedThreshold (fromInteger $ 3600*I.minimumPayoutIntervalHours settings)
+          ,"gasTopUpOffer" .= gasTopUp
           ,"ownerFeeRecipients" .= C.OwnerFeeRecipients (T.pack $ I.ownerEcxXpub settings) (T.pack $ I.ownerSolPubkey settings)
           ,"solanaHistoryStart" .= String "","solanaOperatingHistoryStart" .= String ""]) template
         setup=object ["existing" .= False,"method" .= String (maybe "source" (const "bundle") bundle),"sourceRoot" .= root,"restic" .= restic
@@ -541,7 +543,8 @@ collect locked initial=do
       putStrLn $ "Please correct settings: "<>T.unpack code
       collect locked fields) `catch` (\(_::HttpException)->putStrLn "Invalid RPC URL; correct the endpoint fields." >> collect locked fields)
  where
-  fixed=locked<>["profile","nativeCookie","nativeUnlockFile","signerAuthFile","fenceDirectory","solanaSdkLibrary"]
+  -- Optional gas offers are configured through the exact-decimal install record.
+  fixed=locked<>["profile","nativeCookie","nativeUnlockFile","signerAuthFile","fenceDirectory","solanaSdkLibrary","gasTopUpOffer"]
   ask fields key=do
     let old=fromMaybe Null (M.lookup key fields)
         shown=case old of String t | "REQUIRED_" `T.isPrefixOf` t->""; String t->T.unpack t; Null->"-"; _->B8.unpack $ L.toStrict $ encode old
@@ -593,7 +596,7 @@ prompt label fallback validate=do
     `catch` (\(_::IOException)->putStrLn "Cannot read that private file/path; check ownership and permissions." >> prompt label fallback validate)
 
 template :: Object
-template=M.insert "payoutPolicy" (toJSON W.defaultPayoutPolicy) $ case eitherDecodeStrict' "{\"profile\":\"ECXBetanetDevnet\",\"deploymentId\":\"ecx-betanet-devnet-operator\",\"nativeRpc\":\"http://127.0.0.1:28532\",\"nativeCookie\":\"/run/ecx-betanet/rpc.cookie\",\"nativeWallet\":\"ecx-bridge-betanet-test\",\"nativeCheckpointHeight\":967680,\"nativeCheckpointHash\":\"00000000000000030101ba5cfea54b22becc79f95dc6040beb76e01dd9d04042\",\"solanaRpc\":\"https://api.devnet.solana.com\",\"solanaVerifierRpc\":null,\"mint\":\"REQUIRED_REAL_DEVNET_MINT\",\"custodyOwner\":\"REQUIRED_DEVNET_CUSTODY_OWNER\",\"custodyAta\":\"REQUIRED_DEVNET_CUSTODY_ATA\",\"signerPort\":8081,\"signerAuthFile\":\"/etc/ecx-bridge/signing.auth\",\"solanaSdkLibrary\":\"/opt/ecx-bridge/current/lib/libecx_solana_sdk.so\",\"maxWithdrawal\":\"1000000000000\",\"maxQueued\":4,\"quoteSeconds\":300,\"confirmationGraceSeconds\":1200,\"nativeConfirmations\":6,\"maxNativeFee\":\"1000\",\"maxSolFee\":\"10000\",\"maxSolAccountRent\":\"2100000\",\"maxNativeDailyCost\":\"10000\",\"maxSolDailyCost\":\"10000000\",\"backupRequired\":false,\"solanaHistoryStart\":\"REQUIRED_EARLIEST_CUSTODY_TOKEN_HISTORY_SIGNATURE\",\"solanaOperatingHistoryStart\":\"REQUIRED_EARLIEST_FEE_PAYER_SOL_HISTORY_SIGNATURE\",\"serverPort\":8080,\"fenceDirectory\":\"/var/lib/ecx-bridge/fence\",\"nativeUnlockFile\":null}" of
+template=M.insert "gasTopUpOffer" Null $ M.insert "payoutPolicy" (toJSON W.defaultPayoutPolicy) $ case eitherDecodeStrict' "{\"profile\":\"ECXBetanetDevnet\",\"deploymentId\":\"ecx-betanet-devnet-operator\",\"nativeRpc\":\"http://127.0.0.1:28532\",\"nativeCookie\":\"/run/ecx-betanet/rpc.cookie\",\"nativeWallet\":\"ecx-bridge-betanet-test\",\"nativeCheckpointHeight\":967680,\"nativeCheckpointHash\":\"00000000000000030101ba5cfea54b22becc79f95dc6040beb76e01dd9d04042\",\"solanaRpc\":\"https://api.devnet.solana.com\",\"solanaVerifierRpc\":null,\"mint\":\"REQUIRED_REAL_DEVNET_MINT\",\"custodyOwner\":\"REQUIRED_DEVNET_CUSTODY_OWNER\",\"custodyAta\":\"REQUIRED_DEVNET_CUSTODY_ATA\",\"signerPort\":8081,\"signerAuthFile\":\"/etc/ecx-bridge/signing.auth\",\"solanaSdkLibrary\":\"/opt/ecx-bridge/current/lib/libecx_solana_sdk.so\",\"maxWithdrawal\":\"1000000000000\",\"maxQueued\":4,\"quoteSeconds\":300,\"confirmationGraceSeconds\":1200,\"nativeConfirmations\":6,\"maxNativeFee\":\"1000\",\"maxSolFee\":\"10000\",\"maxSolAccountRent\":\"2100000\",\"maxNativeDailyCost\":\"10000\",\"maxSolDailyCost\":\"10000000\",\"backupRequired\":false,\"solanaHistoryStart\":\"REQUIRED_EARLIEST_CUSTODY_TOKEN_HISTORY_SIGNATURE\",\"solanaOperatingHistoryStart\":\"REQUIRED_EARLIEST_FEE_PAYER_SOL_HISTORY_SIGNATURE\",\"serverPort\":8080,\"fenceDirectory\":\"/var/lib/ecx-bridge/fence\",\"nativeUnlockFile\":null}" of
   Right (Object fields)->fields
   _->error "invalid embedded configuration template"
 

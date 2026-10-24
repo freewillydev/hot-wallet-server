@@ -1,9 +1,9 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 -- Installation input is data, parsed by Read; it is never evaluated as Haskell.
 -- Deliberately no Show instance: the record contains credentials and private keys.
-module InstallConfig (InstallConfig(..),readInstallConfig,readInstallConfigUpdate,backupSetupUpdate,validateOperationalUpdate,validateInstallConfig,updateSettings) where
+module InstallConfig (InstallConfig(..),readInstallConfig,readInstallConfigUpdate,backupSetupUpdate,validateOperationalUpdate,validateInstallConfig,installGasTopUp,updateSettings) where
 import Bridge.AdminKey (readPrivate)
-import Bridge.Domain (parseCoins,units)
+import Bridge.Domain (GasTopUp,amount,mkGasTopUp,parseCoins,parseNatural,units)
 import Bridge.Error
 import Bridge.Identity (publicKey)
 import Bridge.RPC (independentHttps)
@@ -36,6 +36,7 @@ data InstallConfig = InstallConfig
   , feeRateWrapBps :: Int, feeRateUnwrapBps :: Int
   , payoutThresholdEcx :: String, payoutThresholdWrappedEcx :: String
   , minimumPayoutIntervalHours :: Integer
+  , solGasTopUp :: String, solGasTopUpFeeEcx :: String
   , ownerEcxXpub :: String, ownerSolPubkey :: String -- ECX receive address or legacy xpub
   , externalLinkSolscan :: String, externalLinkOrca :: String
   , solanaRpcUrl :: String, solanaVerifierRpcUrl :: String
@@ -100,6 +101,7 @@ validateOperationalUpdate previous candidate=do
         , solanaRpcUrl=solanaRpcUrl config,solanaVerifierRpcUrl=solanaVerifierRpcUrl config
         , payoutThresholdEcx=payoutThresholdEcx config,payoutThresholdWrappedEcx=payoutThresholdWrappedEcx config
         , minimumPayoutIntervalHours=minimumPayoutIntervalHours config
+        , solGasTopUp=solGasTopUp config,solGasTopUpFeeEcx=solGasTopUpFeeEcx config
         , ownerEcxXpub=ownerEcxXpub config,ownerSolPubkey=ownerSolPubkey config
         , externalLinkSolscan=externalLinkSolscan config,externalLinkOrca=externalLinkOrca config
         , updatePublicKey=updatePublicKey config,updateReleaseDirectory=updateReleaseDirectory config
@@ -118,6 +120,7 @@ parseInstallRecord allowLegacy input=do
     _->bad 1 "expected InstallConfig { field = value, ... }"
   let legacy=any ((=="solKeyB58").fst) fields
       normalized=[(if name=="solKeyB58" then "solSeedBip39" else name,value) | (name,value)<-fields]
+        <>[(name,value) | (name,value)<-optionalDefaults,not(isJust $ lookup name fields)]
       missing=[name | name<-fieldNames,not(isJust $ lookup name normalized)]
   unless (null missing) (bad 0 $ "missing fields: "<>intercalate ", " missing)
   when (legacy && isJust(lookup "solSeedBip39" fields)) (bad 0 "use only solSeedBip39, not both Solana key fields")
@@ -126,10 +129,12 @@ parseInstallRecord allowLegacy input=do
     Just config->Right(config,legacy)
     Nothing->bad 0 "check field value types against example.conf"
  where
-  -- Declaration order for derived Read. Every field remains mandatory; no
-  -- missing credential, fee, or custody setting is silently defaulted.
+  -- Declaration order for derived Read. Existing installations have no gas
+  -- offer until explicitly enabled; credentials and custody remain mandatory.
+  optionalDefaults=[("solGasTopUp",show ("0"::String)),("solGasTopUpFeeEcx",show ("0.005"::String))]
   fieldNames=words $ "serverIp domain websiteDirectory cloudflareTunnelToken ecxSeedBip39 solSeedBip39 assetMintAddress "<>
     "feeRateWrapBps feeRateUnwrapBps payoutThresholdEcx payoutThresholdWrappedEcx minimumPayoutIntervalHours "<>
+    "solGasTopUp solGasTopUpFeeEcx "<>
     "ownerEcxXpub ownerSolPubkey externalLinkSolscan externalLinkOrca solanaRpcUrl solanaVerifierRpcUrl "<>
     "backupRepositoryUrl backupPassword resticExecutable updatePublicKey updateReleaseDirectory updateSetupDirectory "<>
     "freshCustodyAttestation initialFundingOwnership"
@@ -207,6 +212,26 @@ updateSettings file=do
   pure $ object ["publicKey" .= updatePublicKey config,"release" .= updateReleaseDirectory config
     ,"setup" .= updateSetupDirectory config]
 
+-- The optional SOL credit has a fixed additional ECX fee. Both amounts are
+-- exact decimal inputs; the accepted offer is saved with each customer order.
+installGasTopUp :: InstallConfig -> Either T.Text (Maybe GasTopUp)
+installGasTopUp config=do
+  lamports<-case T.splitOn "." (T.pack $ solGasTopUp config) of
+    [whole]->parseSol whole ""
+    [whole,fractional] | not(T.null fractional)->parseSol whole fractional
+    _->Left "invalid_sol_gas_top_up"
+  charge<-parseCoins (T.pack $ solGasTopUpFeeEcx config)
+  unless (units charge>0) (Left "gas_top_up_positive_fee_required")
+  if units lamports==0 then pure Nothing else Just <$> mkGasTopUp lamports charge
+ where
+  parseSol whole fractional
+    | T.null whole || T.length whole>11 || (T.length whole>1 && T.head whole=='0')
+      || T.length fractional>9 || not(T.all (\c->c>='0' && c<='9') $ whole<>fractional)=Left "invalid_sol_gas_top_up"
+    | otherwise=
+        let digits=T.dropWhile (=='0') (whole<>T.justifyLeft 9 '0' fractional)
+            canonical=if T.null digits then "0" else digits
+        in maybe (Left "sol_gas_top_up_out_of_range") amount (parseNatural 10000000 canonical)
+
 -- Validate the entire input before creating any installation material. Return
 -- only the derived Solana key bytes to the private configuration publisher.
 validateInstallConfig :: InstallConfig -> IO B.ByteString
@@ -224,6 +249,7 @@ validateWithSolanaKey c readSolanaKey=do
     amount<-either reject pure (parseCoins $ T.pack value)
     require (units amount>0) "positive_payout_threshold_required"
   require (minimumPayoutIntervalHours c>=0 && minimumPayoutIntervalHours c<=8760) "payout_interval_hours_out_of_range"
+  _<-either reject pure (installGasTopUp c)
   forM_ [solanaRpcUrl c,solanaVerifierRpcUrl c,externalLinkSolscan c,externalLinkOrca c] validateHttps
   independentHttps (solanaRpcUrl c) (solanaVerifierRpcUrl c)
     `catch` (\(_::HttpException)->reject "invalid_rpc_endpoints")

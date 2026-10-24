@@ -47,7 +47,7 @@ short = do
 bounded :: Int -> Get Int
 bounded maxN = short >>= \n -> if n<=maxN then pure n else fail "vector_too_large"
 decodeTransaction :: Text -> Either Text Transaction
-decodeTransaction = decodeLegacy 1 3 8
+decodeTransaction = decodeLegacy 1 4 8
 decodeLegacy :: Int -> Int -> Int -> Text -> Either Text Transaction
 decodeLegacy signerCount instructionLimit accountLimit encoded = do
   unless (T.length encoded<=1644) (Left "transaction_too_large")
@@ -89,10 +89,12 @@ data Expected = Expected
   , expectedSource :: !Text, expectedDestination :: !Text, expectedBlockhash :: !Text
   , expectedAmount :: !Amount, expectedMemo :: !Text, expectedCreateAta :: !Bool
   , expectedSigned :: !Bool
+  , expectedGasLamports :: !(Maybe Amount)
   } deriving (Eq,Show)
 validateTransaction :: Expected -> Text -> Either Text Transaction
 validateTransaction Expected{..} encoded = do
   unless (units expectedAmount>0 && BS.length (TE.encodeUtf8 expectedMemo)<=256) (Left "invalid_transaction_expectation")
+  unless (maybe True (\n->expectedCreateAta && units n>0) expectedGasLamports) (Left "invalid_transaction_expectation")
   when (expectedSigned && not expectedCreateAta) (Left "payout_requires_ata_binding")
   tx@(Transaction signatures (Message _ _ readonly keys recent instructions) _) <- decodeTransaction encoded
   owner <- publicKey expectedOwner
@@ -111,10 +113,13 @@ validateTransaction Expected{..} encoded = do
       transfer = (token,[source,mint,destination,owner],BS.pack (12:little64 (fromIntegral (units expectedAmount))<>[8]))
       memoIx = (memo,[owner],TE.encodeUtf8 expectedMemo)
       create = (ata,[owner,destination,recipient,mint,system,token],BS.singleton 1)
-      expected = (if expectedCreateAta then [create] else []) <> [transfer,memoIx]
+      gas = maybe [] (\n->[(system,[owner,recipient],BS.pack ([2,0,0,0]<>little64 (fromIntegral $ units n)))]) expectedGasLamports
+      expected = (if expectedCreateAta then [create] else []) <> [transfer] <> gas <> [memoIx]
       referenced = nub (owner:concat [program:accounts | (program,accounts,_) <- expected])
       writable = take (length keys-fromIntegral readonly) keys
-  unless (map semantic instructions==expected && sort keys==sort referenced && sort writable==sort [owner,source,destination]) (Left "transaction_semantics_mismatch")
+      expectedWritable = [owner,source,destination] <> maybe [] (const [recipient]) expectedGasLamports
+  unless (maybe True (const $ owner/=mint && recipient `notElem` [source,destination,mint,system,token,memo,ata]) expectedGasLamports
+    && map semantic instructions==expected && sort keys==sort referenced && sort writable==sort expectedWritable) (Left "transaction_semantics_mismatch")
   unless (case signatures of [sig] -> if expectedSigned then BS.any (/=0) sig else BS.all (==0) sig; _ -> False) (Left "signature_shape_mismatch")
   when expectedSigned $ case (Ed.publicKey owner, signatures) of
     (CryptoPassed public, [sig]) -> case Ed.signature sig of

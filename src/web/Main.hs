@@ -36,7 +36,9 @@ instance FromJSON Session where
       && (isJust (savedId s) || isJust (savedRequest s))) (fail "invalid saved order")
     pure s
 
-data State = State { configuration :: Maybe PublicConfiguration, current :: Maybe Session, recent :: [Session], payment :: Text }
+data State = State
+  { configuration :: Maybe PublicConfiguration, current :: Maybe Session
+  , recent :: [Session], payment :: Text, selectedGasTopUp :: Maybe Domain.GasTopUp }
 data Response = Response Bool Int Text
 instance FromJSON Response where
   parseJSON = withObject "fetch response" $ \o -> Response <$> o .: "ok" <*> o .: "status" <*> o .: "body"
@@ -55,6 +57,10 @@ value :: Text -> IO Text
 value key = B.text <$> B.getValue (B.js key)
 setValue :: Text -> Text -> IO ()
 setValue key = B.setValue (B.js key) . B.js
+checked :: Text -> IO Bool
+checked = B.getChecked . B.js
+setChecked :: Text -> Bool -> IO ()
+setChecked key = B.setBool (B.js key) (B.js "checked")
 hidden, disabled :: Text -> Bool -> IO ()
 hidden key = B.setBool (B.js key) (B.js "hidden")
 disabled key = B.setBool (B.js key) (B.js "disabled")
@@ -86,7 +92,12 @@ customerError code = fromMaybe code $ lookup code
   , ("insufficient_custody_tokens", "The bridge needs more wrapped-token liquidity. Try later.")
   , ("insufficient_operating_sol", "The bridge needs more SOL for transaction fees. Try later.")
   , ("invalid_public_key", "Enter a valid Solana address.")
-  , ("nonpositive_net", "Enter an amount that leaves a positive payout after the 1% fee.")
+  , ("nonpositive_net", "Enter an amount that leaves a positive payout after the 1% fee and any SOL top-up fee.")
+  , ("gas_top_up_offer_changed", "The SOL top-up offer changed or is unavailable. Choose New order to review the current offer.")
+  , ("gas_top_up_wrap_only", "SOL top-ups are available only when wrapping native ECX.")
+  , ("invalid_gas_top_up", "The SOL top-up terms are invalid. Choose New order to review the current offer.")
+  , ("inconsistent_gas_fee", "The SOL top-up fee does not match the saved quote. Contact support.")
+  , ("gas_top_up_below_rent", "The offered SOL top-up is too small for this destination. Contact the bridge operator or create an order without the top-up.")
   , ("payout_batch_needs_capacity", "The remaining queue slot is reserved for a transfer large enough to complete a payout round. Try a larger amount or wait for the queue to clear.")
   , ("payout_batch_needs_inventory", "The bridge needs more liquidity to complete this payout round. Try later or contact support.")
   , ("deposit_window_closed", "This order has expired. Do not pay; create a new order.")
@@ -103,6 +114,9 @@ controls state busy = do
   forM_ ["refresh","copy"] $ \key -> disabled key (busy || not hasId)
   forM_ ["new","copy-payment","history"] $ \key -> disabled key busy
   forM_ ["direction","amount","recipient","refund"] $ \key -> disabled key (busy || locked)
+  wrapping <- (== "NativeToWrapped") <$> value "direction"
+  let canChooseGas = isJust (selectedGasTopUp s) || isJust (configuration s >>= pubGasTopUpOffer)
+  disabled "gas-top-up" (busy || locked || not wrapping || not canChooseGas)
 
 attempt :: IORef State -> MVar () -> IO () -> IO ()
 attempt state gate work = do
@@ -134,28 +148,74 @@ readDirection :: IO Direction
 readDirection = do
   d <- value "direction"
   case d of "NativeToWrapped" -> pure NativeToWrapped; "WrappedToNative" -> pure WrappedToNative; _ -> failWith "Invalid direction."
-preview :: IO ()
-preview = do
-  _ <- readDirection
+-- Freeze the exact offered terms when the customer opts in. Configuration
+-- refreshes may change the next offer, but never silently reprice a selection.
+gasTopUpText :: Domain.GasTopUp -> Text
+gasTopUpText topUp =
+  let (whole,fraction) = Domain.units (Domain.gasLamports topUp) `divMod` 1000000000
+      sol = T.pack (show whole) <> "." <> T.justifyRight 9 '0' (T.pack $ show fraction)
+  in sol <> " SOL for an extra " <> renderCoins (Domain.gasEcxFee topUp) <> " ECX"
+
+showGasTopUp :: IORef State -> IO ()
+showGasTopUp state = do
+  s <- readIORef state
+  wrapping <- (== NativeToWrapped) <$> readDirection
+  let chosen = selectedGasTopUp s
+      offered = configuration s >>= pubGasTopUpOffer
+      locked = isJust (current s >>= savedId) || isJust (current s >>= savedRequest)
+      shown = case chosen of Just topUp -> Just topUp; Nothing -> offered
+  hidden "gas-top-up-field" (not wrapping)
+  setChecked "gas-top-up" (wrapping && isJust chosen)
+  text "gas-top-up-offer" $ maybe "SOL top-up is currently unavailable." gasTopUpText shown
+  text "gas-top-up-note" $ if isJust chosen && chosen/=offered && not locked
+    then "The offer changed or is unavailable. Clear this choice and select it again to review the current terms."
+    else "Optional. SOL goes to your Solana destination; the extra ECX fee is deducted from your wrapped ECX payout."
+
+preview :: IORef State -> IO ()
+preview state = do
+  d <- readDirection
+  s <- readIORef state
+  showGasTopUp state
   a <- value "amount"
-  case parseCoins a >>= Domain.quote of
-    Right q -> text "fee" (renderCoins $ fee q) >> text "net" (renderCoins $ net q)
-    Left _ -> text "fee" "—" >> text "net" "—"
-showDirection :: IO ()
-showDirection = do
+  let topUp = if d==NativeToWrapped then selectedGasTopUp s else Nothing
+  text "quote-note" ""
+  case parseCoins a >>= (`Domain.quoteWithGas` topUp) of
+    Right q -> text "fee" (renderCoins $ fee q) >> text "net" (renderCoins (net q) <> if d==NativeToWrapped then " wrapped ECX" else " ECX")
+    Left err -> do
+      text "fee" "—"
+      text "net" "—"
+      when (err=="nonpositive_net") $ text "quote-note" (customerError err)
+
+selectGasTopUp :: IORef State -> IO ()
+selectGasTopUp state = do
+  wantsGas <- checked "gas-top-up"
+  d <- readDirection
+  s <- readIORef state
+  topUp <- if wantsGas && d==NativeToWrapped
+    then case configuration s >>= pubGasTopUpOffer of
+      Just offered -> pure (Just offered)
+      Nothing -> setChecked "gas-top-up" False >> failWith "SOL top-up is currently unavailable."
+    else pure Nothing
+  modifyIORef' state $ \old -> old{selectedGasTopUp=topUp}
+  preview state
+
+showDirection :: IORef State -> IO ()
+showDirection state = do
   wrapping <- (==NativeToWrapped) <$> readDirection
+  unless wrapping $ modifyIORef' state $ \s -> s{selectedGasTopUp=Nothing}
   hidden "refund-field" (not wrapping)
   B.setBool (B.js "refund") (B.js "required") wrapping
   hidden "refund-note" wrapping
   text "destination-label" (if wrapping then "Solana destination address" else "Native destination address")
-  preview
-showRequest :: OrderRequest -> IO ()
-showRequest r = do
+  preview state
+showRequest :: IORef State -> OrderRequest -> IO ()
+showRequest state r = do
+  modifyIORef' state $ \s -> s{selectedGasTopUp=gasTopUp r}
   setValue "direction" (T.pack $ show $ direction r)
   setValue "amount" (renderCoins $ input r)
   setValue "recipient" (recipient r)
   setValue "refund" (refund r)
-  showDirection
+  showDirection state
 
 solanaExplorer :: PublicConfiguration -> Text -> Text -> IO Text
 solanaExplorer cfg kind identifier = do
@@ -214,6 +274,7 @@ loadConfig state = do
       text (key<>"-float") (coins $ reportFloat asset)
       text (key<>"-held") (coins $ reportHeld asset)
       text (key<>"-liability") (coins $ reportLiability asset)
+  showDirection state
 
 clearPayment :: IORef State -> IO ()
 clearPayment state = do
@@ -243,7 +304,9 @@ refresh state = do
     let path = "/api/v1/orders/" <> encoded
     o <- api state path "GET" Nothing
     unless (orderId o==oid) $ failWith "Order identity mismatch. Contact support."
-    showRequest (request o)
+    unless (Domain.quoteGasTopUp (quote o)==gasTopUp (request o)) $
+      failWith "The SOL top-up terms do not match this order. Contact support."
+    showRequest state (request o)
     let refunding = status o `elem` ["Refunded","Refunding"]
         q = quote o
     text "fee" $ if refunding then "0.00000000" else renderCoins (fee q)
@@ -257,6 +320,11 @@ refresh state = do
     text "order-short" ("Order " <> orderId o)
     text "order-summary" $ if refunding then "Refunds return the deposit to its verified refund destination with no bridge fee. The refund transaction shows the actual amount and recipient."
       else "Deposit " <> renderCoins (gross q) <> "; payout " <> renderCoins (net q) <> ". Fee " <> renderCoins (fee q) <> ". Destination: " <> recipient (request o)
+    hidden "order-gas-top-up" (not $ isJust $ Domain.quoteGasTopUp q)
+    forM_ (Domain.quoteGasTopUp q) $ \topUp -> text "order-gas-top-up" $
+      "SOL top-up: " <> gasTopUpText topUp <> ". " <> if refunding
+        then "No SOL top-up is paid on refunds."
+        else "The extra ECX charge is included in the total fee. SOL goes to " <> recipient (request o) <> "."
     hidden "order-details" False
     now <- B.now
     let awaiting = status o=="AwaitingDeposit" && now < fromIntegral (deadline o)
@@ -296,11 +364,17 @@ createOrder state = do
     _ -> do
       d <- readDirection
       quantity <- value "amount" >>= either (const $ failWith "Enter a decimal amount with at most eight places.") pure . parseCoins
+      let topUp = if d==NativeToWrapped then selectedGasTopUp s else Nothing
+      when (isJust topUp && topUp/=pubGasTopUpOffer cfg) $
+        failWith "The SOL top-up offer changed or is unavailable. Clear this choice and select it again to review the current terms."
+      _ <- either (failWith . customerError) pure (Domain.quoteWithGas quantity topUp)
       destination <- T.strip <$> value "recipient"
       refundAddress <- if d==NativeToWrapped then T.strip <$> value "refund" else pure ""
       cap <- B.text <$> B.randomHex
       key <- B.text <$> B.randomHex
-      pure $ Session cap Nothing (Just $ OrderRequest d quantity destination refundAddress Nothing key)
+      pure $ Session cap Nothing (Just $ OrderRequest
+        { direction=d, input=quantity, recipient=destination, refund=refundAddress
+        , sourceOwner=Nothing, idempotencyKey=key, gasTopUp=topUp })
   modifyIORef' state $ \old -> old{current=Just entry}
   persist state
   saved <- api state "/api/v1/orders" "POST" (savedRequest entry)
@@ -322,10 +396,10 @@ copyText content confirmation = unless (T.null content) $ do
 newOrder :: IORef State -> IO ()
 newOrder state = do
   persist state
-  modifyIORef' state $ \s -> s{current=Nothing}
+  modifyIORef' state $ \s -> s{current=Nothing,selectedGasTopUp=Nothing}
   clearPayment state
   forM_ ["amount","recipient","refund"] $ \key -> setValue key ""
-  showDirection
+  showDirection state
   persist state
   hidden "order-details" True
   closeCopy
@@ -342,13 +416,14 @@ main = do
   let session = if validId oid && validCapability cap then Just (Session cap (Just oid) Nothing)
         else decodeTextJSON stored >>= id
       saved = take 20 $ filter (isJust . savedId) $ fromMaybe [] (decodeTextJSON history)
-  state <- newIORef $ State Nothing session saved ""
+  state <- newIORef $ State Nothing session saved "" Nothing
   gate <- newMVar ()
   let on key event action = asyncCallback (attempt state gate action) >>= B.listen (B.js key) (B.js event)
       reload = loadConfig state >> refresh state
   on "order-form" "submit" (createOrder state)
-  on "direction" "change" showDirection
-  on "amount" "input" preview
+  on "direction" "change" (showDirection state)
+  on "amount" "input" (preview state)
+  on "gas-top-up" "change" (selectGasTopUp state)
   on "refresh" "click" reload
   on "new" "click" (newOrder state)
   on "close-copy" "click" closeCopy
@@ -369,8 +444,8 @@ main = do
         modifyIORef' state $ \old -> old{current=Just entry}
         persist state
         refresh state
-  showDirection
-  forM_ (session >>= savedRequest) showRequest
+  showDirection state
+  forM_ (session >>= savedRequest) (showRequest state)
   persist state
   attempt state gate reload
   void $ forkIO $ forever $ threadDelay 15000000 >> attempt state gate reload

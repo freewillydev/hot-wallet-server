@@ -21,6 +21,7 @@ solana-keypair = "=3.0.1"
 solana-message = { version = "=3.0.1", features = ["bincode"] }
 solana-pubkey = "=3.0.0"
 solana-signer = "=3.0.0"
+solana-system-interface = { version = "=2.0.0", features = ["bincode"] }
 solana-transaction = { version = "=3.0.0", features = ["bincode", "verify"] }
 spl-token-interface = "=3.0.0"
 spl-associated-token-account-interface = "=2.0.0"

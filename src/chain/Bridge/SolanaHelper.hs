@@ -37,19 +37,21 @@ validIdentifier t=not (T.null t) && T.length t<=64 &&
 data HelperRequest = HelperRequest
   { helperPayout :: !Bool, helperOwner :: !Text, helperRecipient :: !Text
   , helperAmount :: !Amount, helperBlockhash :: !Text, helperReference :: !Text
+  , requestGasLamports :: !(Maybe Amount)
   } deriving (Eq,Show,Generic)
 instance ToJSON HelperRequest where
-  toJSON HelperRequest{..} = object
+  toJSON HelperRequest{..} = object $
     ["protocol" .= (1::Int),"verb" .= (if helperPayout then "payout" else "deposit"::Text)
     ,"owner" .= helperOwner,"recipient" .= helperRecipient,"amount" .= helperAmount
     ,"blockhash" .= helperBlockhash,"order_id" .= helperReference,"create_ata" .= helperPayout]
+    <> maybe [] (\n->["gas_lamports" .= n]) requestGasLamports
 instance FromJSON HelperRequest where
   parseJSON = withObject "helper request" $ \o -> do
     protocol <- o .: "protocol" :: Parser Int
     verb <- o .: "verb" :: Parser Text
     createAta <- o .: "create_ata"
     unless (protocol==1 && verb `elem` ["deposit","payout"] && createAta==(verb=="payout")) (fail "unsupported helper request")
-    HelperRequest (verb=="payout") <$> o .: "owner" <*> o .: "recipient" <*> o .: "amount" <*> o .: "blockhash" <*> o .: "order_id"
+    HelperRequest (verb=="payout") <$> o .: "owner" <*> o .: "recipient" <*> o .: "amount" <*> o .: "blockhash" <*> o .: "order_id" <*> o .:? "gas_lamports"
 
 data HelperReply = HelperReply
   { replyProtocol :: !Int, replyTransaction :: !Text, replyMessage :: !Text
@@ -73,6 +75,7 @@ validateHelperRequest :: SolanaPolicy -> HelperRequest -> Either Text ()
 validateHelperRequest c HelperRequest{..} = do
   unless (validIdentifier (deploymentId c) && validIdentifier helperReference && units helperAmount>0
     && helperOwner/=helperRecipient
+    && maybe True (\n->helperPayout && units n>0 && helperRecipient `notElem` [mint c,custodyAta c]) requestGasLamports
     && (if helperPayout then helperOwner==custodyOwner c else helperRecipient==custodyOwner c))
     (Left "invalid_helper_request")
   mapM_ publicKey
@@ -93,7 +96,7 @@ validateHelperReplyWithSignature signed c request@HelperRequest{..} HelperReply{
     && (if helperPayout then replySource==custodyAta c else replyDestination==custodyAta c))
     (Left "helper_identity_mismatch")
   let expected=Expected helperOwner helperRecipient (mint c) replySource replyDestination helperBlockhash
-        helperAmount (helperMemo c request) helperPayout signed
+        helperAmount (helperMemo c request) helperPayout signed requestGasLamports
   tx@(Transaction signatures _ message) <- validateTransaction expected replyTransaction
   encodedMessage <- either (const $ Left "invalid_helper_message") Right (boundedBase64 1232 replyMessage)
   unless (encodedMessage==message) (Left "helper_message_mismatch")

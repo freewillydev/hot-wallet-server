@@ -1,8 +1,9 @@
 {-# LANGUAGE DeriveAnyClass, DerivingStrategies #-}
 -- Shared wire records; validated money comes only from Domain.
 module Bridge.Wire where
-import Bridge.Domain (Amount, Asset(..), Direction, Quote, amount, units)
+import Bridge.Domain (Amount, Asset(..), Direction, Quote, GasTopUp, amount, units)
 import Data.Aeson
+import qualified Data.Aeson.KeyMap as KM
 import Data.Aeson.Types (Parser,parseEither)
 import qualified Data.Text as T
 import Text.Read (readMaybe)
@@ -15,7 +16,12 @@ import GHC.Generics (Generic)
 data OrderRequest = OrderRequest
   { direction :: !Direction, input :: !Amount, recipient :: !Text
   , refund :: !Text, sourceOwner :: !(Maybe Text), idempotencyKey :: !Text
-  } deriving stock (Eq, Show, Generic) deriving anyclass (ToJSON)
+  , gasTopUp :: !(Maybe GasTopUp)
+  } deriving stock (Eq, Show, Generic)
+instance ToJSON OrderRequest where
+  toJSON request=case genericToJSON defaultOptions request of
+    Object fields | gasTopUp request==Nothing -> Object (KM.delete "gasTopUp" fields)
+    value -> value
 instance FromJSON OrderRequest where parseJSON = genericParseJSON defaultOptions { rejectUnknownFields = True }
 data PolicySnapshot = PolicySnapshot { nativeDepth :: !Int, solanaCommitment :: !Text, deploymentFingerprint :: !Text }
   deriving stock (Eq, Show, Generic) deriving anyclass (ToJSON, FromJSON)
@@ -54,6 +60,7 @@ data PublicConfiguration = PublicConfiguration
   , pubImplementationReady :: !Bool, pubAvailability :: !Availability
   , pubReport :: !(Maybe PublicReport)
   , pubPayoutPolicy :: !PayoutPolicy
+  , pubGasTopUpOffer :: !(Maybe GasTopUp)
   } deriving (Eq, Show, Generic)
 
 -- Public aggregates only: no order identifiers, capabilities or customer addresses.

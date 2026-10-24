@@ -13,13 +13,18 @@ import Bridge.Solana (tokenProgram,solanaGenesis)
 import Bridge.SolanaHelper
 import Bridge.SolanaMessage
 import Bridge.SolanaPayment
+import Bridge.SDKBuild (sdkLibraryPath)
 import Control.Exception (try)
+import Crypto.Error (CryptoFailable(..))
+import qualified Crypto.PubKey.Ed25519 as Ed
 import Data.Aeson hiding (Result)
+import Data.ByteArray (convert)
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as B64
 import Data.IORef
 import Data.Bits (xor)
+import Data.List (elemIndex)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -37,7 +42,7 @@ checks=do
   token <- fieldValue "mint" fixture
   hash <- fieldValue "blockhash" fixture
   let config=SolanaPolicy "codec-fixture" "offline-policy" token owner (replySource reply) (amt 10000) (amt 2100000)
-      plan=SolanaPlan (fingerprint config) recipient (amt 3) "order-1" (RecentBlockhash hash 1000 100) (maxSolFee config) (maxSolAccountRent config)
+      plan=SolanaPlan (fingerprint config) recipient (amt 3) "order-1" (RecentBlockhash hash 1000 100) (maxSolFee config) (maxSolAccountRent config) Nothing
       request=solanaPayoutRequest config plan
       call destination method _=case method of
         "getBlockHeight"->pure (Number 900)
@@ -63,7 +68,50 @@ checks=do
       verify=verifySigningReply (\_ _ _->fail "Solana validation must not call native RPC") W.L2LSignetDevnet config
   proofResults <- mapM captured ["new","existing"]
   local <- sequence
-    [ check "Solana expiry requires finalized absence on both anchored account histories and every provider" $ once $ ioProperty $ do
+    [ check "optional SOL gas preserves old encodings and binds one exact atomic transfer" $ once $ ioProperty $ do
+        ordinary<-invokeUnsignedHelper sdkLibraryPath config request
+        original<-either reject pure (validateHelperReply config request reply)
+        let oldPlan=case toJSON plan of Object fields->not(KM.member "solPlanGasLamports" fields); _->False
+            oldRequest=case toJSON request of Object fields->not(KM.member "gas_lamports" fields); _->False
+            gasPlan=plan {solPlanGasLamports=Just $ amt 1000000}
+            gasRequest=solanaPayoutRequest config gasPlan
+        gasReply<-signedGasReply config gasRequest
+        transaction<-either reject pure (validateHelperReply config gasRequest gasReply)
+        rejectedDeposit<-rejectsAny $ invokeUnsignedHelper sdkLibraryPath config gasRequest {helperPayout=False}
+        let altered=[gasRequest {requestGasLamports=Nothing},gasRequest {requestGasLamports=Just $ amt 999999}
+              ,gasRequest {requestGasLamports=Just $ amt 0}]
+            instructionCount=case transaction of Transaction _ (Message _ _ _ _ _ instructions) _->length instructions
+        pure (oldPlan && oldRequest && eitherDecode(encode plan)==Right plan && eitherDecode(encode request)==Right request
+          && replyTransaction ordinary==unsignedSimulation original && instructionCount==4 && rejectedDeposit
+          && solanaOperatingLimit gasPlan==Right(amt 3110000)
+          && all (isLeft . (\wanted->validateHelperReply config wanted gasReply)) altered)
+    , check "SOL gas settlement requires exact recipient credit and accounts failed transactions as fee only" $ once $ ioProperty $ do
+        let gasPlan=plan {solPlanGasLamports=Just $ amt 1000000}
+            gasRequest=solanaPayoutRequest config gasPlan
+        gasReply<-signedGasReply config gasRequest
+        let signed=SolanaSigned gasPlan gasReply (amt 5000) (amt 1488440)
+            inspect=verifySolanaOutcome config signed
+        success<-gasProof config signed True 1488440 1000000
+        existing<-gasProof config signed True 0 1000000
+        failure<-gasProof config signed False 0 0
+        missing<-gasProof config signed True 1488440 0
+        excessive<-gasProof config signed True 1488440 1000001
+        failedGift<-gasProof config signed False 0 1000000
+        let gasRPC wallet balance method args=case method of
+              "getMultipleAccounts"->pure $ context $ toJSON [tokenAccount config owner,Null,systemAccount balance,wallet]
+              "getMinimumBalanceForRentExemption" | take 1 args==[Number 0]->pure (Number 890880)
+              _->call Null method args
+            prepareGas rpcCall=prepareSolanaSigned rpcCall (const $ pure gasReply) config gasPlan
+        _<-prepareGas (gasRPC Null 10000000)
+        _<-prepareGas (gasRPC (systemAccount 1) 10000000)
+        badWallet<-rejects "unsupported_system_account" (prepareGas $ gasRPC (tokenAccount config recipient) 10000000)
+        insufficient<-rejects "insufficient_operating_sol" (prepareGas $ gasRPC Null 1493440)
+        belowRent<-rejects "gas_top_up_below_rent" (checkSolanaGasRecipient (gasRPC Null 10000000) (Just $ amt 1) Null)
+        pure (fmap outcomeGasLamports(inspect success)==Right(amt 1000000)
+          && fmap outcomeGasLamports(inspect existing)==Right(amt 1000000)
+          && fmap outcomeGasLamports(inspect failure)==Right(amt 0)
+          && all (isLeft.inspect) [missing,excessive,failedGift] && badWallet && insufficient && belowRent)
+    , check "Solana expiry requires finalized absence on both anchored account histories and every provider" $ once $ ioProperty $ do
         let origin=T.replicate 64 "1"
             row sig failed=object ["signature" .= sig,"slot" .= (100::Int),"confirmationStatus" .= ("finalized"::Text),"err" .= (if failed then String "failed" else Null)]
             response value=object ["context" .= object ["slot" .= (200::Int)],"value" .= value]
@@ -132,7 +180,7 @@ checks=do
         bad<-rejectsAny (cancellationPlan noRPC W.L2LSignetDevnet config prepared {preparedFee=amt 1})
         pure (null points && null empty && not(T.null cleanup) && cleanup/=undrafted && bad)
     , check "Solana admission simulates an unsigned payout and rejects signed previews" $ once $ ioProperty $ do
-        let order=W.OrderRequest NativeToWrapped (amt 4) recipient "refund" Nothing "quote"
+        let order=W.OrderRequest NativeToWrapped (amt 4) recipient "refund" Nothing "quote" Nothing
             quoteRequest=request {helperReference="quote-check"}
             memo=TE.encodeUtf8 $ helperMemo config quoteRequest
             original=either error id (B64.decode $ TE.encodeUtf8 $ replyMessage reply)
@@ -288,6 +336,46 @@ context :: Value -> Value
 context value=object ["context" .= object ["slot" .= (100::Int)],"value" .= value]
 systemAccount :: Integer -> Value
 systemAccount n=object ["owner" .= ("11111111111111111111111111111111"::Text),"executable" .= False,"data" .= ["","base64"::Text],"lamports" .= (n::Integer)]
+
+-- Public deterministic fixture key, used only to sign SDK-created offline bytes.
+signedGasReply :: SolanaPolicy -> HelperRequest -> IO HelperReply
+signedGasReply config request = do
+  reply<-invokeUnsignedHelper sdkLibraryPath config request
+  Transaction _ _ message<-either reject pure (validateUnsignedHelperReply config request reply)
+  secret<-case Ed.secretKey (BS.replicate 32 1) of CryptoPassed key->pure key; CryptoFailed _->fail "invalid fixture key"
+  let public=Ed.toPublic secret
+      signature=convert(Ed.sign secret public message) :: BS.ByteString
+  require (base58(convert public)==helperOwner request) "fixture_owner_mismatch"
+  pure reply {replySignature=Just $ base58 signature
+    ,replyTransaction=TE.decodeUtf8 $ B64.encode $ BS.singleton 1<>signature<>message}
+
+-- Synthetic metadata for an exact SDK message. Separate balance mutations test
+-- the verifier; this is not a claim that the transaction reached a network.
+gasProof :: SolanaPolicy -> SolanaSigned -> Bool -> Integer -> Integer -> IO Value
+gasProof config signed success rent gas = do
+  let plan=signedSolanaPlan signed; reply=signedSolanaReply signed
+  Transaction _ (Message required signedReadonly readonly keys hash instructions) _<-
+    either reject pure (validateHelperReply config (solanaPayoutRequest config plan) reply)
+  let address=map base58 keys
+      index key=maybe (fail "missing fixture account") pure (elemIndex key address)
+  source<-index(replySource reply)
+  destination<-index(replyDestination reply)
+  recipient<-index(solPlanRecipient plan)
+  let before=[if i==0 then 10000000 else if i==destination && rent==0 then 1488440 else 0 | i<-[0..length keys-1]]
+      after=[n+(if i==0 then negate(5000+rent+gas) else if i==destination then rent else if i==recipient then gas else 0)
+        | (i,n)<-zip [0..] before]
+      tokens i owner n=object ["accountIndex" .= i,"mint" .= mint config,"owner" .= owner
+        ,"uiTokenAmount" .= object ["decimals" .= (8::Int),"amount" .= T.pack(show (n::Integer))]]
+      pre=[tokens source (custodyOwner config) 100]<>[tokens destination (solPlanRecipient plan) 100 | rent==0]
+      post=if success then [tokens source (custodyOwner config) 97,tokens destination (solPlanRecipient plan) (if rent==0 then 103 else 3)] else pre
+  pure $ object ["slot" .= recentSlot(solPlanRecent plan),"version" .= ("legacy"::Text)
+    ,"transaction" .= object ["signatures" .= maybe [] pure (replySignature reply),"message" .= object
+      ["accountKeys" .= address,"header" .= object ["numRequiredSignatures" .= required
+        ,"numReadonlySignedAccounts" .= signedReadonly,"numReadonlyUnsignedAccounts" .= readonly]
+      ,"recentBlockhash" .= base58 hash,"instructions" .= [object ["programIdIndex" .= program,"accounts" .= accounts,"data" .= base58 bytes]
+        | Instruction program accounts bytes<-instructions]]]
+    ,"meta" .= object ["err" .= (if success then Null else String "offline failure"),"fee" .= (5000::Integer)
+      ,"preBalances" .= before,"postBalances" .= after,"preTokenBalances" .= pre,"postTokenBalances" .= post]]
 tokenAccount :: SolanaPolicy -> Text -> Value
 tokenAccount c owner=object ["owner" .= tokenProgram,"executable" .= False,"data" .= object
   ["space" .= (165::Int),"parsed" .= object ["type" .= ("account"::Text),"info" .= object

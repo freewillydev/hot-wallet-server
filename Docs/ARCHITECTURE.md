@@ -43,6 +43,20 @@ does not carry execution authority; the closed Store leaf obtains its facts unde
 the database lock. The signer has no database writer and cannot broadcast. Saved
 bytes must be durably recorded and covered before the worker can submit them.
 
+Optional wrapping gas top-ups bind two exact amounts to the saved order: SOL
+lamports to receive and an additional ECX fee. The configured defaults are
+0.005 SOL for 0.005 ECX; no exchange-rate lookup is involved. The customer must
+opt in, and the extra fee is deducted after the rounded 1% wrapping fee. Old
+orders retain their terms, and configurations without the option keep it disabled.
+The existing Solana payout adds one exact System transfer to the same recipient,
+in the same signed transaction as the wrapped tokens. Independent message/effect
+validation checks both credits. SOL reservation and daily spending include the
+top-up; successful settlement journals it separately from transaction fees and
+ATA rent. Failed transactions charge only their network fee. Refunds return the
+full eligible deposit without a top-up. Admission/preparation check the live
+minimum recipient balance; an empty wallet can need more than the default.
+No new signer route, evaluator or database schema is introduced.
+
 ## Requests, dictionaries and evaluators
 
 The user's exact [Main.hs](reference/Main.hs) is preserved outside production

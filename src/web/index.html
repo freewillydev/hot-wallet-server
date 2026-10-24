@@ -72,10 +72,19 @@
               required
               autocomplete="off"
           /></label>
+          <div id="gas-top-up-field" class="gas-top-up" hidden>
+            <label class="checkbox-label">
+              <input id="gas-top-up" type="checkbox" aria-describedby="gas-top-up-offer gas-top-up-note" />
+              <span>Add SOL for future transaction fees</span>
+            </label>
+            <p id="gas-top-up-offer" class="small"></p>
+            <p id="gas-top-up-note" class="small">Optional. SOL goes to your Solana destination; the extra ECX fee is deducted from your wrapped ECX payout.</p>
+          </div>
           <div class="quote">
-            <span>Bridge fee <strong id="fee">—</strong></span
+            <span>Total ECX fee <strong id="fee">—</strong></span
             ><span>You receive <strong id="net">—</strong></span>
           </div>
+          <p id="quote-note" class="small" role="status"></p>
           <label
             ><span id="destination-label">Solana destination address</span
             ><input
@@ -106,6 +115,7 @@
         <div id="order-details" hidden>
           <p id="order-short" class="small"></p>
           <p id="order-summary"></p>
+          <p id="order-gas-top-up" hidden></p>
           <p id="deposit-deadline" class="small"></p>
           <p id="deposit-address" class="address"></p>
           <canvas id="qr" hidden></canvas>
@@ -148,6 +158,7 @@
       </section>
       <footer>
         Bridge fee: 1% in each direction. Operator pays payout network costs.
+        An optional SOL top-up for wrapping adds the ECX fee shown before you create an order.
         Keep your recovery link private. Use only the networks and token mint
         shown above.
         <p><a id="support-link" target="_blank" rel="noopener noreferrer" hidden>Contact the bridge operator</a></p>

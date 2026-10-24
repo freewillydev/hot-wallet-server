@@ -30,7 +30,7 @@ import Bridge.NativeKey (deriveChild)
 import qualified Bridge.Native as N
 import Bridge.Wire (Profile(..))
 import qualified Bridge.Wire as W
-import Bridge.Domain (units,amount)
+import Bridge.Domain (units,amount,gasLamports,gasEcxFee)
 import Bridge.Error (BridgeError(..),require)
 import Bridge.RPC (fieldValue)
 import qualified Data.Aeson.KeyMap as KM
@@ -83,7 +83,7 @@ contract=bracket temporary removeDirectoryRecursive $ \directory->do
         ,history,history,"https://api.devnet.solana.com","-"]
       answers=["","L2LSignetDevnet","import"]<>fields<>["no","yes","release","installer","release.pem","candidate",key,"existing",worker,signer,"-","-","-","-","-","-","no"]
   (code,_,_)<-run (unlines answers)
-  if code/=ExitSuccess then pure False else do
+  if code/=ExitSuccess then putStrLn "FAIL configure contract: advanced-settings" >> pure False else do
     let out=directory</>".ecx-bridge"
     config<-C.loadConfig(out</>"worker.json")
     other<-C.loadConfig(out</>"signer.json")
@@ -169,6 +169,7 @@ contract=bracket temporary removeDirectoryRecursive $ \directory->do
           ,("worker-signer-identity",C.fingerprint config==C.fingerprint other && C.nativeCookie config/=C.nativeCookie other)
           ,("payout-policy-default",C.payoutPolicy config==W.defaultPayoutPolicy && C.payoutPolicy other==W.defaultPayoutPolicy)
           ,("owner-policy-legacy-disabled",C.ownerFeeRecipients config==Nothing && C.ownerFeeRecipients other==Nothing)
+          ,("gas-offer-interactive-disabled",C.gasTopUpOffer config==Nothing && C.gasTopUpOffer other==Nothing)
           ,("private-files",sort entries==["interface.json","setup.json","signer.json","sources.json","worker.json"] && all(==0o600)modes)
           ,("import-sources",sources==M.fromList [("solana.keypair.json",key),("native-worker.auth",worker),("native-signer.auth",signer)]
             && originalKey==L.toStrict(encode $ B.unpack(seed<>public)) && originalWorker=="worker:password" && originalSigner=="signer:password")
@@ -269,6 +270,7 @@ importContract parent executable=do
         ,("feeRateWrapBps","100"),("feeRateUnwrapBps","100")
         ,("payoutThresholdEcx",show ("0.002"::String)),("payoutThresholdWrappedEcx",show ("0.003"::String))
         ,("minimumPayoutIntervalHours","7")
+        ,("solGasTopUp",show ("0.005"::String)),("solGasTopUpFeeEcx",show ("0.005"::String))
         ,("ownerEcxXpub",show ("xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz"::String))
         ,("ownerSolPubkey",show ("5oNDL3swdJJF1g9DzJiZ4ynHXgszjAEpUkxVYejchzrY"::String))
         ,("externalLinkSolscan",show ("https://solscan.io/token/"<>T.unpack Bootstrap.canonicalMint))
@@ -283,6 +285,7 @@ importContract parent executable=do
         ,("initialFundingOwnership",show ("test owned initial SOL"::String))]
       record values="InstallConfig {"<>concat [separator<>name<>" = "<>value | ((name,value),separator)<-zip values ("":repeat ",")]<>"}"
       replace name value=map (\(k,v)->(k,if k==name then value else v)) fields
+      withoutGas=filter (\(name,_)->name `notElem` ["solGasTopUp","solGasTopUpFeeEcx"]) fields
       -- Recompute checksums so malformed versions/metadata/curve points reach
       -- semantic validation rather than failing only at Base58Check.
       xpub=read $ maybe (error "missing test xpub") id (lookup "ownerEcxXpub" fields) :: String
@@ -310,12 +313,15 @@ importContract parent executable=do
       punctuation="fixture , = { } -- {- -} \\\" password"::String
       acceptedRecords=
         [(record(reverse fields),fields)
+        ,(record withoutGas,replace "solGasTopUp" (show ("0"::String)))
+        ,(record $ filter ((/="solGasTopUpFeeEcx").fst) fields,fields)
         ,(commented(reverse fields),fields)
         ,("(("<>record fields<>"))",fields)
         ,(record $ replace "backupPassword" (show punctuation),replace "backupPassword" (show punctuation))
         ,(record $ replace "backupPassword" "\"fixture\\\n  \\password-12345678\"",replace "backupPassword" (show ("fixturepassword-12345678"::String)))
         ,(record $ replace "websiteDirectory" "(Nothing)",fields)
         ,(record $ replace "initialFundingOwnership" "['f','i','x','t','u','r','e']",replace "initialFundingOwnership" (show ("fixture"::String)))]
+  gasTopUpAmountsContract (read $ record fields)
   forM_ (zip [0::Int ..] acceptedRecords) $ \(n,(source,expected))->do
     let path=parent</>("record-syntax-"<>show n<>".conf")
         bytes=B8.pack source
@@ -368,6 +374,10 @@ importContract parent executable=do
       acceptedUpdates=
         [(fields,fields,(False,False))
         ,(fields,replace "minimumPayoutIntervalHours" "24",(False,False))
+        ,(withoutGas,fields,(False,False))
+        ,(fields,replace "solGasTopUp" (show ("0"::String)),(False,False))
+        ,(fields,replace "solGasTopUp" (show ("0.01"::String)),(False,False))
+        ,(fields,replace "solGasTopUpFeeEcx" (show ("0.01"::String)),(False,False))
         ,(fields,addressFields,(False,False))
         ,(fields,replace "ownerSolPubkey" (show $ T.unpack $ base58 $ B.drop 32 key),(False,False))
         ,(replace "ownerSolPubkey" (show $ T.unpack $ base58 $ B.drop 32 key),fields,(False,False))
@@ -448,6 +458,14 @@ importContract parent executable=do
   after<-mapM B.readFile privateFiles
   config<-Bootstrap.setupConfig output
   require (units (C.maxWithdrawal config)==1000000000000) "owner_withdrawal_cap_not_10000_ecx"
+  require (fmap (\offer->(units $ gasLamports offer,units $ gasEcxFee offer)) (C.gasTopUpOffer config)==Just(5000000,500000))
+    "gas_top_up_offer_not_retained"
+  let legacyConf=parent</>"legacy-gas.conf";legacyOutput=parent</>"legacy-gas-setup"
+  savePrivate legacyConf (B8.pack $ record withoutGas)
+  (legacyCode,_,_)<-invoke legacyConf legacyOutput
+  require (legacyCode==ExitSuccess) "legacy_gas_configuration_failed"
+  legacyConfig<-Bootstrap.setupConfig legacyOutput
+  require (C.gasTopUpOffer legacyConfig==Nothing) "legacy_gas_configuration_enabled_offer"
   let recipients=C.OwnerFeeRecipients (T.pack xpub) "5oNDL3swdJJF1g9DzJiZ4ynHXgszjAEpUkxVYejchzrY"
   require (C.ownerFeeRecipients config==Just recipients
     && (eitherDecodeStrict' (L.toStrict $ encode config) :: Either String C.Config)==Right config) "owner_policy_not_retained"
@@ -512,6 +530,7 @@ importContract parent executable=do
       ,"Legal "<>unwords(drop 1 $ words solPhrase)," "<>solPhrase,solPhrase<>" ",solPhrase<>"\n"
       ,"legal  "<>unwords(drop 1 $ words solPhrase),T.unpack(base58 key)] <>
     [replace "ecxSeedBip39" (show (""::String))
+    ,replace "solGasTopUp" (show ("0.010000001"::String))
     ,replace "ecxSeedBip39" (show $ unwords $ replicate 12 "abandon")
     ,filter ((/="solSeedBip39").fst) fields
     ,map (\(name,value)->if name=="solSeedBip39" then ("solKeyB58",show $ T.unpack $ base58 key) else (name,value)) fields
@@ -573,6 +592,29 @@ importContract parent executable=do
     && not(or generated) && and invalid && changedCode/=ExitSuccess && mixedCode/=ExitSuccess
     && resumeCode/=ExitSuccess && "record_setup_incomplete_rerun_install" `isInfixOf` resumeError && not(or mixedKeys))
 
+-- The static offer preserves both configured amounts at their exact precision.
+gasTopUpAmountsContract :: InstallConfig.InstallConfig -> IO ()
+gasTopUpAmountsContract config=do
+  let offered sol charge=config {InstallConfig.solGasTopUp=sol,InstallConfig.solGasTopUpFeeEcx=charge}
+      observed value=fmap (fmap (\offer->(units $ gasLamports offer,units $ gasEcxFee offer)))
+        (InstallConfig.installGasTopUp value)
+      accepted=
+        [("0","0.005",Nothing)
+        ,("0.000000000","0.005",Nothing)
+        ,("0.0005","0.0005",Just(500000,50000))
+        ,("0.005","0.005",Just(5000000,500000))
+        ,("0.005000000","0.00500000",Just(5000000,500000))
+        ,("0.000000001","0.00000001",Just(1,1))
+        ,("0.01","0.005",Just(10000000,500000))
+        ,("0.01","92233720368.54775807",Just(10000000,9223372036854775807))]
+      refused=[offered sol "0.005" | sol<-
+          ["0.010000001","1","-0.0001","0.0000000001",".0001","0.","00.0001"," 0.0001","1e-4",""]]
+        <>[offered "0.005" charge | charge<-["0","-0.005","0.005000001","92233720368.54775808","1e-3",""]]
+  forM_ accepted $ \(sol,charge,expected)->
+    require (observed(offered sol charge)==Right expected) "gas_top_up_exact_amounts_failed"
+  forM_ refused $ \value->
+    require (either (const True) (const False) $ InstallConfig.installGasTopUp value) "gas_top_up_invalid_amount_accepted"
+
 -- Exercise the actual four-file correction plan and private journal, without
 -- provisioning a node, contacting a network or modifying a real installation.
 backupSetupContract :: FilePath -> FilePath -> B.ByteString -> B.ByteString -> InstallConfig.InstallConfig -> IO ()
@@ -621,6 +663,7 @@ backupSetupContract parent imported previous candidate settings=do
     refuse "backup_setup_update_requires_fresh_import" (plan (M.insert (setup</>"sources.json") (L.toStrict $ encode bad) changed) [])
   refuse "bootstrap_saved_configuration_changed" (plan (M.insert (setup</>"bootstrap-bound.json") "[]" table) [])
   forM_ [settings {InstallConfig.domain="other.example.invalid"},settings {InstallConfig.resticExecutable="/other/restic"}
+    ,settings {InstallConfig.solGasTopUp="0"}
     ,settings {InstallConfig.solSeedBip39=unwords(replicate 11 "abandon"<>["about"])}] $ \combined->
       refuse "backup_setup_update_only_backup_fields" $
         Reconfigure.backupSetupFiles (view table) (present []) candidate combined

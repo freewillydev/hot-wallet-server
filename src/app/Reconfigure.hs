@@ -202,11 +202,12 @@ configurationFiles old bytes settings initialized installed=do
   verifySetup old initialized installed
   native<-either reject pure (parseCoins $ T.pack $ I.payoutThresholdEcx settings)
   wrapped<-either reject pure (parseCoins $ T.pack $ I.payoutThresholdWrappedEcx settings)
+  gasTopUp<-either reject pure (I.installGasTopUp settings)
   let policy=W.PayoutPolicy native wrapped (fromInteger $ 3600*I.minimumPayoutIntervalHours settings)
       configChange value=case value of
         Object fields->Object $ M.union (M.fromList
           ["solanaRpc" .= I.solanaRpcUrl settings,"solanaVerifierRpc" .= I.solanaVerifierRpcUrl settings
-          ,"payoutPolicy" .= policy
+          ,"payoutPolicy" .= policy,"gasTopUpOffer" .= gasTopUp
           ,"ownerFeeRecipients" .= C.OwnerFeeRecipients (T.pack $ I.ownerEcxXpub settings) (T.pack $ I.ownerSolPubkey settings)]) fields
         _->value
       interfaceChange value=case value of

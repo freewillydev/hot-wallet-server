@@ -2,7 +2,7 @@
 module Bridge.Admission (checkOrderAdmission,checkSolanaQuoteWith,checkSolanaPayoutWith) where
 import Bridge.Domain (Direction(..),units,amount)
 import qualified Bridge.Domain as D
-import Bridge.Lifecycle (quoteOrder)
+import Bridge.Lifecycle (quoteOrder,offeredGasTopUp)
 import Bridge.Wire (OrderRequest(..),PaymentTerms(..),CostLimits(..),PolicySnapshot(..))
 import Bridge.Observer (ObserverSettings(..))
 import Bridge.Store (StorePolicy(..))
@@ -31,6 +31,7 @@ checkOrderAdmission manager settings config store sdk request = do
     && deploymentFingerprint(paymentPolicy $ executionTerms store)==fingerprint config
     && nativeDepth(paymentPolicy $ executionTerms store)==defaultNativeDepth settings
     && savedSolanaFee costs==maxSolFee config && savedSolanaRent costs==maxSolAccountRent config) "payment_profile_mismatch"
+  require (gasTopUp request==Nothing || gasTopUp request==offeredGasTopUp(admissionLimits store)) "gas_top_up_offer_changed"
   terms<-either reject pure (quoteOrder request)
   _<-N.nativeIdentity manager native
   previewNativePayment (N.nativeCall manager native) (N.profile native) (defaultNativeDepth settings)
@@ -41,18 +42,21 @@ checkOrderAdmission manager settings config store sdk request = do
 checkSolanaQuoteWith :: SolanaRPC -> (HelperRequest -> IO HelperReply) -> SolanaPolicy -> OrderRequest -> IO ()
 checkSolanaQuoteWith call helper c request = do
   require (direction request==NativeToWrapped && sourceOwner request==Nothing) "invalid_solana_owner_binding"
-  quote <- either reject pure(D.quote (input request))
-  checkSolanaPayoutWith call helper c (recipient request) (D.net quote)
+  quote <- either reject pure(quoteOrder request)
+  checkSolanaPayoutGas call helper c (recipient request) (D.net quote) (D.gasLamports <$> gasTopUp request)
 
 -- Customer quotes and earned withdrawals validate the same exact payout.
 checkSolanaPayoutWith :: SolanaRPC -> (HelperRequest -> IO HelperReply) -> SolanaPolicy -> Text -> D.Amount -> IO ()
-checkSolanaPayoutWith call helper c owner outgoing = do
+checkSolanaPayoutWith call helper c owner outgoing = checkSolanaPayoutGas call helper c owner outgoing Nothing
+
+checkSolanaPayoutGas :: SolanaRPC -> (HelperRequest -> IO HelperReply) -> SolanaPolicy -> Text -> D.Amount -> Maybe D.Amount -> IO ()
+checkSolanaPayoutGas call helper c owner outgoing gas = do
   require (units outgoing>0) "invalid_payout_amount"
   require (T.length owner<=44) "invalid_public_key"
   _ <- either reject pure (publicKey owner)
   require (owner `notElem` [custodyOwner c,custodyAta c,mint c]) "bridge_owned_destination"
   recent <- getRecentBlockhash call
-  let payoutRequest=HelperRequest True (custodyOwner c) owner outgoing (recentHash recent) "quote-check"
+  let payoutRequest=HelperRequest True (custodyOwner c) owner outgoing (recentHash recent) "quote-check" gas
   payout <- helper payoutRequest
   payoutTransaction <- either reject pure (validateUnsignedHelperReply c payoutRequest payout)
   require (replyDestination payout `notElem` [custodyAta c,custodyOwner c,mint c,owner]) "invalid_solana_destination"
@@ -65,6 +69,7 @@ checkSolanaPayoutWith call helper c owner outgoing = do
     [a,b,d,e] -> pure (a,b,d,e)
     _ -> reject "solana_account_snapshot_incomplete"
   when (wallet/=Null) $ systemLamports wallet >> pure ()
+  checkSolanaGasRecipient call gas wallet
   custodyBalance <- either reject pure (inspectTokenAccount (mint c) (custodyOwner c) custody)
   require (custodyBalance>=outgoing) "insufficient_custody_tokens"
   rent <- solanaDestinationRent call c owner destination
@@ -72,7 +77,7 @@ checkSolanaPayoutWith call helper c owner outgoing = do
   fee <- messageFee slot payout
   require (fee<=maxSolFee c) "solana_fee_above_limit"
   operatingBalance <- systemLamports payer
-  require (toInteger (units operatingBalance)>=toInteger (units fee)+toInteger (units rent)) "insufficient_operating_sol"
+  require (toInteger (units operatingBalance)>=toInteger (units fee)+toInteger (units rent)+maybe 0 (toInteger . units) gas) "insufficient_operating_sol"
   (_,result) <- call "simulateTransaction" [toJSON (unsignedSimulation payoutTransaction),object
     ["encoding" .= ("base64"::Text),"commitment" .= ("confirmed"::Text),"sigVerify" .= False
     ,"replaceRecentBlockhash" .= False,"minContextSlot" .= slot]] >>= contextValue slot

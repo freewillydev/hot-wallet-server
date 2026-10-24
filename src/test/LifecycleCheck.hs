@@ -1,15 +1,17 @@
 -- Independent accounting oracle for lifecycle extraction. Expected values never
 -- call Domain.settlement. PostgreSQL contracts cover durable commits; this model
 -- compares the extracted decisions with independent accounting and old histories.
-module LifecycleCheck (checks, payoutSafetyChecks, payoutGroupChecks) where
+module LifecycleCheck (checks, gasTopUpChecks, payoutSafetyChecks, payoutGroupChecks) where
 
 import Bridge.Domain hiding (fee)
+import qualified Bridge.Domain as D
 import Bridge.Lifecycle
 import qualified Bridge.Wire as W
 import Bridge.Wire (PaymentTerms(..),CostLimits(..),PolicySnapshot(..),SignedAttempt(..),PaymentCosts(..))
 import Control.Monad (foldM)
-import Data.Aeson (Value(Null),object,(.=),encode)
+import Data.Aeson (Value(Null),object,(.=),encode,eitherDecode,toJSON)
 import qualified Data.ByteString.Lazy as BL
+import Data.Either (isLeft)
 import Data.Int (Int64)
 import Data.List (nub,isPrefixOf)
 import qualified Data.Map.Strict as M
@@ -17,6 +19,108 @@ import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Test.QuickCheck
+
+-- Pure monetary/admission contracts. Scaled inputs below do not represent
+-- funded chain activity; Store and chain checks cover their own boundaries.
+gasTopUpChecks :: IO [Result]
+gasTopUpChecks = sequence
+  [ check "gas top-up adds its exact ECX charge after rounded-up one-percent fees" $
+      forAll (chooseInteger (1,1000000)) $ \charge->
+      forAll (chooseInteger (1,10000000)) $ \lamports->
+      forAll (chooseInteger (2*charge+100,1000000000000)) $ \input->
+        let gas=good $ mkGasTopUp (money lamports) (money charge)
+            quoted=good $ quoteWithGas (money input) (Just gas)
+            rounded=input `div` 100 + if input `mod` 100==0 then 0 else 1
+        in conjoin [toInteger(units $ D.fee quoted)===rounded+charge
+          ,toInteger(units $ net quoted)===input-rounded-charge
+          ,units(gross quoted)===units(D.fee quoted)+units(net quoted)
+          ,quoteGasTopUp quoted===Just gas]
+  , check "gas quotes refuse nonpositive payout invalid amounts and overflowing fees" $ once $
+      let one=good $ mkGasTopUp (money 1) (money 1)
+          huge=good $ mkGasTopUp (money 1) (money $ toInteger(maxBound::Int64))
+      in conjoin [quoteWithGas (money 2) (Just one)===Left "nonpositive_net"
+        ,fmap net(quoteWithGas (money 3) (Just one))===Right(money 1)
+        ,quoteWithGas (money $ toInteger(maxBound::Int64)) (Just huge)===Left "amount_out_of_range"
+        ,mkGasTopUp (money 0) (money 1)===Left "invalid_gas_top_up"
+        ,mkGasTopUp (money 10000001) (money 1)===Left "invalid_gas_top_up"
+        ,mkGasTopUp (money 1) (money 0)===Left "invalid_gas_top_up"]
+  , check "only an opted-in wrap binds the exact current gas offer" $ once $
+      let changedAmount=good $ mkGasTopUp (money 500001) (money 50000)
+          changedCharge=good $ mkGasTopUp (money 500000) (money 50001)
+          admit configured wanted=decideOrder customerLimits {offeredGasTopUp=configured} customerCosts wanted customerAdmission
+          unwrap=(customerRequest WrappedToNative 100000000) {W.gasTopUp=Just offer}
+      in conjoin [fmap admittedQuote(admit (Just offer) request)===Right quoted
+        ,admit Nothing request===Left "gas_top_up_offer_changed"
+        ,admit (Just changedAmount) request===Left "gas_top_up_offer_changed"
+        ,admit (Just changedCharge) request===Left "gas_top_up_offer_changed"
+        ,admit (Just offer) request {W.gasTopUp=Just changedAmount}===Left "gas_top_up_offer_changed"
+        ,fmap admittedQuote(admit (Just offer) request {W.gasTopUp=Nothing})===quote (money 100000000)
+        ,quoteOrder unwrap===Left "gas_top_up_wrap_only"
+        ,admit (Just offer) unwrap===Left "gas_top_up_wrap_only"
+        ,conversion "order" "receipt" WrappedToNative quoted===Left "gas_top_up_wrap_only"]
+  , check "gas reservations include SOL principal while native refunds retain their own cost" $ once $
+      let limits=customerLimits {offeredGasTopUp=Just offer}
+          admit available daily=() <$ decideOrder limits customerCosts request customerAdmission
+            {solanaOrderBudget=FeeBudget available 0 0 (money daily)}
+      in conjoin [orderCostReservations NativeToWrapped customerCosts (Just offer)
+            ===Right [("refund",Native,money 10),("conversion",Sol,money 500020)]
+        ,orderCostReservations NativeToWrapped customerCosts Nothing
+            ===Right [("refund",Native,money 10),("conversion",Sol,money 20)]
+        ,orderCostReservations WrappedToNative customerCosts (Just offer)===Left "gas_top_up_wrap_only"
+        ,admit 500020 500020===Right ()
+        ,admit 500019 500020===Left "insufficient_fee_budget"
+        ,admit 500020 500019===Left "operating_daily_limit"
+        ,checkPreparationInput (money 500020) "{}" view===Right ()
+        ,checkPreparationInput (money 500021) "{}" view===Left "order_fee_limit_exceeded"]
+  , check "successful gas payouts consume their full allowance while failed payouts charge only network fees" $ once $
+      let success=Succeeded (PaymentCosts (money 1) (money 2)) "finality-proof"
+          failure=Failed (money 1) "failure-proof"
+          facts allowance=let original=snapshot 0 (Convert NativeToWrapped 100 1)
+            in original {settlementPayment=view,settlementHold=Just(Sol,money allowance)
+              ,settlementCurrent=(settlementCurrent original) {recordedFee=money allowance}}
+          decide saved outcome=decideSettlement (settlementCurrent saved) saved outcome
+          full=facts 500003; short=facts 500002; feeOnly=facts 1
+          applied outcome expectedPrincipal saved=case decide saved outcome of
+            Right(ApplySettlement effects)->aggregate(settlementPrincipal effects)==expectedPrincipal
+            _->False
+      in conjoin [property $ applied success (expected $ Convert NativeToWrapped 100000000 1050000) full
+        ,decide short success===Left "settlement_fee_or_evidence_invalid"
+        ,property $ applied failure M.empty feeOnly
+        ,outcomeCosts failure===PaymentCosts (money 1) (money 0)
+        ,decideSettlement (settlementCurrent full) (finished full success) success===Right SettlementReplay
+        ,decideSettlement (settlementCurrent feeOnly) (finished feeOnly failure) failure===Right SettlementReplay
+        ,paymentGasLamports (savedPayment view)===Just(money 500000)
+        ,paymentGasLamports (outgoing 0 $ Return Native 100000000)===Nothing
+        ,paymentGasLamports (outgoing 0 $ Revenue Wrapped 100000000)===Nothing]
+  , check "legacy quote and order JSON remain unchanged and saved gas quotes are never repriced" $ once $
+      let legacyQuote=object ["gross" .= money 1000,"fee" .= money 37,"net" .= money 963]
+          oldQuote=good $ historicalQuote (money 1000) (money 37)
+          oldRequest=customerRequest NativeToWrapped 1000
+          legacyRequest=object ["direction" .= NativeToWrapped,"input" .= money 1000,"recipient" .= ("recipient"::T.Text)
+            ,"refund" .= ("refund"::T.Text),"sourceOwner" .= (Nothing::Maybe T.Text),"idempotencyKey" .= ("key"::T.Text)]
+          savedGas=good $ mkGasTopUp (money 1) (money 7)
+          savedGasJSON=object ["gross" .= money 1000,"fee" .= money 20,"net" .= money 980,"gasTopUp" .= savedGas]
+          oldGas=good (eitherDecode(encode savedGasJSON)::Either String Quote)
+          malformed=object ["gross" .= money 100000000,"fee" .= money 1050000,"net" .= money 98950001,"gasTopUp" .= offer]
+      in conjoin [(eitherDecode(encode legacyQuote)::Either String Quote)===Right oldQuote
+        ,toJSON oldQuote===legacyQuote
+        ,(eitherDecode(encode legacyRequest)::Either String W.OrderRequest)===Right oldRequest
+        ,toJSON oldRequest===legacyRequest
+        ,toJSON oldGas===savedGasJSON
+        ,D.fee oldGas===money 20
+        ,fmap D.fee(quoteWithGas (money 1000) (Just savedGas))===Right(money 17)
+        ,eitherDecode(encode quoted)===Right quoted
+        ,eitherDecode(encode request)===Right request
+        ,property $ isLeft (eitherDecode(encode malformed)::Either String Quote)]
+  ]
+ where
+  check name test=putStrLn name >> quickCheckWithResult stdArgs test
+  offer=good $ mkGasTopUp (money 500000) (money 50000)
+  request=(customerRequest NativeToWrapped 100000000) {W.gasTopUp=Just offer}
+  quoted=good $ quoteWithGas (money 100000000) (Just offer)
+  paid=good $ conversion "order-payment-0" "receipt-payment-0" NativeToWrapped quoted
+    >>= \funding->payment "payment-0" funding "unchanged-recipient"
+  view=PaymentView paid (PaymentTerms (PolicySnapshot 2 "finalized" "fixture") customerCosts) PaymentPaying
 
 -- Release-blocking regressions: no expected-failure wrapper. These must pass
 -- before the unfinished strict-batching implementation may be published.
@@ -331,7 +435,7 @@ data History = History [FundingCase] [Int] deriving Show
 type Balances = M.Map (Asset,Account) Integer
 
 checks :: IO [Result]
-checks = (++) <$> ((++) <$> payoutSafetyChecks <*> payoutGroupChecks) <*> sequence
+checks = (++) <$> (concat <$> sequence [gasTopUpChecks,payoutSafetyChecks,payoutGroupChecks]) <*> sequence
   [ check "payout admission uses aggregate net amounts and the previous committed interval" $
       forAll (chooseInteger (1,1000000)) $ \n->forAll (chooseInt (0,1000)) $ \wait->
         let policy=W.PayoutPolicy (money $ 2*n) (money $ 3*n) 0
@@ -1036,14 +1140,14 @@ good = either (error . show) id
 customerCosts :: CostLimits
 customerCosts=CostLimits (money 10) (money 10) (money 10)
 customerLimits :: OrderLimits
-customerLimits=OrderLimits (money 100000000) 100 100 100 (money 1000000000) (money 1000000000)
+customerLimits=OrderLimits (money 100000000) 100 100 100 (money 1000000000) (money 1000000000) Nothing
 customerAdmission :: OrderAdmissionFacts
 customerAdmission=OrderAdmissionFacts readyIntake 0 100000000 budget budget
  where budget=FeeBudget 1000000000 0 0 (money 1000000000)
 readyOperator :: OperatorFacts
 readyOperator=OperatorFacts 100 True (Just(1,1,100))
 customerRequest :: Direction -> Integer -> W.OrderRequest
-customerRequest direction n=W.OrderRequest direction (money n) "recipient" (if direction==NativeToWrapped then "refund" else "") Nothing "key"
+customerRequest direction n=W.OrderRequest direction (money n) "recipient" (if direction==NativeToWrapped then "refund" else "") Nothing "key" Nothing
 customerPromotion :: Direction -> Integer -> Integer -> PromotionFacts
 customerPromotion direction n charge=PromotionFacts order receipt 300 False
  where

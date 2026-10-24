@@ -8,6 +8,21 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Current config updater checkpoint (2026-10-23)
 
+2026-10-24 SOL top-up feature: the latest requested fixed defaults are
+`solGasTopUp = "0.005"` / `solGasTopUpFeeEcx = "0.005"`; no exchange rates.
+Missing fields retain disabled behavior for existing installations. New orders
+can opt in; saved quotes retain exact terms. The same signed Solana transaction
+delivers tokens and SOL, with independent effect checks, operating reservations
+and separate gas expense accounting. Refunds omit the gift and return principal.
+Native suite, PostgreSQL gas/default contracts, Rust10 tests and browser checks
+pass in the scopes recorded in DONE. The unrelated Operation/Internal.hs draft
+is preserved/excluded; tests use its committed overlay. No service deployment or
+funds changed. Before funded use, update both worker and signer with the matching
+SDK/browser bundle, then test the combined transfer on the real configured chain.
+Keep the configured amounts exact; insufficient recipient rent refuses admission.
+Evidence: /tmp/ecx-gas-{test,postgres-check,postgres-regression}.log and
+/tmp/ecx-gas-ui-20261024/verification.txt; final hashes in the gas audit receipt.
+
 Backup-only correction is now implemented for imported setup stopped before node
 initialization: update-config.sh can change backupRepositoryUrl/backupPassword
 while preserving wallets and the bootstrap seal. Exactly four private files are

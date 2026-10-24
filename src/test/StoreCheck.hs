@@ -107,6 +107,8 @@ contractMain = do
   credentialsContract
   initialFunding<-lookupEnv "ECX_INITIAL_FUNDING_ONLY"
   historyOnly<-lookupEnv "ECX_REBUILD_HISTORY_ONLY"
+  gasOnly<-lookupEnv "ECX_GAS_TOP_UP_ONLY"
+  when (gasOnly==Just "1") (gasTopUpMain >> exitSuccess)
   payoutsOnly<-lookupEnv "ECX_REBUILD_PAYOUT_ONLY"
   cacheOnly<-lookupEnv "ECX_REPORT_CACHE_ONLY"
   live<-lookupEnv "ECX_REBUILD_LIVE_OBSERVER_CONFIG"
@@ -663,14 +665,14 @@ reportCacheMain=do
   user<-getEnv "USER"; role<-getEnv "ECX_REBUILD_CONTRACT_READER"
   let settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
       terms=PaymentTerms (PolicySnapshot 2 "finalized" "contract") (CostLimits (money 10) (money 10) (money 10))
-      limits=OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)
+      limits=OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000) Nothing
       store=StorePolicy terms limits "contract" True immediatePayouts
       key=T.replicate 32 "1"
       native=N.NativeSettings W.L2LSignetDevnet "http://127.0.0.1:29432" "/unused" "workflow" 1 (T.replicate 64 "0")
       chain=ObserverSettings native (Solana.SolanaSettings W.L2LSignetDevnet "https://api.devnet.solana.com" Nothing key key key) 2 "sol-origin" "opening-signature"
       policy=H.SolanaPolicy "contract" "contract" key key key (money 10) (money 10)
       public=W.PublicConfiguration W.L2LSignetDevnet "devnet" (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing Nothing)
-        "contract" key key 8 (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)]) False False (W.Availability False "starting") Nothing immediatePayouts
+        "contract" key key 8 (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)]) False False (W.Availability False "starting") Nothing immediatePayouts Nothing
       check message ok=unless ok (fail message)
   bracket (PG.connect settings) PG.close $ \fixtures->do
     fixture fixtures Initialize
@@ -748,7 +750,7 @@ initialFundingMain=do
   let settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
       identity=digest "initial-funding-contract"
       policy=PaymentTerms (PolicySnapshot 6 "finalized" identity) (CostLimits (money 10) (money 5000) (money 2000000))
-      store=StorePolicy policy (OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)) identity True immediatePayouts
+      store=StorePolicy policy (OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000) Nothing) identity True immediatePayouts
       owner="9Dfte8EDq1L9F2N4qTuMqtAEZUmDcvXpCu7EGXEHVcjY"; mint="EVHqNdzjCupKi4rQkbuYw52sa1m8A7jeUAMP23S9AVVq"
       account="6YJUhxxb3Udg2SBu2P7JktUfMMCNUw7itdNTHzDk3Xec"
       signature="4t68xvEFwSYUFDhRuD1QGHAjEiMNZnHqexNKPxhnVidtdMxViKgaqrBLGeNRMTn97hxpWS23FQzumAJfcoZW276G"
@@ -849,7 +851,7 @@ ledgerMain = do
   let settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
       readerSettings=settings {PG.connectUser=readRole}
       policy=PaymentTerms (PolicySnapshot 2 "finalized" "contract") (CostLimits (money 10) (money 10) (money 10))
-      limits=OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)
+      limits=OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000) Nothing
       store terms config=StorePolicy terms config "contract" True immediatePayouts
       key=T.replicate 64 "a"
       reserve=ReserveFees 100 key Native (money 100) "recipient" "test owned revenue"
@@ -1084,7 +1086,7 @@ ledgerMain = do
       expectStore "custody_history_not_current" (evalRead reader $ ReadCustodyEvent "Solana" (T.replicate 64 "1"))
       fixture fixtures (CustodyHeadReview 0)
       custodyContract settings (store policy limits) fixtures reader
-      let newRequest=W.OrderRequest NativeToWrapped (money 100) "recipient" "refund" Nothing "new-wrap"
+      let newRequest=W.OrderRequest NativeToWrapped (money 100) "recipient" "refund" Nothing "new-wrap" Nothing
           create request=CreateOrder 100 auth request
       withWriter settings (store policy limits) (const $ pure ()) $ \writer -> do
         revision<-evalRead reader ReadCustodyRevision
@@ -1911,7 +1913,7 @@ payoutRoundsMain=do
   user<-getEnv "USER"; role<-getEnv "ECX_REBUILD_CONTRACT_READER"
   let settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
       terms=PaymentTerms (PolicySnapshot 2 "finalized" "contract") (CostLimits (money 10) (money 10) (money 10))
-      limits=OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)
+      limits=OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000) Nothing
       policy=StorePolicy terms limits "contract" True (W.PayoutPolicy (money 50) (money 99) 172800)
       check :: HasCallStack => Bool -> IO ()
       check ok=unless ok (fail $ "payout round contract failed\n"<>prettyCallStack callStack)
@@ -1929,7 +1931,7 @@ payoutRoundsMain=do
           create writer key n=do
             ready 100
             let header="Bearer "<>T.replicate 64 "0"
-            oid<-evalWrite writer (CreateOrder 100 header $ W.OrderRequest NativeToWrapped (money n) "recipient" "refund" Nothing key)
+            oid<-evalWrite writer (CreateOrder 100 header $ W.OrderRequest NativeToWrapped (money n) "recipient" "refund" Nothing key Nothing)
             when (key=="round-first") $ fixture fixtures (CohortSchemaContract oid) >>= check
             claim<-evalWrite writer (ClaimNative 100 header oid)
             void $ evalWrite writer (RecordNative header oid (allocationLabel claim) ("native-"<>key))
@@ -2010,7 +2012,7 @@ payoutRoundsMain=do
       cancellationOrder<-withWriter settings twoSlots (const $ pure ()) $ \writer->do
         ready 100
         order<-evalWrite writer (CreateOrder 100 ("Bearer "<>T.replicate 64 "0") $
-          W.OrderRequest WrappedToNative (money 10) "recipient" "" Nothing "owner-cancellation-capacity")
+          W.OrderRequest WrappedToNative (money 10) "recipient" "" Nothing "owner-cancellation-capacity" Nothing)
         evalWrite writer (Pause "test owner cohort")
         fixture fixtures RefreshCustody
         void $ evalWrite writer (ReserveFees 100 cancellationKey Native (money 41) "owner" "complete cohort")
@@ -2070,7 +2072,7 @@ payoutRoundsMain=do
         snapshot<-fixture fixtures OrderSnapshot
         expectStore "payout_batch_needs_capacity" $ evalWrite writer $ CreateOrder 100
           ("Bearer "<>T.replicate 64 "0")
-          (W.OrderRequest NativeToWrapped (money 50) "recipient" "refund" Nothing "cannot-fill-last-slot")
+          (W.OrderRequest NativeToWrapped (money 50) "recipient" "refund" Nothing "cannot-fill-last-slot" Nothing)
         fixture fixtures OrderSnapshot >>= check . (==snapshot)
         evalRead reader ReadState >>= check . (==before)
         second<-create writer "round-second" 51
@@ -2085,7 +2087,7 @@ payoutRoundsMain=do
         ready 100
         let pendingHeader="Bearer "<>T.replicate 64 "0"
         pending<-evalWrite writer (CreateOrder 100 pendingHeader $
-          W.OrderRequest NativeToWrapped (money 10) "recipient" "refund" Nothing "pending-cohort")
+          W.OrderRequest NativeToWrapped (money 10) "recipient" "refund" Nothing "pending-cohort" Nothing)
         claim<-evalWrite writer (ClaimNative 100 pendingHeader pending)
         void $ evalWrite writer (RecordNative pendingHeader pending (allocationLabel claim) "pending-cohort-address")
         fixture fixtures PayoutCohort >>= check . elem (pending,"Wrapped",9,False)
@@ -2130,7 +2132,7 @@ payoutRoundsMain=do
         -- current 48-hour clock. It must never join or advance either round.
         let header="Bearer "<>T.replicate 64 "0"
         refundOrder<-evalWrite writer (CreateOrder 100 header $
-          W.OrderRequest NativeToWrapped (money 10) "recipient" "refund" Nothing "round-refund")
+          W.OrderRequest NativeToWrapped (money 10) "recipient" "refund" Nothing "round-refund" Nothing)
         claim<-evalWrite writer (ClaimNative 100 header refundOrder)
         void $ evalWrite writer (RecordNative header refundOrder (allocationLabel claim) "round-refund-address")
         fixture fixtures (SeedReceipt "round-refund-source" (Just refundOrder) Native 9 2 True 100)
@@ -2177,7 +2179,7 @@ payoutRoundsMain=do
         -- The opposite-chain refund also bypasses its existing round clock.
         ready 100
         unwrap<-evalWrite writer (CreateOrder 100 header $
-          W.OrderRequest WrappedToNative (money 10) "recipient" "" Nothing "round-sol-refund")
+          W.OrderRequest WrappedToNative (money 10) "recipient" "" Nothing "round-sol-refund" Nothing)
         void $ evalWrite writer (BindSolana 100 header unwrap)
         let signature="round-sol-refund-signature"; deposit="solana:"<>signature
             owner="4zvwRjXUKGfvwnParsHAS3HuSVzV5cA4McphgmoCtajS"
@@ -2202,7 +2204,7 @@ payoutRoundsMain=do
         void $ evalRead reader (ReadSigningDecision 100 solRefundId 0)
         let header="Bearer "<>T.replicate 64 "0"
         expiring<-evalWrite writer (CreateOrder 100 header $
-          W.OrderRequest NativeToWrapped (money 10) "recipient" "refund" Nothing "cohort-expiry")
+          W.OrderRequest NativeToWrapped (money 10) "recipient" "refund" Nothing "cohort-expiry" Nothing)
         beforeExpiry<-fixture fixtures AssignedPayouts
         check (length [() | (_,key,"Wrapped",9,False)<-beforeExpiry,key==expiring]==1)
         evalWrite writer (ExpireQuotes 301)
@@ -2245,6 +2247,90 @@ expectStore expected action = do
 -- Actual database failures and interleavings for the extracted payment slice.
 -- The fixture connection has no application MVar: its deployment lock must block
 -- the writer before it reads facts. All data mutation still uses closed Opaleye.
+-- Real PostgreSQL durability/accounting contract, with no chain RPC or keys.
+gasTopUpMain :: IO ()
+gasTopUpMain=do
+  database<-getEnv "ECX_REBUILD_CONTRACT_DATABASE"
+  unless ("ecx_rebuild_contract_" `T.isPrefixOf` T.pack database) (fail "disposable database required")
+  user<-getEnv "USER"; role<-getEnv "ECX_REBUILD_CONTRACT_READER"
+  let settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
+      gift=either (error . show) id $ mkGasTopUp (money 30) (money 7)
+      terms=PaymentTerms (PolicySnapshot 2 "finalized" "contract") (CostLimits (money 10) (money 10) (money 10))
+      limits=OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000) (Just gift)
+      policy=StorePolicy terms limits "contract" True immediatePayouts
+      header="Bearer "<>T.replicate 64 "0"
+      request=W.OrderRequest NativeToWrapped (money 1000) "recipient" "refund" Nothing "gas" (Just gift)
+      check :: HasCallStack => Bool -> IO ()
+      check ok=unless ok (fail $ "gas top-up contract failed\n"<>prettyCallStack callStack)
+  bracket (PG.connect settings) PG.close $ \fixtures->do
+    fixture fixtures Initialize
+    fixture fixtures SeedIntake
+    withReader settings {PG.connectUser=role} "contract" True $ \reader->do
+      oid<-withWriter settings policy (const $ pure ()) $ \writer->do
+        fixture fixtures ReadyIntake
+        oid<-evalWrite writer (CreateOrder 100 header request)
+        view<-evalRead reader (ReadOrder header oid)
+        check (units(net $ W.quote view)==983 && quoteGasTopUp(W.quote view)==Just gift)
+        fixture fixtures (GasReservations oid) >>= check . (==[("conversion","Sol",50),("refund","Native",10)]) . sort
+        claim<-evalWrite writer (ClaimNative 100 header oid)
+        void $ evalWrite writer (RecordNative header oid (allocationLabel claim) "gas-native")
+        fixture fixtures (SeedReceipt "gas-receipt" (Just oid) Native 1000 2 True 100)
+        evalWrite writer (PromoteDeposit 100 "gas-receipt") >>= check
+        pure oid
+      -- Turning the offer off affects new quotes only, not saved payments/retries.
+      let changed=policy {admissionLimits=limits {offeredGasTopUp=Nothing}}
+      withWriter settings changed (const $ pure ()) $ \writer->do
+        fixture fixtures ReadyIntake
+        evalWrite writer (CreateOrder 100 header request) >>= check . (==oid)
+        expectStore "gas_top_up_offer_changed" (evalWrite writer $ CreateOrder 100 header request {W.idempotencyKey="new"})
+        view<-evalRead reader (ReadPayment $ "convert:"<>oid)
+        check (paymentGasLamports(savedPayment view)==Just(money 30) && paymentAmount(savedPayment view)==money 983)
+        let key="convert:"<>oid; txid=digest "gas-top-up-ledger-contract"
+        _<-evalWrite writer (PreparePayment 100 key (money 50) "{}")
+        evalWrite writer (SaveDraft key 0 "{}")
+        saved<-evalRead reader (ReadPreparation key)
+        fixture fixtures CoverBackup
+        fixture fixtures ReadyIntake
+        void $ evalWrite writer (RecordAttempt saved $ SignedAttempt txid "offline-accounting-fixture" "{}" Nothing)
+        fixture fixtures ReadyIntake
+        void $ evalWrite writer (MarkBroadcast 100 txid)
+        fixture fixtures CoverBackup
+        fixture fixtures ReadyIntake
+        authorized<-evalWrite writer (AuthorizeSend 100 txid)
+        before<-evalRead reader ReadBalances
+        -- The operating limit includes gift + fee + rent; excess evidence refuses.
+        expectStore "settlement_fee_or_evidence_invalid" (evalWrite writer $ SettlePayment authorized (W.PaymentCosts (money 11) (money 10)) "{}")
+        let settle=SettlePayment authorized (W.PaymentCosts (money 3) (money 2)) "{\"offlineGas\":true}"
+        evalWrite writer settle
+        after<-evalRead reader ReadBalances
+        let delta asset account=M.findWithDefault 0 (asset,account) after-M.findWithDefault 0 (asset,account) before
+        check (delta Sol Operating==(-35) && delta Sol External==35 && delta Native Earned==17
+          && delta Wrapped Float==(-983) && delta Wrapped External==983)
+        fixture fixtures (PaymentFeeHold key) >>= check . (==[("Sol",50,1)])
+        snapshot<-fixture fixtures FinancialRecords
+        evalWrite writer settle
+        fixture fixtures FinancialRecords >>= check . (==snapshot)
+      withWriter settings policy (const $ pure ()) $ \writer->do
+        fixture fixtures ReadyIntake
+        let refundRequest=request {W.input=money 10,W.idempotencyKey="gas-refund"}
+        refundOrder<-evalWrite writer (CreateOrder 100 header refundRequest)
+        claim<-evalWrite writer (ClaimNative 100 header refundOrder)
+        void $ evalWrite writer (RecordNative header refundOrder (allocationLabel claim) "gas-refund-native")
+        fixture fixtures (SeedReceipt "gas-wrong-amount" (Just refundOrder) Native 9 2 True 100)
+        evalWrite writer (Pause "gas refund contract")
+        fixture fixtures RefreshCustody
+        void $ evalWrite writer (AuthorizeRefund 100 "gas-wrong-amount")
+        refundKey<-fixture fixtures (ReceiptPayment "gas-wrong-amount")
+        refundView<-evalRead reader (ReadPayment refundKey)
+        check (paymentGasLamports(savedPayment refundView)==Nothing && paymentAmount(savedPayment refundView)==money 9)
+        fixture fixtures (CheckRefundHolds refundOrder Native) >>= check
+      -- Daily spend includes the successful gift, not just network fees/rent.
+      let daily=policy {admissionLimits=limits {solanaDaily=money 70}}
+      withWriter settings daily (const $ pure ()) $ \writer->do
+        fixture fixtures ReadyIntake
+        expectStore "operating_daily_limit" (evalWrite writer $ CreateOrder 100 header request {W.input=money 10,W.idempotencyKey="gas-budget"})
+      putStrLn "PASS SOL gas top-up: saved quote/restart, exact reserves, settlement/replay, full refund, daily operating budget"
+
 paymentAtomicityContract :: PG.Connection -> PG.ConnectInfo -> Reader -> StorePolicy -> IO ()
 paymentAtomicityContract fixtures settings reader policy = do
   let key=digest "payment atomicity contract"; identifier="fee:"<>key
@@ -2285,7 +2371,7 @@ paymentAtomicityContract fixtures settings reader policy = do
   customer<-write $ \writer->do
     fixture fixtures ReadyIntake
     let header="Bearer "<>T.replicate 64 "0"
-    oid<-evalWrite writer (CreateOrder 100 header $ W.OrderRequest NativeToWrapped (money 10) "recipient" "refund" Nothing "customer-atomicity")
+    oid<-evalWrite writer (CreateOrder 100 header $ W.OrderRequest NativeToWrapped (money 10) "recipient" "refund" Nothing "customer-atomicity" Nothing)
     claim<-evalWrite writer (ClaimNative 100 header oid)
     void $ evalWrite writer (RecordNative header oid (allocationLabel claim) "atomicity-native-address")
     fixture fixtures (SeedReceipt "atomicity-source" (Just oid) Native 10 2 True 100)
@@ -2358,6 +2444,7 @@ data Fixture a where
   CohortSchemaContract :: T.Text -> Fixture Bool
   CohortWithdrawalContract :: T.Text -> T.Text -> Fixture Bool
   OwnerFeeBinding :: T.Text -> Fixture Bool
+  GasReservations :: T.Text -> Fixture [(T.Text,T.Text,Int64)]
   PaymentFeeHold :: T.Text -> Fixture [(T.Text,Int64,Int64)]
   AssignedPayouts :: Fixture [(T.Text,T.Text,T.Text,Int64,Bool)]
   PayoutCohort :: Fixture [(T.Text,T.Text,Int64,Bool)]
@@ -2538,6 +2625,10 @@ fixture c (OwnerFeeBinding key) = do
     ,refused "immutable_fee_reservation_identity" $ update (\(k,_,n,r)->(k,O.sqlStrictText "Sol",n,r))
     ,refused "withdrawal_fee_reservation_missing" $ update (\(k,a,_,r)->(k,a,O.sqlInt8 0,r))
     ,refused "withdrawal_fee_reservation_missing" $ update (\(k,a,n,_)->(k,a,n,O.sqlInt8 1))]
+fixture c (GasReservations oid) = O.runSelect c $ do
+  (key,purpose,asset,n,_)<-O.selectTable S.operatingReservations
+  O.where_ (key O..== O.sqlStrictText oid)
+  pure (purpose,asset,n)
 fixture c (PaymentFeeHold key) = O.runSelect c $ do
   (identifier,asset,n,released)<-O.selectTable S.feeHolds
   O.where_ (identifier O..== O.sqlStrictText key)
@@ -2807,7 +2898,7 @@ fixture c SeedOrders = PG.withTransaction c $ do
   sequenceNumber <- case sequences of [n]->pure n; _->fail "fixture deployment missing"
   let cap=either (error . T.unpack) id (capabilityHash $ T.replicate 64 "0")
       raw value=TE.decodeUtf8 (BL.toStrict $ encode value)
-      request=W.OrderRequest NativeToWrapped (money 100) "recipient" "refund" Nothing "placeholder"
+      request=W.OrderRequest NativeToWrapped (money 100) "recipient" "refund" Nothing "placeholder" Nothing
       savedQuote=either (error . T.unpack) id (historicalQuote (money 100) (money 7))
   forM_ ["hidden","visible","mismatch","corrupt"] $ \identifier -> do
     let policy=W.PolicySnapshot 2 "finalized" (if identifier=="mismatch" then "wrong" else "contract")
@@ -2981,7 +3072,7 @@ fixture c (HistoricalHolds oid) = PG.withTransaction c $ do
   let text=O.sqlStrictText; num=O.sqlInt8
       raw value=TE.decodeUtf8 (BL.toStrict $ encode value)
       cap=either (error . T.unpack) id (capabilityHash $ T.replicate 64 "0")
-      request=W.OrderRequest NativeToWrapped (money 100) "recipient" "refund" Nothing oid
+      request=W.OrderRequest NativeToWrapped (money 100) "recipient" "refund" Nothing oid Nothing
       saved=either (error . T.unpack) id (historicalQuote (money 100) (money 7))
   void $ O.runInsert c O.Insert {O.iTable=S.orders,
     O.iRows=[S.Order (text oid) (text cap) (text oid) (text "fixture") (text $ raw request) (text $ raw saved)
@@ -3546,7 +3637,7 @@ orderWorkflowContract fixtures reader writer storePolicy = do
   label<-newIORef Nothing; loseReply<-newIORef True
   let native=N.NativeSettings W.L2LSignetDevnet "http://127.0.0.1:29432" "/unused" "workflow" 1 (T.replicate 64 "0")
       header="Bearer "<>T.replicate 64 "e"
-      unwrap=W.OrderRequest WrappedToNative (money 10) "native-recipient" "" Nothing "workflow-unwrap"
+      unwrap=W.OrderRequest WrappedToNative (money 10) "native-recipient" "" Nothing "workflow-unwrap" Nothing
       call _ method params=case (method,params) of
         ("getwalletinfo",[])->pure $ object ["walletname" .= ("workflow"::T.Text),"descriptors" .= True,
           "scanning" .= False,"private_keys_enabled" .= True,"external_signer" .= False]
@@ -3605,7 +3696,7 @@ orderWorkflowContract fixtures reader writer storePolicy = do
       chainSettings=ObserverSettings native solana 2 "sol-origin" "opening-signature"
       config=H.SolanaPolicy "contract" "contract" key key key (money 10) (money 10)
       public=W.PublicConfiguration W.L2LSignetDevnet "devnet" (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing Nothing)
-        "contract" key key 8 (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)]) False False (W.Availability False "starting") Nothing immediatePayouts
+        "contract" key key 8 (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)]) False False (W.Availability False "starting") Nothing immediatePayouts Nothing
       customerSettings=CustomerSettings public storePolicy "/unused/sdk" Nothing
       endpoint=SigningEndpoint 9443 "/unused/auth"
   -- The worker uses wall time, unlike the provisioning fixture's clock above.
@@ -3694,7 +3785,7 @@ fenceMain = do
   let identity=T.replicate 64 "a"
       settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
       terms=PaymentTerms (PolicySnapshot 2 "finalized" identity) (CostLimits (money 10) (money 10) (money 10))
-      limits=OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)
+      limits=OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000) Nothing
       policy=StorePolicy terms limits "fence-test" True immediatePayouts
       key=T.replicate 64 "b"
       temporary=do
@@ -3972,7 +4063,7 @@ serverMain = do
               deniedOrder<-HTTP.httpLbs orderRequest {HTTP.method="POST"
                 ,HTTP.requestHeaders=[("Content-Type","application/json"),("Authorization","Bearer "<>BS.replicate 64 97)]
                 ,HTTP.requestBody=HTTP.RequestBodyLBS $ encode $
-                  W.OrderRequest WrappedToNative (money 10000) "recipient" "" Nothing "observer-contract"} manager
+                  W.OrderRequest WrappedToNative (money 10000) "recipient" "" Nothing "observer-contract" Nothing} manager
               deniedBody<-either fail pure (eitherDecodeStrict' $ BL.toStrict $ HTTP.responseBody deniedOrder)
               check (statusCode(HTTP.responseStatus deniedOrder)==409
                 && deniedBody==object ["error" .= ("observation_only"::T.Text)])
@@ -4056,7 +4147,7 @@ serverMain = do
               wire<-request "/api/v1/orders"
               denied<-HTTP.httpLbs wire {HTTP.method="POST",HTTP.requestHeaders=[("Content-Type","application/json"),("Authorization","Bearer "<>BS.replicate 64 97)]
                 ,HTTP.requestBody=HTTP.RequestBodyLBS $ encode $
-                  W.OrderRequest WrappedToNative (money 10000) "recipient" "" Nothing "canonical-paused"} manager
+                  W.OrderRequest WrappedToNative (money 10000) "recipient" "" Nothing "canonical-paused" Nothing} manager
               check (statusCode(HTTP.responseStatus denied)==409 && eitherDecodeStrict' (BL.toStrict $ HTTP.responseBody denied)
                 ==Right (object ["error" .= ("intake_paused"::T.Text)]))
               evalRead reader ReadBalances >>= check . (==before)
@@ -4157,7 +4248,7 @@ orderedRefundContract fixtures reader writer=do
       observed transaction review=fixture fixtures $ SeedTreasuryEvidence "Native" transaction "fixture-anchor" "outgoing" review
         (object ["confirmations" .= (2::Int)])
   fixture fixtures ReadyIntake
-  ordered<-evalWrite writer (CreateOrder 110 header $ W.OrderRequest NativeToWrapped (money 10) "recipient" "native-refund" Nothing "refund-ordered")
+  ordered<-evalWrite writer (CreateOrder 110 header $ W.OrderRequest NativeToWrapped (money 10) "recipient" "native-refund" Nothing "refund-ordered" Nothing)
   claim<-evalWrite writer (ClaimNative 110 header ordered)
   void $ evalWrite writer (RecordNative header ordered (allocationLabel claim) "ordered-refund-address")
   forM_ (zip3 [1::Int ..] transactions (Nothing:map Just transactions)) $ \(index,transaction,previous)->do
@@ -4211,7 +4302,7 @@ refundContract fixtures reader writer=do
       check ok=unless ok (fail $ "refund contract failed\n"<>prettyCallStack callStack)
       make name direction=do
         fixture fixtures ReadyIntake
-        let request=W.OrderRequest direction (money 10) "recipient" (if direction==NativeToWrapped then "native-refund" else "") Nothing name
+        let request=W.OrderRequest direction (money 10) "recipient" (if direction==NativeToWrapped then "native-refund" else "") Nothing name Nothing
         oid<-evalWrite writer (CreateOrder 110 header request)
         if direction==NativeToWrapped then do
           claim<-evalWrite writer (ClaimNative 110 header oid)
@@ -4291,7 +4382,7 @@ refundContract fixtures reader writer=do
 cancellationContract :: PG.Connection -> Reader -> Writer -> IO ()
 cancellationContract fixtures reader writer=do
   let header="Bearer "<>T.replicate 64 "0"
-      request=W.OrderRequest NativeToWrapped (money 10) "recipient" "native-refund" Nothing "refund-racing"
+      request=W.OrderRequest NativeToWrapped (money 10) "recipient" "native-refund" Nothing "refund-racing" Nothing
       reason="review unsigned work"; cleanup="{\"nativeInputs\":[]}"
       check :: HasCallStack => Bool -> IO ()
       check ok=unless ok (fail $ "cancellation contract failed\n"<>prettyCallStack callStack)
@@ -4369,7 +4460,7 @@ earnedCancellationContract fixtures reader writer=do
 expiryContract :: PG.Connection -> Reader -> Writer -> IO ()
 expiryContract fixtures reader writer=do
   let header="Bearer "<>T.replicate 64 "0"
-      request=W.OrderRequest NativeToWrapped (money 10) "recipient" "native-refund" Nothing "expiry-contract"
+      request=W.OrderRequest NativeToWrapped (money 10) "recipient" "native-refund" Nothing "expiry-contract" Nothing
       check :: HasCallStack => Bool -> IO ()
       check ok=unless ok (fail $ "expiry contract failed\n"<>prettyCallStack callStack)
       ready=fixture fixtures ReadyIntake
@@ -4599,7 +4690,7 @@ tlsMain=do
       identity="offline-policy"; encoded value=TE.decodeUtf8 (BL.toStrict $ encode value)
       settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
       policy=PaymentTerms (PolicySnapshot 1 "finalized" identity) (CostLimits (money 1) (money 10000) (money 2100000))
-      store=StorePolicy policy (OrderLimits (money 3) 100 100 100 (money 10000000) (money 10000000)) "codec-fixture" True immediatePayouts
+      store=StorePolicy policy (OrderLimits (money 3) 100 100 100 (money 10000000) (money 10000000) Nothing) "codec-fixture" True immediatePayouts
       config=H.SolanaPolicy "codec-fixture" identity mint owner custody (money 10000) (money 2100000)
       native=N.NativeSettings profile "http://127.0.0.1:1" "/unused" "ecx-bridge-test"
         (if canonical then 967680 else 16000)
@@ -4747,7 +4838,7 @@ tlsMain=do
                 configuredNative=native {N.nativeCookie=cookie}
                 public=W.PublicConfiguration profile cluster (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing Nothing)
                   "codec-fixture" mint owner 8 (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)])
-                  True False (W.Availability False "starting") Nothing immediatePayouts
+                  True False (W.Availability False "starting") Nothing immediatePayouts Nothing
                 recipients=Config.OwnerFeeRecipients
                   "xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz" recipient
                 saved=do
@@ -4823,7 +4914,7 @@ tlsMain=do
             putStrLn "PASS: actual worker scans, reconciles and reserves Wrapped owner payout after Native preview exceeds its saved fee cap"
             pure result
         let outgoing=withdrawalPayment withdrawal; identifier=paymentId outgoing
-            plan=SP.SolanaPlan identity recipient (money 3) (payoutReference identity identifier) (SP.RecentBlockhash hash 1000 100) (money 10000) (money 2100000)
+            plan=SP.SolanaPlan identity recipient (money 3) (payoutReference identity identifier) (SP.RecentBlockhash hash 1000 100) (money 10000) (money 2100000) Nothing
         check (paymentAmount outgoing==money 3 && paymentRecipient outgoing==recipient)
         fixture fixtures ReadyIntake
         preparationTime<-floor <$> getPOSIXTime
@@ -5027,10 +5118,10 @@ tlsMain=do
               let cookie=directory</>"native-cookie"
                   configuredNative=native {N.nativeCookie=cookie}
                   header="Bearer "<>T.replicate 64 "c"
-                  order=W.OrderRequest WrappedToNative (money 10) "native-recipient" "" Nothing "checkpoint-http"
+                  order=W.OrderRequest WrappedToNative (money 10) "native-recipient" "" Nothing "checkpoint-http" Nothing
                   publicConfig=W.PublicConfiguration profile cluster (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing Nothing)
                     "codec-fixture" mint owner 8 (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)])
-                    True False (W.Availability False "starting") Nothing immediatePayouts
+                    True False (W.Availability False "starting") Nothing immediatePayouts Nothing
               writeFile cookie "fixture:fixture"; setFileMode cookie 0o600
               fixture fixtures ReadyIntake
               now<-floor <$> getPOSIXTime
@@ -5221,7 +5312,7 @@ restorationContract :: PG.Connection -> Reader -> Writer -> IO ()
 restorationContract fixtures reader writer=do
   let check ok=unless ok (fail $ "source restoration contract failed\n"<>prettyCallStack callStack)
       header="Bearer "<>T.replicate 64 "8"
-      request=W.OrderRequest NativeToWrapped (money 10) "recipient" "refund" Nothing "restoration-contract"
+      request=W.OrderRequest NativeToWrapped (money 10) "recipient" "refund" Nothing "restoration-contract" Nothing
       tx=T.replicate 64 "8"; did="native:"<>tx<>":0"; observationHash=T.replicate 64 "f"
       approve key sequenceNo reason=evalWrite writer (ApproveSourceRestoration 110 key sequenceNo reason)
       restore=do
@@ -5449,7 +5540,7 @@ nativeReplacementContract fixtures reader writer=handle (\(BridgeError code)->fa
       paused=evalWrite writer (Pause "replacement ledger contract") >> fixture fixtures RefreshCustody
   order<-if customer then do
     ready
-    oid<-evalWrite writer (CreateOrder 110 header $ W.OrderRequest WrappedToNative (money 11) (NP.planRecipient plan) "" Nothing "replacement-customer")
+    oid<-evalWrite writer (CreateOrder 110 header $ W.OrderRequest WrappedToNative (money 11) (NP.planRecipient plan) "" Nothing "replacement-customer" Nothing)
     void $ evalWrite writer (BindSolana 110 header oid)
     fixture fixtures (SeedReceipt "replacement-customer-source" (Just oid) Wrapped 11 2 True 110)
     evalWrite writer (PromoteDeposit 110 "replacement-customer-source") >>= check
@@ -5806,7 +5897,7 @@ historyProgressMain=do
   user<-getEnv "USER"; role<-getEnv "ECX_REBUILD_CONTRACT_READER"
   let settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
       policy=StorePolicy (PaymentTerms (PolicySnapshot 2 "finalized" "contract") (CostLimits (money 10) (money 10) (money 10)))
-        (OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000)) "contract" True immediatePayouts
+        (OrderLimits (money 1000) 100 100 100 (money 100000) (money 100000) Nothing) "contract" True immediatePayouts
       sig n=SolanaMessage.base58 (BS.replicate 63 0<>BS.singleton n)
       progress=Solana.HistoryProgress (sig 0) Nothing 100 (Solana.SignatureInfo (sig 2) 2 False)
         [Solana.SignatureInfo (sig 2) 2 False,Solana.SignatureInfo (sig 1) 1 False] False

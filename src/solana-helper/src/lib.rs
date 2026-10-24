@@ -38,6 +38,7 @@ struct Request {
     blockhash: String,
     order_id: String,
     create_ata: bool,
+    gas_lamports: Option<String>,
 }
 #[derive(Serialize)]
 struct Reply {
@@ -81,6 +82,10 @@ fn prepare(c: &Config, r: &Request) -> Result<Reply, &'static str> {
         return Err("unsupported_owner");
     }
     let payout = matches!(r.verb, Verb::Payout | Verb::PayoutPreview);
+    let gas_lamports = r.gas_lamports.as_deref().map(raw_amount).transpose()?;
+    if gas_lamports.is_some() && (!payout || recipient == mint || owner == mint) {
+        return Err("invalid_gas_top_up");
+    }
     if (payout && owner != custody) || (!payout && recipient != custody) {
         return Err("wrong_custody_owner");
     }
@@ -115,6 +120,9 @@ fn prepare(c: &Config, r: &Request) -> Result<Reply, &'static str> {
         )
         .map_err(|_| "invalid_transfer")?,
     );
+    if let Some(lamports) = gas_lamports {
+        instructions.push(solana_system_interface::instruction::transfer(&owner, &recipient, lamports));
+    }
     instructions.push(spl_memo_interface::instruction::build_memo(
         &spl_memo_interface::v3::id(),
         memo.as_bytes(),
@@ -372,6 +380,7 @@ mod wire_tests {
                 blockhash: Hash::new_from_array([4; 32]).to_string(),
                 order_id: "order-1".into(),
                 create_ata: false,
+                gas_lamports: None,
             },
         )
     }
@@ -483,6 +492,43 @@ mod wire_tests {
             )
             .unwrap();
         }
+    }
+    #[test]
+    fn gas_top_up_is_an_exact_atomic_payout_instruction() {
+        let (mut c, mut r) = inputs();
+        c.custody_owner = r.owner.clone();
+        r.verb = Verb::PayoutPreview;
+        r.create_ata = true;
+        let ordinary = prepare(&c, &r).unwrap();
+        r.gas_lamports = Some("1000000".into());
+        let out = prepare(&c, &r).unwrap();
+        let tx: Transaction = bincode::deserialize(&STANDARD.decode(&out.transaction).unwrap()).unwrap();
+        let owner = key(&r.owner).unwrap();
+        let recipient = key(&r.recipient).unwrap();
+        let gas = &tx.message.instructions[2];
+        assert_eq!(tx.message.instructions.len(), 4);
+        assert_eq!(gas.data, [vec![2, 0, 0, 0], 1000000u64.to_le_bytes().to_vec()].concat());
+        assert_eq!(tx.message.account_keys[gas.program_id_index as usize], solana_system_interface::program::id());
+        assert_eq!(gas.accounts.iter().map(|i| tx.message.account_keys[*i as usize]).collect::<Vec<_>>(), vec![owner, recipient]);
+        let recipient_index = tx.message.account_keys.iter().position(|key| *key == recipient).unwrap();
+        assert!(recipient_index < tx.message.account_keys.len() - tx.message.header.num_readonly_unsigned_accounts as usize);
+        assert!(tx.signatures[0].as_ref().iter().all(|byte| *byte == 0));
+        r.gas_lamports = None;
+        assert_eq!(ordinary.transaction, prepare(&c, &r).unwrap().transaction);
+        for value in ["0", "00", "-1", "1.0", "18446744073709551616"] {
+            r.gas_lamports = Some(value.into());
+            assert!(prepare(&c, &r).is_err(), "{value}");
+        }
+        r.gas_lamports = Some("1".into());
+        r.recipient = r.owner.clone();
+        assert_eq!(prepare(&c, &r).err(), Some("unsupported_owner"));
+        r.recipient = c.mint.clone();
+        assert_eq!(prepare(&c, &r).err(), Some("invalid_gas_top_up"));
+        r.recipient = get_associated_token_address_with_program_id(&recipient, &key(&c.mint).unwrap(), &spl_token_interface::id()).to_string();
+        assert_eq!(prepare(&c, &r).err(), Some("unsupported_owner"));
+        let (c, mut deposit) = inputs();
+        deposit.gas_lamports = Some("1".into());
+        assert_eq!(prepare(&c, &deposit).err(), Some("invalid_gas_top_up"));
     }
     #[test]
     fn wrong_custody_and_unknown_fields_refused() {

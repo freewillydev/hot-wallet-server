@@ -2,7 +2,7 @@
 module Bridge.SolanaPayment
   ( SolanaRPC, RecentBlockhash(..), SolanaPlan(..), SolanaSigned(..), SolanaOutcome(..)
   , contextValue, checkBlockhashWindow, checkBlockhashForSend, getRecentBlockhash, solanaOperatingLimit
-  , solanaPayoutRequest, systemLamports, solanaDestinationRent
+  , solanaPayoutRequest, systemLamports, solanaDestinationRent, checkSolanaGasRecipient
   , prepareSolanaSigned, verifySolanaOutcome ) where
 
 import Bridge.RPC
@@ -27,7 +27,10 @@ data SolanaPlan = SolanaPlan
   { solPlanFingerprint :: !Text, solPlanRecipient :: !Text, solPlanAmount :: !Amount
   , solPlanReference :: !Text, solPlanRecent :: !RecentBlockhash
   , solPlanFeeLimit :: !Amount, solPlanRentLimit :: !Amount
-  } deriving (Eq,Show,Generic,ToJSON,FromJSON)
+  , solPlanGasLamports :: !(Maybe Amount)
+  } deriving (Eq,Show,Generic,FromJSON)
+instance ToJSON SolanaPlan where
+  toJSON = genericToJSON defaultOptions {omitNothingFields=True}
 data SolanaSigned = SolanaSigned
   { signedSolanaPlan :: !SolanaPlan, signedSolanaReply :: !HelperReply
   , signedSolanaFeeEstimate :: !Amount, signedSolanaRentEstimate :: !Amount
@@ -69,11 +72,12 @@ getRecentBlockhash call = do
   pure recent
 
 solanaOperatingLimit :: SolanaPlan -> Either Text Amount
-solanaOperatingLimit plan = amount (toInteger (units $ solPlanFeeLimit plan)+toInteger (units $ solPlanRentLimit plan))
+solanaOperatingLimit plan = amount (toInteger (units $ solPlanFeeLimit plan)+toInteger (units $ solPlanRentLimit plan)
+  + maybe 0 (toInteger.units) (solPlanGasLamports plan))
 
 solanaPayoutRequest :: SolanaPolicy -> SolanaPlan -> HelperRequest
 solanaPayoutRequest c plan = HelperRequest True (custodyOwner c) (solPlanRecipient plan)
-  (solPlanAmount plan) (recentHash $ solPlanRecent plan) (solPlanReference plan)
+  (solPlanAmount plan) (recentHash $ solPlanRecent plan) (solPlanReference plan) (solPlanGasLamports plan)
 
 -- Missing accounts and ordinary pre-funded system accounts can both become
 -- ATAs. An unsolicited lamport transfer must not permanently block a recipient.
@@ -84,6 +88,18 @@ systemLamports account = do
   bytes <- fieldValue "data" account :: IO Value
   require (program=="11111111111111111111111111111111" && not executable && bytes==toJSON ["","base64"::Text]) "unsupported_system_account"
   fieldValue "lamports" account >>= either reject pure . amount
+
+-- A newly funded wallet must retain the system account's minimum balance.
+-- Check only opted-in payments; the exact transaction is still simulated.
+checkSolanaGasRecipient :: SolanaRPC -> Maybe Amount -> Value -> IO ()
+checkSolanaGasRecipient _ Nothing _ = pure ()
+checkSolanaGasRecipient call (Just gas) wallet = do
+  require (units gas>0) "invalid_gas_top_up"
+  balance<-if wallet==Null then either reject pure (amount 0) else systemLamports wallet
+  minimumBalance<-call "getMinimumBalanceForRentExemption" [toJSON (0::Int),object ["commitment" .= ("confirmed"::Text)]]
+    >>= parseValue parseJSON :: IO Integer
+  require (minimumBalance>0) "invalid_solana_rent_quote"
+  require (toInteger(units balance)+toInteger(units gas)>=minimumBalance) "gas_top_up_below_rent"
 
 -- Share the same account policy between quote admission and payment
 -- preparation. The budget still reserves the full configured rent ceiling:
@@ -105,7 +121,8 @@ solanaDestinationRent call c owner destination =
 prepareSolanaSigned :: SolanaRPC -> (HelperRequest -> IO HelperReply) -> SolanaPolicy -> SolanaPlan -> IO SolanaSigned
 prepareSolanaSigned call helper c plan = do
   require (solPlanFingerprint plan==fingerprint c && units (solPlanFeeLimit plan)>0 && solPlanFeeLimit plan<=maxSolFee c
-    && solPlanRentLimit plan<=maxSolAccountRent c) "saved_solana_policy_mismatch"
+    && solPlanRentLimit plan<=maxSolAccountRent c
+    && maybe True ((>0).units) (solPlanGasLamports plan)) "saved_solana_policy_mismatch"
   checkBlockhashWindow call (solPlanRecent plan)
   let request=solanaPayoutRequest c plan
   reply <- helper request
@@ -117,15 +134,22 @@ prepareSolanaSigned call helper c plan = do
   require (units fee>0 && fee<=solPlanFeeLimit plan) "solana_fee_above_limit"
   let accountOptions=object ["commitment" .= ("confirmed"::Text),"encoding" .= ("jsonParsed"::Text),"minContextSlot" .= recentSlot (solPlanRecent plan)]
   (accountSlot,accountsValue) <- call "getMultipleAccounts"
-    [toJSON [custodyAta c,replyDestination reply,custodyOwner c],accountOptions] >>= contextValue (recentSlot $ solPlanRecent plan)
+    [toJSON ([custodyAta c,replyDestination reply,custodyOwner c]
+      <> maybe [] (const [solPlanRecipient plan]) (solPlanGasLamports plan)),accountOptions] >>= contextValue (recentSlot $ solPlanRecent plan)
   accounts <- parseValue parseJSON accountsValue
-  (source,destination,payer) <- case accounts of [a,b,d] -> pure (a,b,d); _ -> reject "solana_account_snapshot_incomplete"
+  (source,destination,payer) <- case (solPlanGasLamports plan,accounts) of
+    (Nothing,[a,b,d]) -> pure (a,b,d)
+    (Just _,[a,b,d,wallet]) -> do
+      checkSolanaGasRecipient call (solPlanGasLamports plan) wallet
+      pure (a,b,d)
+    _ -> reject "solana_account_snapshot_incomplete"
   sourceBalance <- either reject pure (inspectTokenAccount (mint c) (custodyOwner c) source)
   require (sourceBalance>=solPlanAmount plan) "insufficient_custody_tokens"
   rent <- solanaDestinationRent call c (solPlanRecipient plan) destination
   require (rent<=solPlanRentLimit plan) "solana_rent_above_limit"
   balance <- systemLamports payer
-  require (toInteger (units balance)>=toInteger (units fee)+toInteger (units rent)) "insufficient_operating_sol"
+  require (toInteger (units balance)>=toInteger (units fee)+toInteger (units rent)
+    + maybe 0 (toInteger.units) (solPlanGasLamports plan)) "insufficient_operating_sol"
   -- The RPC never receives the custody signature during preparation. Signature
   -- validity is checked locally; simulation runs the exact unsigned message.
   (_,simulation) <- call "simulateTransaction" [toJSON (unsignedSimulation transaction),object
@@ -142,7 +166,16 @@ prepareSolanaSigned call helper c plan = do
 data SolanaOutcome = SolanaOutcome
   { outcomeSlot :: !Int64, outcomeSucceeded :: !Bool
   , outcomeFee :: !Amount, outcomeRent :: !Amount
-  } deriving (Eq,Show,Generic,ToJSON,FromJSON)
+  , outcomeGasLamports :: !Amount
+  } deriving (Eq,Show)
+instance ToJSON SolanaOutcome where
+  toJSON outcome = object $ ["outcomeSlot" .= outcomeSlot outcome,"outcomeSucceeded" .= outcomeSucceeded outcome
+    ,"outcomeFee" .= outcomeFee outcome,"outcomeRent" .= outcomeRent outcome]
+    <> ["outcomeGasLamports" .= outcomeGasLamports outcome | units(outcomeGasLamports outcome)>0]
+instance FromJSON SolanaOutcome where
+  parseJSON = withObject "Solana outcome" $ \o->SolanaOutcome <$> o .: "outcomeSlot" <*> o .: "outcomeSucceeded"
+    <*> o .: "outcomeFee" <*> o .: "outcomeRent" <*> (o .:? "outcomeGasLamports" .!= zero)
+   where zero=either (error . show) id (amount 0)
 
 verifySolanaOutcome :: SolanaPolicy -> SolanaSigned -> Value -> Either Text SolanaOutcome
 verifySolanaOutcome c signed proof = do
@@ -187,11 +220,17 @@ verifySolanaOutcome c signed proof = do
     ensure (length before==length keys && length after==length keys && all (>=0) (before<>after))
     dest <- case elemIndices (replyDestination reply) actualKeys of [i]->pure i; _->fail "missing destination"
     source <- case elemIndices (replySource reply) actualKeys of [i]->pure i; _->fail "missing source"
+    recipient <- case solPlanGasLamports plan of
+      Nothing->pure Nothing
+      Just _->case elemIndices (solPlanRecipient plan) actualKeys of [i]->pure (Just i); _->fail "missing recipient"
     let rentChange=after!!dest-before!!dest
         debit=before!!0-after!!0
-    ensure (all (\i -> i==0 || i==dest || before!!i==after!!i) [0..length keys-1])
+        gasChange=maybe 0 (\i->after!!i-before!!i) recipient
+        expectedGas=if err==Null then maybe 0 (toInteger.units) (solPlanGasLamports plan) else 0
+    ensure (gasChange==expectedGas && all (\i -> i==0 || i==dest || Just i==recipient || before!!i==after!!i) [0..length keys-1])
     rent <- either (fail . show) pure (amount rentChange)
-    ensure (rent<=solPlanRentLimit plan && debit==toInteger (units actualFee)+rentChange)
+    gas <- either (fail . show) pure (amount gasChange)
+    ensure (rent<=solPlanRentLimit plan && debit==toInteger (units actualFee)+rentChange+gasChange)
     preTokens <- field "preTokenBalances" meta
     postTokens <- field "postTokenBalances" meta
     sourceBefore <- tokenBalance c source (custodyOwner c) False preTokens
@@ -202,7 +241,7 @@ verifySolanaOutcome c signed proof = do
     destAfter <- tokenBalance c dest (solPlanRecipient plan) (err/=Null) postTokens
     let delta=if err==Null then toInteger (units $ solPlanAmount plan) else 0
     ensure (sourceBefore-sourceAfter==delta && destAfter-destBefore==delta && (err==Null || rentChange==0))
-    pure (SolanaOutcome slot (err==Null) actualFee rent)
+    pure (SolanaOutcome slot (err==Null) actualFee rent gas)
   tokenBalance config idx owner allowMissing entries = do
     indexes <- mapM (field "accountIndex") entries :: Parser [Int]
     case [entry | (i,entry)<-zip indexes entries,i==idx] of

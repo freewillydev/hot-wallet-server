@@ -154,10 +154,10 @@ checks=sequence
       calls<-newIORef ([]::[Text])
       let amount=either (error . show) id (D.amount 100)
           quote=either (error . show) id (D.quote amount)
-          request=W.OrderRequest D.NativeToWrapped amount "recipient" "refund" Nothing "key"
+          request=W.OrderRequest D.NativeToWrapped amount "recipient" "refund" Nothing "key" Nothing
           order=W.OrderView "order" request quote "AwaitingDeposit" 200 (Just "instruction") Nothing (W.PolicySnapshot 2 "finalized" "deployment")
           config=W.PublicConfiguration W.L2LSignetDevnet "devnet" (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing Nothing)
-            "deployment" "mint" "owner" 8 M.empty False False (W.Availability False "paused") Nothing W.defaultPayoutPolicy
+            "deployment" "mint" "owner" 8 M.empty False False (W.Availability False "paused") Nothing W.defaultPayoutPolicy Nothing
           instruction=W.PaymentInstruction "solana:fixture" "reference" "mint" amount "verified_source_owner"
           evaluate :: forall a. Plan 'Customer a -> IO a
           evaluate (SafePlan value)=either reject pure (checkedOperation value) >>= \case
@@ -498,7 +498,7 @@ fundingCheck=bracket temporary removeDirectoryRecursive $ \dir->do
       hex value=TE.decodeUtf8 (Hex.convertToBase Hex.Base16 value)
       amount=either (error . show) id (D.amount 100)
       config=W.PublicConfiguration W.L2LSignetDevnet "devnet" (W.InterfaceConfig Nothing Nothing Nothing Nothing Nothing Nothing)
-        "deployment" "mint" "owner" 8 M.empty False False (W.Availability False "paused") Nothing W.defaultPayoutPolicy
+        "deployment" "mint" "owner" 8 M.empty False False (W.Availability False "paused") Nothing W.defaultPayoutPolicy Nothing
       fallback _ respond=respond $ responseLBS status404 [] "missing"
       send app method credentials=runSession (srequest $ SRequest ((setPath defaultRequest "/funding")
         {requestMethod=method,requestHeaders=credentials}) "") app

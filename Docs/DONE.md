@@ -1,5 +1,17 @@
 # Production acceptance
 
+2026-10-24 optional SOL top-up: scoped native application/test builds, full bridge
+test suite, Rust SDK tests (10), GHC JavaScript build and actual Chrome fixtures
+PASS. Separate disposable PostgreSQL gas accounting/restart/replay/refund/daily
+budget contract and ordinary ledger/recovery/restic regression PASS. Default
+offer is 0.005 SOL for 0.005 ECX extra, configurable and opt-in; no price lookup.
+Validation uses the committed Operation overlay and cached Cabal dependencies;
+the unrelated dirty capability draft is excluded. No full dirty-tree Cabal,
+packaged installer, live deployment or funded top-up acceptance is claimed.
+Separate read-only fixed_gas_verifier source review PASS; final evidence receipt
+and verdict are recorded in `.audit/sol-gas-top-up.tsv`. Task test services stopped.
+Existing production gates below remain unchanged.
+
 2026-10-23 unfinished-setup backup correction: scoped application/configuration
 builds and complete ConfigureCheck PASS. Tests cover sealed/unsealed correction,
 later-progress refusals, canonical source paths, unchanged-field restrictions,

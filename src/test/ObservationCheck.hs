@@ -79,7 +79,7 @@ checks=do
   slot<-fieldValue "slot" proof :: IO Int64
   let sourcePolicy=H.SolanaPolicy "source-test" "profile" (boundMint expected) (boundCustodyOwner expected) (boundCustody expected) (amt 10) (amt 10)
       sourceDeposit=W.Deposit ("solana:"<>boundSignature expected) (Just "order") Wrapped quantity (T.pack $ show slot) 1 True 100
-      sourceRequest=W.OrderRequest WrappedToNative quantity "destination" "" (Just $ boundOwner expected) "key"
+      sourceRequest=W.OrderRequest WrappedToNative quantity "destination" "" (Just $ boundOwner expected) "key" Nothing
       sourceBinding instruction=W.PaymentSource sourceDeposit sourceRequest (W.PolicySnapshot 2 "finalized" "profile") instruction
       sourceCall value method params=case (method,params) of
         ("getTransaction",[String signature,options])->do
@@ -263,7 +263,7 @@ nativeChecks=do
       detail=object ["category" .= ("receive"::Text),"address" .= address,"vout" .= (1::Int),"amount" .= Number 0.001]
       transaction=object ["txid" .= tx,"confirmations" .= (3::Int),"blockhash" .= tip,
         "amount" .= Number 0.001,"decoded" .= decoded,"details" .= [detail],"walletconflicts" .= ([]::[Text])]
-      request=W.OrderRequest NativeToWrapped (amt 100000) "destination" "refund" Nothing "idempotency"
+      request=W.OrderRequest NativeToWrapped (amt 100000) "destination" "refund" Nothing "idempotency" Nothing
       policy=W.PolicySnapshot 3 "finalized" "profile"
       binding a=if a==address then pure (Just ("order",request,policy)) else fail "unexpected address lookup"
       response method params=case (method,params) of
@@ -448,7 +448,7 @@ solanaScanChecks bound proof payProof reference=do
   slot<-fieldValue "slot" proof :: IO Int64
   let sig=boundSignature bound
       c=S.SolanaSettings W.L2LSignetDevnet "https://api.devnet.solana.com" Nothing (boundMint bound) (boundCustodyOwner bound) (boundCustody bound)
-      order=W.OrderRequest WrappedToNative (amt 10000) "native" "refund" (Just $ boundOwner bound) "key"
+      order=W.OrderRequest WrappedToNative (amt 10000) "native" "refund" (Just $ boundOwner bound) "key" Nothing
       policy=W.PolicySnapshot 2 "finalized" "profile"
       legacy memo=pure $ if memo==boundMemo bound then Just ("order",order,policy) else Nothing
       noReference _=pure Nothing

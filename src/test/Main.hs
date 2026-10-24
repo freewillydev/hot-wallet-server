@@ -105,7 +105,7 @@ fullSuite = do
         in length(nub identities)==6 && and
           [select(pending $ CustomerQuery PublicConfig)=="customer-read"
           ,select(pending $ OperatorQuery ServiceState)=="operator-read"
-          ,select(pending $ CustomerChange $ CreateOrder "auth" $ W.OrderRequest NativeToWrapped (good $ amount 100) "dest" "refund" Nothing "key")=="customer-write"
+          ,select(pending $ CustomerChange $ CreateOrder "auth" $ W.OrderRequest NativeToWrapped (good $ amount 100) "dest" "refund" Nothing "key" Nothing)=="customer-write"
           ,select(pending $ OperatorChange (Proxy @'[OperatorService]) $ \cap -> pauseService cap "reason")=="operator-write"
           ,select(workerRequest @'[WorkerCycle] runWorkerCycle)=="worker"
           ,select(workerRequest @'[WorkerObservation] observeChains)=="worker"
@@ -127,7 +127,7 @@ fullSuite = do
           (Right (ReadCustomer PublicConfig), Nothing) -> True
           _ -> False
     , check "existential interpreter rejects changed severity and signer result" $ once $ property $
-        let order=W.OrderRequest NativeToWrapped (good $ amount 100) "dest" "refund" Nothing "key"
+        let order=W.OrderRequest NativeToWrapped (good $ amount 100) "dest" "refund" Nothing "key" Nothing
             wrongSeverity=interpret (SomeOperation (CustomerChange $ CreateOrder "auth" order))
               (Compile :: DSL (CustomerCommand 'Safe W.OrderView))
             wrongResult=interpret (SomeOperation (SignerAction $ PreparedSigning $ SignPrepared "deployment" "payment" 3))
@@ -229,7 +229,7 @@ balanced = all (==0) . M.elems . M.fromListWith (+) . map (\p->(postingAsset p,p
 handlerContract :: Bool
 handlerContract =
   let config :<|> create :<|> status :<|> instructions = customerServer
-      inputRequest = W.OrderRequest NativeToWrapped (good $ amount 100) "destination" "refund" Nothing "key"
+      inputRequest = W.OrderRequest NativeToWrapped (good $ amount 100) "destination" "refund" Nothing "key" Nothing
       configOK = case config of
         SafePlan req -> case checkedOperation req of Right(ReadCustomer PublicConfig) -> True; _ -> False
         _ -> False

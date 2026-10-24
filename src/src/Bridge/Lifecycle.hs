@@ -122,6 +122,10 @@ decideSettlement expected facts outcome = do
   let current=settlementCurrent facts; view=settlementPayment facts
       state=outcomeState outcome; proof=outcomeRecord outcome
       paid=case outcome of Succeeded{}->True; Failed{}->False
+      gas=if paid then maybe 0 (toInteger . units) (paymentGasLamports $ savedPayment view) else 0
+      costs=outcomeCosts outcome
+  ensure (toInteger(units $ networkFee costs)+toInteger(units $ accountRent costs)+gas
+    <=toInteger(units $ recordedFee expected)) "settlement_fee_or_evidence_invalid"
   ensure (recordedState expected=="broadcast_intent" && recordedSequence expected/=Nothing
     && paymentId(savedPayment view)==recordedPayment current
     && recordedChain current==(if paymentAsset(savedPayment view)==Native then "Native" else "Solana")
@@ -292,7 +296,7 @@ checkPreparationInput allowance plan view = do
   ensure (decoded/=Null) "invalid_payment_record"
   let costs=paymentLimits $ savedTerms view; value=toInteger . units
       bound=if paymentAsset(savedPayment view)==Native then value(savedNativeFee costs)
-        else value(savedSolanaFee costs)+value(savedSolanaRent costs)
+        else value(savedSolanaFee costs)+value(savedSolanaRent costs)+maybe 0 value (paymentGasLamports $ savedPayment view)
   ensure (units allowance>0 && value allowance<=bound) "order_fee_limit_exceeded"
 
 -- Native family selection is the latest saved member and whether an unfinished
@@ -347,7 +351,8 @@ decideSend facts = do
 -- match bypasses this decision and retains its original quote and deadlines.
 data OrderLimits = OrderLimits
   { maximumWithdrawal :: Amount, quoteSeconds :: Int64
-  , graceSeconds :: Int64, maximumQueued :: Int, nativeDaily :: Amount, solanaDaily :: Amount }
+  , graceSeconds :: Int64, maximumQueued :: Int, nativeDaily :: Amount, solanaDaily :: Amount
+  , offeredGasTopUp :: Maybe GasTopUp }
   deriving (Eq,Show)
 data OrderAdmissionFacts = OrderAdmissionFacts
   { orderIntake :: IntakeFacts, queuedOrders :: Int, availableFloat :: Integer
@@ -361,13 +366,16 @@ quoteOrder request = do
   ensure (W.sourceOwner request==Nothing && (W.direction request/=WrappedToNative || T.null(W.refund request))) "invalid_connection_free_order"
   let address t=not(T.null t) && T.length t<=128 && not(T.any (<= ' ') t)
   ensure (address(W.recipient request) && (W.direction request/=NativeToWrapped || address(W.refund request))) "invalid_destination"
-  quote (W.input request)
+  ensure (W.direction request==NativeToWrapped || W.gasTopUp request==Nothing) "gas_top_up_wrap_only"
+  quoteWithGas (W.input request) (W.gasTopUp request)
 
 -- The two alternate payment costs protect conversion and full refund separately.
 -- This is not principal inventory or the fee hold for a prepared payment.
-orderCostReservations :: Direction -> CostLimits -> Either Text [(Text,Asset,Amount)]
-orderCostReservations direction costs = do
-  total<-amount (toInteger(units $ W.savedSolanaFee costs)+toInteger(units $ W.savedSolanaRent costs))
+orderCostReservations :: Direction -> CostLimits -> Maybe GasTopUp -> Either Text [(Text,Asset,Amount)]
+orderCostReservations direction costs gas = do
+  ensure (direction==NativeToWrapped || gas==Nothing) "gas_top_up_wrap_only"
+  total<-amount (toInteger(units $ W.savedSolanaFee costs)+toInteger(units $ W.savedSolanaRent costs)
+    +maybe 0 (toInteger . units . gasLamports) gas)
   let wrapping=direction==NativeToWrapped
   pure [(if wrapping then "refund" else "conversion",Native,W.savedNativeFee costs)
        ,(if wrapping then "conversion" else "refund",Sol,total)]
@@ -380,13 +388,14 @@ shouldExpireQuote now grace hasReceipt = do
 decideOrder :: OrderLimits -> CostLimits -> W.OrderRequest -> OrderAdmissionFacts -> Either Text OrderAdmission
 decideOrder limits costs request facts = do
   checkIntake (orderIntake facts)
+  ensure (W.gasTopUp request==Nothing || W.gasTopUp request==offeredGasTopUp limits) "gas_top_up_offer_changed"
   quoted<-quoteOrder request
   ensure (queuedOrders facts<maximumQueued limits) "queue_full"
   ensure (availableFloat facts>=toInteger(units $ net quoted)) "insufficient_inventory"
   let now=intakeTime $ orderIntake facts
       deadline=toInteger now+toInteger(quoteSeconds limits); grace=deadline+toInteger(graceSeconds limits)
   ensure (now>=0 && grace<=toInteger(maxBound::Int64)) "invalid_order_time"
-  allocations<-orderCostReservations (W.direction request) costs
+  allocations<-orderCostReservations (W.direction request) costs (W.gasTopUp request)
   forM_ allocations $ \(_,asset,n)->checkFeeBudget n (if asset==Native then nativeOrderBudget facts else solanaOrderBudget facts)
   pure $ OrderAdmission quoted (fromInteger deadline) (fromInteger grace) allocations
 
@@ -552,7 +561,8 @@ decidePromotion identity now facts = do
   ensure (now>=0) "invalid_promotion_time"
   let order=promotionOrder facts; request=W.request order; quoted=W.quote order
       receipt=promotionReceipt facts; policy=W.policy order; direction=W.direction request
-  ensure (W.input request==gross quoted && W.deploymentFingerprint policy==identity) "saved_order_terms_mismatch"
+  ensure (W.input request==gross quoted && W.gasTopUp request==quoteGasTopUp quoted
+    && W.deploymentFingerprint policy==identity) "saved_order_terms_mismatch"
   let exact=W.depositOrder receipt==Just(W.orderId order) && W.depositAmount receipt==gross quoted && W.depositAsset receipt==sourceAsset direction
       eligible=W.depositEligible receipt && (W.depositAsset receipt/=Native || W.depositConfirmations receipt>=W.nativeDepth policy)
       timely=W.depositSeenAt receipt>=0 && W.depositSeenAt receipt<=W.deadline order && now<=promotionGrace facts
@@ -572,7 +582,7 @@ checkPromotionHolds :: W.OrderView -> CostLimits -> [(Text,Int64,Text)] -> [(Tex
 checkPromotionHolds order costs principal operating = do
   let direction=W.direction(W.request order)
   ensure (principal==[(T.pack(show $ destinationAsset direction),units(net $ W.quote order),"quote")]) "reservation_not_provisional"
-  expected<-orderCostReservations direction costs
+  expected<-orderCostReservations direction costs (quoteGasTopUp $ W.quote order)
   ensure (sort operating==sort [(purpose,T.pack(show asset),units n,"quote") | (purpose,asset,n)<-expected]) "operating_reservation_not_provisional"
 
 data RefundFacts = RefundFacts
@@ -598,7 +608,7 @@ refundableWork receipt unresolved obligations = do
 decideRefund :: W.OrderRequest -> W.Deposit -> CostLimits -> RefundFacts -> Either Text Payment
 decideRefund request receipt costs facts = do
   _<-refundableWork (W.depositId receipt) (refundUnresolved facts) (refundObligations facts)
-  allocations<-orderCostReservations (W.direction request) costs
+  allocations<-orderCostReservations (W.direction request) costs (W.gasTopUp request)
   (asset,allowance)<-case [(a,n) | ("refund",a,n)<-allocations] of [one]->Right one; _->Left "invalid_order_cost_policy"
   phase<-case refundHold facts of
     [(a,n,p)] | a==T.pack(show asset) && n==units allowance->Right p

@@ -869,7 +869,7 @@ readOrder c identity coverage cap identifier = do
   request <- decodeSaved (S.requestJson r)
   savedQuote <- decodeSaved (S.quoteJson r)
   policy <- decodeSaved (S.policyJson r)
-  require (W.input request==gross savedQuote && W.deploymentFingerprint policy==identity) "saved_order_terms_mismatch"
+  require (W.input request==gross savedQuote && W.gasTopUp request==quoteGasTopUp savedQuote && W.deploymentFingerprint policy==identity) "saved_order_terms_mismatch"
   visible <- case (S.instructionIssued r,S.instructionSequence r,S.instruction r) of
     (0,_,_) -> pure Nothing
     (1,Just sequenceNumber,Just instruction) -> do
@@ -1848,7 +1848,7 @@ readPayment c identity identifier = do
       termsQuote <- decodeSaved (S.quoteJson order)
       policy <- decodeSaved (S.policyJson order)
       costs <- CostLimits <$> quantity nativeFee <*> quantity solanaFee <*> quantity rent
-      require (nativeFee>0 && solanaFee>0 && W.input request==gross termsQuote &&
+      require (nativeFee>0 && solanaFee>0 && W.input request==gross termsQuote && W.gasTopUp request==quoteGasTopUp termsQuote &&
         S.depositOrder deposit==Just (S.orderId order) && S.depositAllocated deposit==1) "payment_funding_mismatch"
       asset <- parseAsset (S.depositAsset deposit)
       n <- quantity (S.depositAmount deposit)
@@ -2362,6 +2362,7 @@ settleOutcome c identity expected outcome = do
       case settlementOutcome effects of
         Succeeded costs _->do
           post c ("settlement:"<>txid) "successful finalized payout" (settlementPrincipal effects)
+          forM_ (paymentGasLamports $ savedPayment view) $ paymentCost c current ("gas-top-up:"<>txid) "customer SOL gas top-up"
           forM_ [("network-fee",W.networkFee costs),("account-rent",W.accountRent costs)] $ \(label,cost)->
             when (units cost>0) $ paymentCost c current (label<>":"<>txid) label cost
         Failed cost _->paymentCost c current ("failed-fee:"<>txid) "finalized Solana failure network fee" cost

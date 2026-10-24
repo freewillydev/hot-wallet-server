@@ -4,7 +4,7 @@ module Bridge.Config
   ( Config(..),OwnerFeeRecipients(..),loadConfig,validateConfig,validateSetupConfig,fingerprint,nativeSettings,solanaSettings
   , observerSettings,storePolicy,solanaPolicy,publicConfiguration
   , defaultInterface,loadInterface,validateInterface,validateLinks ) where
-import Bridge.Domain (Amount,amount,units)
+import Bridge.Domain (Amount,GasTopUp,gasLamports,amount,units)
 import Bridge.Wire (Profile(..),InterfaceConfig(..),PublicConfiguration(..),Availability(..),PaymentTerms(..),PolicySnapshot(..),CostLimits(..),PayoutPolicy(..),defaultPayoutPolicy)
 import Bridge.Lifecycle (checkPayoutPolicy)
 import Bridge.Identity (digest,publicKey)
@@ -54,6 +54,7 @@ data Config = Config
   , solanaOperatingHistoryStart :: !Text, maxNativeDailyCost :: !Amount, maxSolDailyCost :: !Amount
   , payoutPolicy :: !PayoutPolicy
   , ownerFeeRecipients :: !(Maybe OwnerFeeRecipients)
+  , gasTopUpOffer :: !(Maybe GasTopUp)
   } deriving (Eq,Show,Generic,ToJSON)
 -- Legacy order bounds never constrain swaps. Retain the old maximum only as
 -- its previously shared fee-withdrawal cap, without changing custody identity.
@@ -84,12 +85,12 @@ solanaPolicy c=H.SolanaPolicy (deploymentId c) (fingerprint c) (mint c) (custody
 storePolicy :: Config -> Store.StorePolicy
 storePolicy c=Store.StorePolicy
   (PaymentTerms (PolicySnapshot (nativeConfirmations c) "finalized" (fingerprint c)) (CostLimits (maxNativeFee c) (maxSolFee c) (maxSolAccountRent c)))
-  (Store.OrderLimits (maxWithdrawal c) (quoteSeconds c) (confirmationGraceSeconds c) (maxQueued c) (maxNativeDailyCost c) (maxSolDailyCost c))
+  (Store.OrderLimits (maxWithdrawal c) (quoteSeconds c) (confirmationGraceSeconds c) (maxQueued c) (maxNativeDailyCost c) (maxSolDailyCost c) (gasTopUpOffer c))
   (deploymentId c) (backupRequired c) (payoutPolicy c)
 publicConfiguration :: Config -> InterfaceConfig -> Bool -> PublicConfiguration
 publicConfiguration c links paying=PublicConfiguration (profile c) (if profile c==CanonicalBeta then "mainnet-beta" else "devnet")
   links (deploymentId c) (mint c) (custodyOwner c) 8
-  (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)]) paying False (Availability False "starting") Nothing (payoutPolicy c)
+  (M.fromList [("NativeToWrapped",100),("WrappedToNative",100)]) paying False (Availability False "starting") Nothing (payoutPolicy c) (gasTopUpOffer c)
 
 fingerprint :: Config -> Text
 fingerprint c=digest . LBS.toStrict . encode $ object
@@ -136,6 +137,8 @@ validateSetupConfig c = do
   require (units(maxNativeFee c)>0 && units(maxSolFee c)>0) "invalid_fee_budget"
   total<-either reject pure (amount $ toInteger(units $ maxSolFee c)+toInteger(units $ maxSolAccountRent c))
   require (maxNativeDailyCost c>=maxNativeFee c && maxSolDailyCost c>=total) "invalid_daily_budget"
+  forM_ (gasTopUpOffer c) $ \gift->require
+    (toInteger(units $ maxSolDailyCost c)>=toInteger(units total)+toInteger(units $ gasLamports gift)) "gas_top_up_exceeds_daily_budget"
   require (profile c/=CanonicalBeta || backupRequired c) "canonical_backup_required"
 
 -- Public presentation settings are separate from financial identity and orders.
