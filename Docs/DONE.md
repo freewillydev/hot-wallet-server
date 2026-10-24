@@ -1,11 +1,22 @@
 # Production acceptance
 
+2026-10-23 unfinished-setup backup correction: scoped application/configuration
+builds and complete ConfigureCheck PASS. Tests cover sealed/unsealed correction,
+later-progress refusals, canonical source paths, unchanged-field restrictions,
+old-credential matching and replay across all four private file publications.
+Only two backup fields may change; wallet keys and setup seal are preserved.
+Validation used the committed Operation overlay and cached Cabal dependencies,
+not a full dirty-tree Cabal build. Root-only Ubuntu update dispatch and the user's
+installation are not newly exercised. Receipt: /tmp/ecx-backup-config-build/receipt.json.
+Fresh read-only backup_correction_verifier PASS for source, evidence hashes and
+scoped planner/private-journal acceptance; no broader release approval implied.
+
 2026-10-23 Mac backup endpoint: Cloudflare HTTPS restic initialization, backup,
 exact restore and read-data check PASS for a new isolated repository and harmless
 fixture. Private credentials remain outside Git. Existing auth/repositories and
 Cloudflare settings are preserved. This does not establish funded recovery,
 independent physical storage for a same-Mac VM, or application of the new backup
-fields to the user's saved Ubuntu setup; the current updater refuses that change.
+fields to the user's saved Ubuntu setup; the early-setup correction is recorded above.
 Fresh read-only mac_backup_verify PASS: HTTPS authentication/isolation, private
 permissions, preserved auth entries, exact fixture restore and wrong-password refusal.
 Existing production gates below are unchanged.

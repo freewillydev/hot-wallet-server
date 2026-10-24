@@ -1,7 +1,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 -- Installation input is data, parsed by Read; it is never evaluated as Haskell.
 -- Deliberately no Show instance: the record contains credentials and private keys.
-module InstallConfig (InstallConfig(..),readInstallConfig,readInstallConfigUpdate,validateOperationalUpdate,validateInstallConfig,updateSettings) where
+module InstallConfig (InstallConfig(..),readInstallConfig,readInstallConfigUpdate,backupSetupUpdate,validateOperationalUpdate,validateInstallConfig,updateSettings) where
 import Bridge.AdminKey (readPrivate)
 import Bridge.Domain (parseCoins,units)
 import Bridge.Error
@@ -70,9 +70,21 @@ readInstallConfigUpdate previous candidate=do
 readPreviousInstallConfig :: FilePath -> IO (InstallConfig,B.ByteString)
 readPreviousInstallConfig previous=do
   oldBytes<-readPrivate previous
+  readPreviousRecord oldBytes
+
+readPreviousRecord :: B.ByteString -> IO (InstallConfig,B.ByteString)
+readPreviousRecord oldBytes=do
   (old,legacy)<-either (reject . ("Saved installation: "<>)) pure (parseInstallRecord True $ B8.unpack oldBytes)
   key<-if legacy then validateWithSolanaKey old (readLegacyKey $ solSeedBip39 old) else validateInstallConfig old
   pure(old,key)
+
+-- Only credential correction, not a runtime backup migration or custody change.
+-- The caller must additionally prove that installation has not progressed.
+backupSetupUpdate :: B.ByteString -> InstallConfig -> IO (Maybe InstallConfig)
+backupSetupUpdate bytes config=do
+  (old,_)<-readPreviousRecord bytes
+  pure $ if old/=config && old {backupRepositoryUrl=backupRepositoryUrl config
+    ,backupPassword=backupPassword config}==config then Just old else Nothing
 
 -- Runtime publication currently supports this explicit operational subset. Other
 -- changes need their own custody/backup/recipient/website workflow, even when the

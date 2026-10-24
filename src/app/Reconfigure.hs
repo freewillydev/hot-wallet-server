@@ -1,6 +1,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 -- Root-only configuration lifecycle. No keys are generated and no payment is sent.
-module Reconfigure (updateConfig) where
+module Reconfigure (updateConfig,backupSetupFiles) where
 import Bridge.AdminKey (readPrivate,privateParent,withFamily)
 import Bridge.Error
 import Bridge.File (withHandle,readBounded)
@@ -22,7 +22,8 @@ import qualified Data.Aeson.KeyMap as M
 import Data.Aeson
 import Data.Aeson.Types (parseEither)
 import Data.Bits ((.&.))
-import Data.List (find)
+import Data.List (find,isPrefixOf)
+import Data.Maybe (isJust)
 import Control.Monad (forM,forM_,unless,when,filterM)
 import Control.Exception (bracket,catch,throwIO)
 import Crypto.Random (getRandomBytes)
@@ -111,7 +112,11 @@ updateLocked input=do
           currentInstalled<-exists "/etc/ecx-bridge/installed"
           require (installed==currentInstalled) "configuration_update_installation_changed"
           let old=beforeView saved
-          expected<-configurationFiles old bytes settings initialized installed
+          backup<-if initialized then required old (state</>"server.conf") >>= \previous->I.backupSetupUpdate previous settings
+            else pure Nothing
+          expected<-if initialized && isJust backup
+            then backupSetupFiles old exists bytes settings
+            else configurationFiles old bytes settings initialized installed
           require (saved==expected) "configuration_update_plan_changed"
           publish journal saved initialized installed
          else do
@@ -128,12 +133,15 @@ updateLocked input=do
           if initialized && changed/=(False,False) then do
             WalletRotation.rotateWallets candidate journal settings bytes changed
            else do
-            when initialized $ do
+            backup<-if initialized then maybe (pure Nothing) (`I.backupSetupUpdate` settings) prior else pure Nothing
+            let correctingBackup=initialized && isJust backup
+            when (initialized && not correctingBackup) $ do
               I.validateOperationalUpdate (journal</>"previous.conf") candidate
               bound<-exists(setup</>"bootstrap-bound.json")
               require (not bound || installed) "bootstrap_in_progress_finish_original_configuration_first"
             exact (journal</>"mode.json") (L.toStrict $ encode (initialized,installed))
-            files<-configurationFiles readExisting bytes settings initialized installed
+            files<-if correctingBackup then backupSetupFiles readExisting exists bytes settings
+              else configurationFiles readExisting bytes settings initialized installed
             Files.stageConfigFiles journal files
             publish journal files initialized installed
  where
@@ -153,6 +161,41 @@ afterView files path=case find ((==path).Files.configPath) files of
 beforeView files path=case find ((==path).Files.configPath) files of
   Just file->pure $ Files.configBefore file
   Nothing->readExisting path
+
+-- A failed backup preflight seals setup before any node/wallet initialization.
+-- Repair only its credential files, preserving keys and the path-based seal.
+-- Actual phase evidence is rechecked on journal replay under the lifecycle lock.
+backupSetupFiles :: View -> (FilePath -> IO Bool) -> B.ByteString -> I.InstallConfig -> IO [Files.ConfigFile]
+backupSetupFiles old present bytes settings=do
+  verifySetup old True False
+  previous<-required old (state</>"server.conf")
+  prior<-I.backupSetupUpdate previous settings >>= maybe (reject "backup_setup_update_only_backup_fields") pure
+  spec<-readJSON old (setup</>"setup.json")
+  sources<-readJSON old (setup</>"sources.json")
+  let seed=setup<>"-keys/ecx-recovery.txt"
+      repository=setup</>"backup.repository"
+      password=setup</>"backup.password"
+      field value key=case value of Object fields->M.lookup key fields; _->Nothing
+      blocked=map (setup</>) ["node-config.before","ata-creation.json","bootstrap-complete.json"
+        ,"worker.json","signer.json","wallet-replacement.json"]
+        <>[seed<>".initialized.json","/var/lib/ecx-bridge-install","/etc/ecx-bridge"
+          ,"/var/lib/ecx-bridge-setup/installed-directory.json"]
+      repositoryBytes config=B8.pack $ let url=I.backupRepositoryUrl config in
+        if "https://" `isPrefixOf` url then "rest:"<>url else url
+  require (field spec "existing"==Just(Bool False) && field spec "managedNode"==Just(Bool True)
+    && field spec "nativeRestore"==Just(Bool False) && field spec "restoredCustody" `elem` [Nothing,Just(Bool False)]
+    && field spec "method" `elem` [Just(String "source"),Just(String "bundle")]
+    && field spec "nativeSeedFile"==Just(toJSON seed)
+    && field sources "backup.repository"==Just(toJSON repository)
+    && field sources "backup.password"==Just(toJSON password)) "backup_setup_update_requires_fresh_import"
+  present(setup</>"native-rpc.conf") >>= \generated->require generated "backup_setup_update_requires_fresh_import"
+  forM_ blocked $ \path->present path >>= \progressed->
+    require (not progressed) "backup_change_after_initialization_requires_recovery"
+  required old repository >>= \saved->require (saved==repositoryBytes prior) "backup_setup_credentials_changed"
+  required old password >>= \saved->require (saved==B8.pack(I.backupPassword prior)) "backup_setup_credentials_changed"
+  mapM (uncurry $ replacement old)
+    [(state</>"server.conf",bytes),(setup</>"install.conf",bytes)
+    ,(repository,repositoryBytes settings),(password,B8.pack $ I.backupPassword settings)]
 
 configurationFiles :: View -> B.ByteString -> I.InstallConfig -> Bool -> Bool -> IO [Files.ConfigFile]
 configurationFiles old bytes settings initialized installed=do
@@ -266,7 +309,7 @@ validateTarget file=do
 writablePaths :: [FilePath]
 writablePaths=[state</>"server.conf"]<>map (setup</>)
   ["install.conf","bootstrap.json","bootstrap-complete.json","worker.json","signer.json","interface.json"
-  ,"hosting.json","tunnel.token","bootstrap-bound.json"]
+  ,"hosting.json","tunnel.token","bootstrap-bound.json","backup.repository","backup.password"]
   <>["/etc/ecx-bridge/worker/config.json","/etc/ecx-bridge/signer/config.json","/etc/ecx-bridge/worker/interface.json"
     ,"/etc/ecx-bridge/tunnel/token","/etc/ecx-bridge/tunnel/hosting.json"]
 

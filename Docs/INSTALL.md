@@ -537,6 +537,15 @@ remain unchanged. Other financial/backup/website changes are refused rather than
 silently accepted. An incomplete sealed bootstrap must finish before applying an
 ordinary settings update.
 
+If initial setup stopped at encrypted backup access, the same updater can correct
+**only** `backupRepositoryUrl` and `backupPassword`. Edit those two fields and run
+`git pull --ff-only && sudo ./build/update-config.sh`. It archives the old values
+privately and preserves the wallet keys and setup seal. Correction is refused if
+node/wallet setup or runtime installation has progressed; it never migrates an
+initialized server's backups or resets saved state. A Solana RPC URL is not a
+backup repository: supply an authenticated HTTPS restic repository and its separate
+encryption password.
+
 Owner destinations may match the bridge wallets. For that asset, automatic fee
 withdrawals are skipped: fees remain recorded as earned and unwithdrawn, with no
 self-transfer or extra network fee. They are not reclassified as available

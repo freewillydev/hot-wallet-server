@@ -4,6 +4,7 @@ import qualified NodeSetup
 import qualified Bootstrap
 import qualified InstallConfig
 import qualified ReconfigureFiles as RF
+import qualified Reconfigure
 import qualified RotationFiles as RD
 import qualified Token
 import qualified Token.Operation as TO
@@ -434,6 +435,11 @@ importContract parent executable=do
     removeFile invalid
   (first,out,err)<-invoke conf output
   require (first==ExitSuccess) "import_contract_first_install_failed"
+  let backupFields=map (\(name,value)->(name,case name of
+        "backupRepositoryUrl"->show ("https://corrected.example.invalid/new-repository"::String)
+        "backupPassword"->show ("corrected-fixture-password"::String)
+        _->value)) fields
+  backupSetupContract parent output (B8.pack $ record fields) (B8.pack $ record backupFields) (read $ record backupFields)
   let privateFiles=[output</>name | name<-["install.conf","sources.json","bootstrap.json","setup.json","interface.json","hosting.json","backup.repository","backup.password"]]
         <>[output<>"-keys/"<>name | name<-["solana.keypair.json","ecx-recovery.txt","native-unlock"]]
   before<-mapM B.readFile privateFiles
@@ -566,6 +572,76 @@ importContract parent executable=do
     && importedKey==L.toStrict(encode $ B.unpack key) && importedPhrase==B8.pack(phrase<>"\n")
     && not(or generated) && and invalid && changedCode/=ExitSuccess && mixedCode/=ExitSuccess
     && resumeCode/=ExitSuccess && "record_setup_incomplete_rerun_install" `isInfixOf` resumeError && not(or mixedKeys))
+
+-- Exercise the actual four-file correction plan and private journal, without
+-- provisioning a node, contacting a network or modifying a real installation.
+backupSetupContract :: FilePath -> FilePath -> B.ByteString -> B.ByteString -> InstallConfig.InstallConfig -> IO ()
+backupSetupContract parent imported previous candidate settings=do
+  let state="/var/lib/hot-wallet-server"; setup=state</>".ecx-bridge"
+      names=["bootstrap.json","setup.json","sources.json","interface.json"]
+      change name (Object fields)=Object $ case name of
+        "setup.json"->KM.insert "nativeSeedFile" (toJSON $ setup<>"-keys/ecx-recovery.txt") fields
+        "sources.json"->KM.insert "backup.repository" (toJSON $ setup</>"backup.repository") $
+          KM.insert "backup.password" (toJSON $ setup</>"backup.password") fields
+        _->fields
+      change _ value=value
+  records<-forM names $ \name->B.readFile(imported</>name) >>= either fail (pure . change name) . eitherDecodeStrict'
+  credentials<-mapM (B.readFile . (imported</>)) ["backup.repository","backup.password"]
+  let table=M.fromList $ [(setup</>name,L.toStrict $ encode value) | (name,value)<-zip names records]
+        <>[(state</>"server.conf",previous),(setup</>"install.conf",previous)
+          ,(setup</>"bootstrap-bound.json",L.toStrict $ encode records)]
+        <>zip (map (setup</>) ["backup.repository","backup.password"]) credentials
+      view values path=pure $ M.lookup path values
+      present extra path=pure $ path `elem` (setup</>"native-rpc.conf"):extra
+      plan values evidence=Reconfigure.backupSetupFiles (view values) (present evidence) candidate settings
+      refuse reason action=do
+        result<-try action :: IO (Either BridgeError [RF.ConfigFile])
+        require (case result of Left(BridgeError actual)->actual==reason; _->False) "backup_setup_refusal_contract_failed"
+      targets=map (state</>) ["server.conf",".ecx-bridge/install.conf",".ecx-bridge/backup.repository",".ecx-bridge/backup.password"]
+  files<-plan table []
+  unsealed<-plan (M.delete (setup</>"bootstrap-bound.json") table) []
+  require (files==unsealed && map RF.configPath files==targets
+    && map RF.configAfter files==[candidate,candidate,"rest:https://corrected.example.invalid/new-repository","corrected-fixture-password"]
+    && all ((==0o600).RF.configMode) files) "backup_setup_plan_contract_failed"
+  -- Seals and keys are absent from the write set. Every later-progress marker
+  -- refuses, including partial installation without a completed installed marker.
+  forM_ (map (setup</>) ["node-config.before","ata-creation.json","bootstrap-complete.json","worker.json","signer.json","wallet-replacement.json"]
+    <>[setup<>"-keys/ecx-recovery.txt.initialized.json","/var/lib/ecx-bridge-install","/etc/ecx-bridge"
+      ,"/var/lib/ecx-bridge-setup/installed-directory.json"]) $ \marker->
+      refuse "backup_change_after_initialization_requires_recovery" (plan table [marker])
+  refuse "backup_setup_update_requires_fresh_import" $
+    Reconfigure.backupSetupFiles (view table) (const $ pure False) candidate settings
+  forM_ ["backup.repository","backup.password"] $ \name->do
+    refuse "backup_setup_credentials_changed" (plan (M.insert (setup</>name) "unexpected" table) [])
+    let value=change "sources.json" (object ["backup.repository" .= ("other-path"::String)])
+        changed=M.insert (setup</>"sources.json") (L.toStrict $ encode value) $ M.delete (setup</>"bootstrap-bound.json") table
+    -- Override after normalization to exercise refusal of a noncanonical path.
+        Object sourceFields=value
+        bad=Object $ KM.insert (Key.fromString name) (String "/other/credential") sourceFields
+    refuse "backup_setup_update_requires_fresh_import" (plan (M.insert (setup</>"sources.json") (L.toStrict $ encode bad) changed) [])
+  refuse "bootstrap_saved_configuration_changed" (plan (M.insert (setup</>"bootstrap-bound.json") "[]" table) [])
+  forM_ [settings {InstallConfig.domain="other.example.invalid"},settings {InstallConfig.resticExecutable="/other/restic"}
+    ,settings {InstallConfig.solSeedBip39=unwords(replicate 11 "abandon"<>["about"])}] $ \combined->
+      refuse "backup_setup_update_only_backup_fields" $
+        Reconfigure.backupSetupFiles (view table) (present []) candidate combined
+  uid<-getEffectiveUserID;gid<-getEffectiveGroupID
+  forM_ [0..4::Int] $ \cut->do
+    let directory=parent</>("backup-repair-"<>show cut);journal=directory</>"journal"
+        local=[file {RF.configPath=directory</>show n,RF.configOwner=uid,RF.configGroup=gid}
+          | (n,file)<-zip [0::Int ..] files]
+    createDirectory directory;setFileMode directory 0o700
+    forM_ local $ \file->mapM_ (savePrivate $ RF.configPath file) (RF.configBefore file)
+    RF.stageConfigFiles journal local
+    -- Simulate interruption after each possible publication boundary.
+    forM_ (take cut local) $ \file->B.writeFile (RF.configPath file) (RF.configAfter file)
+    saved<-RF.loadConfigFiles journal
+    RF.publishConfigFiles journal saved
+    RF.publishConfigFiles journal saved
+    actual<-mapM (B.readFile . RF.configPath) local
+    modes<-mapM (fmap ((.&. 0o777).fileMode) . getFileStatus . RF.configPath) local
+    require (actual==map RF.configAfter local && all(==0o600)modes && saved==local) "backup_setup_replay_contract_failed"
+    denied<-try(RF.publishConfigFiles journal (case saved of f:fs->f {RF.configAfter="changed-input"}:fs; _->[])) :: IO (Either BridgeError ())
+    require (either (const True) (const False) denied) "backup_setup_changed_replay_accepted"
 
 -- An unavailable backup must not stall setup or leave its subprocess running.
 -- This executable is a process fixture, not a simulated chain or accepted backup.

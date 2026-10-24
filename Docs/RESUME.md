@@ -8,6 +8,20 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Current config updater checkpoint (2026-10-23)
 
+Backup-only correction is now implemented for imported setup stopped before node
+initialization: update-config.sh can change backupRepositoryUrl/backupPassword
+while preserving wallets and the bootstrap seal. Exactly four private files are
+journaled; original credentials are retained. Current phase markers and original
+credential bytes are checked again during interrupted-update replay. Initialized
+or installed servers still refuse backup changes; unrelated edits remain subject
+to existing policy. Latest app and ConfigureCheck builds/contracts PASS with the
+committed Operation overlay (one GHC job, cached Cabal dependencies/assets).
+Receipt: /tmp/ecx-backup-config-build/receipt.json. This is planner/private-file
+acceptance, not root-only Ubuntu lifecycle or funded acceptance. Next: pull main
+on the user's localhost Ubuntu host and rerun update-config.sh with only the two
+backup fields changed. Keep all state if a later-phase refusal occurs.
+Fresh read-only backup_correction_verifier PASS; no task test processes remain.
+
 Mac backup endpoint now works through the existing Cloudflare tunnel at
 backup-bridge.bitnames.info. A separate private repository was initialized for
 the user's localhost installation; prior repositories/auth entries were preserved.
@@ -21,9 +35,9 @@ Sanitized receipt: /tmp/hot-wallet-mac-backup-tunnel-20261023.json; hash in audi
 The generic Python HTTP probe got Cloudflare1010, but the actual restic client
 works; no Cloudflare security settings or tunnel routes were changed.
 This is endpoint acceptance, not a funded restore or Ubuntu installation pass.
-Next: securely apply the two backup fields on the user's Ubuntu host. Current
-Reconfigure/InstallConfig refuses backup-field changes and sealed incomplete setup;
-do not recommend deleting its state or claim the updater already supports this.
+The correction above supersedes the original refusal for early unfinished setup
+only. Securely apply the two backup fields on the user's Ubuntu host; never delete
+saved state or treat this as a backup migration for an initialized server.
 The Mac and attached backup drive must remain available. Same-Mac VM deployment
 shares the Mac's physical failure domain. Existing AWS backup settings are unchanged.
 
