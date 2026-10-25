@@ -1,9 +1,9 @@
-{-# LANGUAGE CPP, OverloadedStrings, DataKinds, TypeApplications, FlexibleContexts, TypeOperators, QualifiedDo #-}
+{-# LANGUAGE CPP, OverloadedStrings, DataKinds, TypeApplications, FlexibleContexts, TypeFamilies, TypeOperators, QualifiedDo #-}
 -- Compile normally for the positive control; each BAD_* macro must fail.
 module CapabilityCompile where
 import Bridge.Operation.Internal
 import Bridge.Critical ()
-import Control.Operation
+import Control.Operation hiding (Expand)
 import Data.Coerce (coerce)
 import Data.Proxy (Proxy(..))
 import qualified Control.Operation.Flow as F
@@ -11,8 +11,18 @@ import Data.Text (Text)
 import Data.Int (Int64)
 import Data.Typeable (Typeable)
 
-validPayout :: (Typeable value, PayoutCapabilities value) => value -> Text -> Maybe (Method value '[] '[] ())
-validPayout = payoutFlow
+validPayout :: (PayoutCapabilities value, MethodStep value ~ RequestStep caller) => value -> Text -> Method value '[] '[] ()
+validPayout value identifier = F.step (Expand (PayoutWorkflow value identifier))
+
+#ifdef BAD_UNEXPANDED_PROGRAM
+unexpandedProgram :: FlowRequest -> Program 'Worker 'Critical ()
+unexpandedProgram = WorkerDSL
+type FlowRequest = F.Flow (RequestStep 'Worker) '[] '[] ()
+#endif
+#ifdef BAD_SCOPE_CALLER
+wrongScope :: F.Flow (RequestStep 'Worker) '[] '[] () -> F.Flow (RequestStep 'Worker) '[] '[] ()
+wrongScope = F.step . Scoped OperatorGuard
+#endif
 
 #ifdef BAD_FLOW_ORDER
 signWithoutPreparation :: WorkerSigning value => value -> Method value '[Text] '[SignedPayout] Text
@@ -28,7 +38,7 @@ sendWithoutIntent = broadcastPayment
 #endif
 #ifdef BAD_FLOW_CAPABILITY
 hiddenPayout :: Stage '[CompileOperation 'Worker 'Critical ()]
-hiddenPayout = Stage (\value -> payoutFlow value "payment" `seq` Right value)
+hiddenPayout = Stage (\value -> validPayout value "payment" `seq` Right value)
 #endif
 #ifdef BAD_FLOW_IO
 uncheckedPayout :: IO () -> F.Flow (Action 'Worker) '[] '[] ()

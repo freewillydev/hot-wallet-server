@@ -1,5 +1,27 @@
 # Hot-wallet-server development checkpoint
 
+## Single command interpretation (2026-10-25)
+
+User chose request existential → interpret/Refl → complete F.do workflow → evaluator.
+Implemented in Operation/Internal.hs and Critical.hs. One local lowering pass in
+Command.interpret expands all eleven workflows; the old Workflow Operation instance,
+CompileWorkflow and runtime compiler adapters are gone. RequestStep cannot inhabit
+the final Program. Scope/caller indices, per-leaf authorization and exact failure
+semantics remain. Nested restricted requests inside concrete effects are unchanged.
+
+The formerly inconsistent local grammar is reconciled with all committed recovery
+branches preserved. Its original patch is retained privately at
+`.git/codex-preserved/operation-before-single-interpret.patch`; untracked architecture
+maps remain untouched. Builds now use the actual working source without an overlay.
+
+Local builds, both test suites, 39 negative/one positive capability checks and six
+fresh database/process/HTTPS contracts pass. The isolated PostgreSQL process is
+stopped; evidence/databases remain at `/tmp/ecx-single-interpret-pg.Pu7j76Dk`.
+Fresh separate single_interpret_verifier PASS for source publication; see
+`.audit/severity.tsv`. No deployed
+server or funds changed. The larger payment/configuration redesign remains design
+work, with no net size forecast or production recertification implied.
+
 ## Interrupted node download (2026-10-25)
 
 The shared downloader now continues after productive interruptions, stops after

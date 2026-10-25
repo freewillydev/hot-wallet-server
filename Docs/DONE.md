@@ -1,5 +1,17 @@
 # Production acceptance
 
+2026-10-25 single command interpretation: local verification PASS; fresh separate
+single_interpret_verifier PASS for scoped source publication. Complete F.do workflows now expand inside Command.interpret after Refl;
+Workflow is syntax only. Program admits final Action flows, not RequestStep flows.
+Library, application and store-check builds PASS; operation-test/bridge-test PASS;
+positive capability control and all 39 negative cases PASS; six fresh PostgreSQL
+contracts PASS (default, complete_resume, server, server_canonical, tls, tls_canonical).
+The test cluster is stopped. Production grammar/evaluator: 1,770 → 1,772 lines;
+test sources: +77 lines, Cabal +9, with one isolated core-only test component.
+This changes structure, not the larger size target. Existing live acceptance gates
+are unchanged. No deployment, keys, payments or schema changes. Evidence and final
+review receipt: `.audit/severity.tsv`.
+
 2026-10-25 managed-node productive retry fix: scoped PASS. The old helper fails
 the repeated-interruption regression after four productive attempts; the revised
 helper passes six real-curl/local-HTTPS cases (six interruptions, four no-progress

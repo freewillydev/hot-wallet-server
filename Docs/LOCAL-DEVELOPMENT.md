@@ -31,7 +31,7 @@ compiler selection to the browser's internal project.
 cabal --project-dir=build build all -j1 --offline
 cabal --project-dir=build test all -j1 --offline --test-show-details=direct
 # Targeted bridge checks:
-cabal --project-dir=build test ecx-bridge:bridge-test -j1 --offline --test-show-details=direct
+cabal --project-dir=build test ecx-bridge:operation-test ecx-bridge:bridge-test -j1 --offline --test-show-details=direct
 ```
 
 Omit `--offline` only when dependencies first need fetching. Prerequisites are
@@ -128,6 +128,7 @@ independent custody, lower a fence, alter saved terms or erase signed work.
 
 ## Consolidated verification
 
+`operation-test` checks actual command interpretation using isolated trace effects.
 `bridge-test` is the server Cabal QuickCheck/protocol suite.
 The bridge suite includes actual HTTP/TLS boundaries, protected credentials,
 protocol vectors and the pinned SDK's tests. `ecx-store-check` exercises closed
@@ -272,12 +273,13 @@ After building the core library, the positive control must compile; each negativ
 variant must fail for the named missing capability or incompatible nominal index:
 
 ```sh
-cabal --project-dir=build exec -- ghc-9.14.1 -fno-code -package-id ecx-bridge-0.1.0.0-inplace -package operation-capabilities-0.1.3.0 \
-  src/test/CapabilityCompile.hs
-for check in BAD_COMPILE BAD_WIDEN BAD_CALLER BAD_SEVERITY BAD_RESULT BAD_COERCE BAD_DOMAIN BAD_HIDDEN_WORKER BAD_IO \
-    BAD_FLOW_ORDER BAD_FLOW_BRANCH BAD_FLOW_SEND BAD_FLOW_CAPABILITY BAD_FLOW_IO BAD_FLOW_COERCE; do
-  if cabal --project-dir=build exec -- ghc-9.14.1 -fno-code -package-id ecx-bridge-0.1.0.0-inplace -package operation-capabilities-0.1.3.0 \
-      -D"$check" src/test/CapabilityCompile.hs; then
+cabal --project-dir=build exec -w ghc-9.14.1 -- ghc-9.14.1 -fno-code \
+  -package-id ecx-bridge-0.1.0.0-inplace -package-id ecx-bridge-0.1.0.0-inplace-workflow \
+  -package operation-capabilities-0.1.3.0 src/test/CapabilityCompile.hs
+for check in $(awk '/^#ifdef BAD_/ {print $2}' src/test/CapabilityCompile.hs); do
+  if cabal --project-dir=build exec -w ghc-9.14.1 -- ghc-9.14.1 -fno-code \
+      -package-id ecx-bridge-0.1.0.0-inplace -package-id ecx-bridge-0.1.0.0-inplace-workflow \
+      -package operation-capabilities-0.1.3.0 -D"$check" src/test/CapabilityCompile.hs; then
     echo "Unexpected compilation success: $check"
     exit 1
   fi

@@ -48,7 +48,7 @@ and GHC JavaScript/Solana FFI setup are in Docs/LOCAL-DEVELOPMENT.md. One job on
 - Build: `cabal --project-dir=build build exe:ecx-bridge -w ghc-9.14.1 -j1`.
   Verify import/dependency changes through the actual Cabal component; a broad
   GHC package environment can hide missing direct `build-depends` entries.
-- Test: `cabal --project-dir=build test bridge-test -w ghc-9.14.1 -j1 --test-show-details=direct`.
+- Test: `cabal --project-dir=build test operation-test bridge-test -w ghc-9.14.1 -j1 --test-show-details=direct`.
 - Focused wallet setup: append `--test-options=--configure-only` to that test command.
   It uses disposable fixture keys, real executable imports and terminal-driven
   startup preparation; it does not contact a chain or provision services.

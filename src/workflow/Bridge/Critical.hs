@@ -457,60 +457,49 @@ instance Execution 'Customer 'Critical CustomerCommand where
 -- Private instruction constructors own IO; capability methods only build Flow.
 -- A composed Flow checks each leaf's original observation permission before IO,
 -- including leaves chosen by a value-dependent continuation, under the held gate.
-data instance Action 'Operator before after a where
-  OperatorEffect :: Bool -> (CriticalEnvironment -> Values before -> IO (a,Values after)) -> Action 'Operator before after a
-  OperatorScope :: Flow (Action 'Operator) before after a -> Action 'Operator before after a
-data instance Action 'Worker before after a where
-  WorkerEffect :: Bool -> (CriticalEnvironment -> Values before -> IO (a,Values after)) -> Action 'Worker before after a
-  SigningScope :: Flow (Action 'Worker) before after a -> Action 'Worker before after a
-  BroadcastScope :: Flow (Action 'Worker) before after a -> Action 'Worker before after a
-  CycleScope :: Flow (Action 'Worker) before before () -> Action 'Worker before before ()
+data instance Effect 'Operator before after a where
+  OperatorEffect :: Bool -> (CriticalEnvironment -> Values before -> IO (a,Values after)) -> Effect 'Operator before after a
+data instance Effect 'Worker before after a where
+  WorkerEffect :: Bool -> (CriticalEnvironment -> Values before -> IO (a,Values after)) -> Effect 'Worker before after a
 
-operatorEffect :: Bool -> (CriticalEnvironment -> IO a) -> Flow (Action 'Operator) state state a
-operatorEffect allowed action = F.step $ OperatorEffect allowed $ \environment values -> do
+operatorEffect :: Bool -> (CriticalEnvironment -> IO a) -> Flow (RequestStep 'Operator) state state a
+operatorEffect allowed action = F.step $ Leaf $ OperatorEffect allowed $ \environment values -> do
   result <- action environment
   pure (result,values)
-workerEffect :: Bool -> (CriticalEnvironment -> IO a) -> Flow (Action 'Worker) state state a
+workerEffect :: Bool -> (CriticalEnvironment -> IO a) -> Flow (RequestStep 'Worker) state state a
 workerEffect allowed action = workerStep allowed $ \environment values -> do
   result <- action environment
   pure (result,values)
-workerStep :: Bool -> (CriticalEnvironment -> Values before -> IO (a,Values after)) -> Flow (Action 'Worker) before after a
-workerStep allowed = F.step . WorkerEffect allowed
+workerStep :: Bool -> (CriticalEnvironment -> Values before -> IO (a,Values after)) -> Flow (RequestStep 'Worker) before after a
+workerStep allowed = F.step . Leaf . WorkerEffect allowed
 
 -- A scope encloses the entire continuation, including cancellation between leaves.
 -- It uses the already-held critical gate, never a second evaluator entry point.
 runOperatorFlow :: CriticalEnvironment -> Flow (Action 'Operator) before after a -> Values before -> IO (a,Values after)
 runOperatorFlow environment = runFlow $ \instruction values -> case instruction of
-  OperatorEffect allowed action -> do
+  Perform (OperatorEffect allowed action) -> do
     require (allowed || paying environment) "observation_only"
     action environment values
-  OperatorScope flow -> do
+  Within OperatorGuard flow -> do
     require (paying environment) "observation_only"
     guarded environment (runOperatorFlow environment flow values)
 runWorkerFlow :: CriticalEnvironment -> Flow (Action 'Worker) before after a -> Values before -> IO (a,Values after)
 runWorkerFlow environment@(CriticalEnvironment _ _ _ _ _ reader writer) = runFlow $ \instruction values -> case instruction of
-  WorkerEffect allowed action -> do
+  Perform (WorkerEffect allowed action) -> do
     require (allowed || paying environment) "observation_only"
     action environment values
-  SigningScope flow -> do
+  Within SigningGuard flow -> do
     require (paying environment) "observation_only"
     runWorkerFlow environment flow values `onException` evalWrite writer (Pause "signing_requires_review")
-  BroadcastScope flow -> do
+  Within BroadcastGuard flow -> do
     require (paying environment) "observation_only"
     guarded environment (runWorkerFlow environment flow values)
-  CycleScope flow -> runWorkerFlow environment flow values `catch` (\(BridgeError code) ->
+  Within CycleGuard flow -> runWorkerFlow environment flow values `catch` (\(BridgeError code) ->
     if code=="custody_not_reconciled" then do
       paused<-ledgerPaused <$> evalRead reader ReadState
       when paused (reject code)
       pure ((),values)
     else evalWrite writer (Pause code) >> reject code)
-
-operatorWorkflow :: (Typeable value,Typeable before,Typeable after,Typeable a,MethodStep value ~ Action 'Operator)
-                 => Workflow value before after a -> Method value before after a
-operatorWorkflow = maybe (F.step $ OperatorEffect False $ \_ _ -> reject "operation_dictionary_mismatch") id . workflow
-workerWorkflow :: (Typeable value,Typeable before,Typeable after,Typeable a,MethodStep value ~ Action 'Worker)
-               => Workflow value before after a -> Method value before after a
-workerWorkflow = maybe (workerStep False $ \_ _ -> reject "operation_dictionary_mismatch") id . workflow
 
 -- Only the concrete interpreter constructs runtime evidence; interpretation owns
 -- its ordering and branches, while these values retain exact saved decisions.
@@ -536,10 +525,10 @@ instance Execution 'Operator 'Critical OperatorCommand where
 
 instance Typeable result => OperatorService (OperatorCommand 'Critical result) where
   pauseService _ reason = operatorEffect True $ \(CriticalEnvironment _ _ _ _ _ _ writer) -> evalWrite writer (Pause reason)
-  resumeService = operatorWorkflow . ResumeWorkflow
+  resumeService = F.step . Expand . ResumeWorkflow
 
 instance CustodySteps (OperatorCommand 'Critical result) where
-  custodyScope _ = F.step . OperatorScope
+  custodyScope _ = F.step . Scoped OperatorGuard
   checkpointCustody _ = operatorEffect False backupDecisions
   observeCustody _ = operatorEffect False $ \environment -> evalWorker @'[WorkerObservation] environment observeChains
   reconcileCustodyStep _ = operatorEffect False $ \environment -> evalWorker @'[WorkerObservation] environment reconcileCustody
@@ -575,8 +564,8 @@ instance Typeable result => OperatorRepair (OperatorCommand 'Critical result) wh
   repairCompletedOrder _ order = operatorEffect False $ \(CriticalEnvironment _ _ _ _ _ _ writer) -> do
     now<-floor <$> getPOSIXTime
     evalWrite writer (RepairCompletedOrderView now order)
-  retrySolanaPayment value txid reason = operatorWorkflow (RetryWorkflow value txid reason)
-  cancelPreparation value identifier generation reason = operatorWorkflow (CancellationWorkflow value identifier generation reason)
+  retrySolanaPayment value txid reason = F.step $ Expand (RetryWorkflow value txid reason)
+  cancelPreparation value identifier generation reason = F.step $ Expand (CancellationWorkflow value identifier generation reason)
   refundDeposit _ receipt = operatorEffect False $ \(CriticalEnvironment _ _ _ _ _ _ writer) -> do
     now<-floor <$> getPOSIXTime
     evalWrite writer (AuthorizeRefund now receipt)
@@ -639,9 +628,9 @@ instance CancellationSteps (OperatorCommand 'Critical result) where
     evalWrite writer (FinishCancellation prepared reason cleanup)
 
 instance Typeable result => OperatorNative (OperatorCommand 'Critical result) where
-  rebroadcastNative value txid anchor reason = operatorWorkflow (RebroadcastWorkflow value txid anchor reason)
-  draftNativeReplacement value parent fee reason = operatorWorkflow (ReplacementDraftWorkflow value parent fee reason)
-  signNativeReplacement value decision = operatorWorkflow (ReplacementSigningWorkflow value decision)
+  rebroadcastNative value txid anchor reason = F.step $ Expand (RebroadcastWorkflow value txid anchor reason)
+  draftNativeReplacement value parent fee reason = F.step $ Expand (ReplacementDraftWorkflow value parent fee reason)
+  signNativeReplacement value decision = F.step $ Expand (ReplacementSigningWorkflow value decision)
   cancelNativeReplacement _ decision reason = operatorEffect False $ \(CriticalEnvironment _ _ _ _ _ _ writer) ->
     evalWrite writer (CancelReplacementDraft decision reason)
 
@@ -957,10 +946,10 @@ instance WorkerPreparation (WorkerCommand 'Critical result) where
       pure ((),PreparedPayout identifier :& VNil)
 
 instance Typeable result => WorkerSigning (WorkerCommand 'Critical result) where
-  signPreparedPayment = workerWorkflow . SigningWorkflow
+  signPreparedPayment = F.step . Expand . SigningWorkflow
 
 instance Typeable result => SigningSteps (WorkerCommand 'Critical result) where
-  signingScope _ = F.step . SigningScope
+  signingScope _ = F.step . Scoped SigningGuard
   inspectSigning _ = workerStep False $ \(CriticalEnvironment _ _ _ _ _ reader _) (BackupCovered (PreparedPayout identifier) :& VNil) -> do
     (_,saved,attempts)<-evalRead reader (ReadPaymentWork identifier)
     prepared<-maybe (reject "payment_not_prepared") pure saved
@@ -999,10 +988,10 @@ instance WorkerQueue (WorkerCommand 'Critical result) where
     pure (sequenceNo,QueuedPayout txid :& VNil)
 
 instance Typeable result => WorkerBroadcast (WorkerCommand 'Critical result) where
-  broadcastPayment = workerWorkflow . BroadcastWorkflow
+  broadcastPayment = F.step . Expand . BroadcastWorkflow
 
 instance Typeable result => BroadcastSteps (WorkerCommand 'Critical result) where
-  broadcastScope _ = F.step . BroadcastScope
+  broadcastScope _ = F.step . Scoped BroadcastGuard
   inspectBroadcast _ = workerStep False $ \environment (BackupCovered (QueuedPayout txid) :& VNil) -> do
     (recorded,reply)<-loadActive environment txid
     require (recordedState recorded=="broadcast_intent") "broadcast_intent_required"
@@ -1030,10 +1019,10 @@ instance Typeable result => BroadcastSteps (WorkerCommand 'Critical result) wher
     pure ((),VNil)
 
 instance Typeable result => WorkerCycle (WorkerCommand 'Critical result) where
-  runWorkerCycle = workerWorkflow . CycleWorkflow
+  runWorkerCycle = F.step . Expand . CycleWorkflow
 
 instance Typeable result => CycleSteps (WorkerCommand 'Critical result) where
-  cycleScope _ = F.step . CycleScope
+  cycleScope _ = F.step . Scoped CycleGuard
   recoverCycle _ = workerEffect True recoverPending
   cycleCanPay _ = workerEffect True $ \environment@(CriticalEnvironment _ _ _ _ _ reader _) -> do
     state<-evalRead reader ReadState
@@ -1042,8 +1031,8 @@ instance Typeable result => CycleSteps (WorkerCommand 'Critical result) where
     now<-floor <$> getPOSIXTime
     evalWrite writer (AdmitPayoutRounds now)
     evalRead reader PaymentCandidates
-  cyclePayout value identifier = workerWorkflow (PayoutWorkflow value identifier)
-  cycleOwnerFees = workerWorkflow . OwnerFeesWorkflow
+  cyclePayout value identifier = F.step $ Expand (PayoutWorkflow value identifier)
+  cycleOwnerFees = F.step . Expand . OwnerFeesWorkflow
 
 -- This optional reservation never signs. All resulting work uses the ordinary
 -- payout pipeline, and a commit ends this cycle so custody can be reconciled.

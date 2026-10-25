@@ -11,18 +11,20 @@ schema conversion/backfill and migration tests below are superseded. Fresh setup
 uses `src/schema.sql`; only schema 23 may run or be restored. Never reset an old
 ledger to make setup pass. `example.conf` is the sole configuration example.
 
-## Current planning checkpoint (2026-10-25)
+## Current implementation checkpoint (2026-10-25)
 
-The next refactor is specified in [REFACTOR-DESIGN.md](REFACTOR-DESIGN.md), updated
-with the Grok Build, Claude and supplied DeepSeek audit conclusions. DeepSeek is
-partial evidence; its parser/journal/role claims are corrected against source,
-and its older +30 estimate does not replace the paid +177 forecast. Preserve
-distinct publication/rotation protocols; cost parser and named-limit proposals
-before adopting them. Pin main/sidechain scope and
-reconcile the local grammar first, establish the complete disposable database
-acceptance batch, then choose costed configuration/Store changes. This is a design
-checkpoint only; implementation and test results are not implied. Preserve the
-historical evidence below under its original source/scope.
+The user has chosen `request existential → interpret / Refl → complete F.do
+workflow → evaluator`. Implement this bounded grammar change first: eliminate
+recursive Workflow interpretation, preserve all eleven workflows and exact failure
+scopes, and make Program accept only expanded effects. Trace the actual Command
+interpreter in a core-only test component; keep production PostgreSQL/HTTPS and
+capability rejection checks separate. No schema or financial-policy change.
+
+The earlier +177-line forecast is a maintenance plan, not the architectural
+simplification target. Subsequent larger designs should reduce competing payment
+representations and mutable installation copies before consolidating their tests.
+Cost replacements and required compatibility work explicitly; no 7k total or net
+savings is established. Historical evidence below retains its original scope.
 
 ## Optional sidechain node policy (2026-10-15)
 

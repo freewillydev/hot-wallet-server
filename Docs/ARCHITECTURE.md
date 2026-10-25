@@ -91,7 +91,7 @@ compare dictionary values or authorize effects.
 indices prevent coercing a customer into a signer, a safe operation into a critical
 one, or changing its program/result. The bridge has no `Pending`/request wrapper.
 `PreparationCaps` still contains `CompileOperation` and the applicable worker or
-operator capability list. Their class methods construct allowed Flows without IO,
+operator capability list. Their class methods construct request Flows without IO,
 keys or database connections.
 
 `pending` passes `operationDSL` directly to the library's `prepareOperation`.
@@ -135,27 +135,26 @@ these independently selectable capabilities:
 | Worker | `WorkerBackup`, `WorkerObservation`, `WorkerRecovery`, `WorkerPreparation`, `WorkerSigning`, `WorkerQueue`, `WorkerBroadcast`, `WorkerCycle` |
 
 Each method returns `Method value before after result`, an alias for
-`Flow (MethodStep value) before after result`. The fixed `Command` instance maps
-`MethodStep` to the caller-indexed `Action` data family. Operator/worker programs
-contain balanced `Flow (Action caller) '[] '[] result` values. Their instruction
-constructors remain private to `Critical.hs`: only that module constructs concrete
-IO actions or supplies their environment. Its concrete runners check observation-mode
-permission immediately before **each** executed leaf, under the existing critical
-gate; later leaves may depend on earlier results. Existing recovery/observation
-access and operator pause permissions are unchanged. `-Werror=missing-methods`
-checks the concrete capability instances. A selector can compose authorized
-high-level methods with `F.do`.
+`Flow (MethodStep value) before after result`. For `Command`, `MethodStep` is
+`RequestStep caller`: a private effect leaf, a closed workflow to expand, or a
+scoped request flow. A selector can compose its authorized methods with `F.do`.
+It has no IO environment and cannot select internal compiler capabilities.
 
-**Build workflows inside `interpret`, after `eqT`/`Refl`; evaluate them separately.**
-`Workflow value before after result` in `Operation/Internal.hs` has eleven closed
-constructors: payout, cycle, resume, signing, broadcast, native rebroadcast,
-replacement draft, replacement signing, retry approval, preparation cancellation
-and owner-fee selection. `CompileWorkflow` checks all four type
-indices before matching the constructor and using its capability dictionaries.
-Its injective Context retains that complete payload type. Its outcome is a pure
-indexed Flow; branches remain deferred continuations until earlier effects return.
-The helper `workflow` only requests interpretation; the concrete compiler adapters
-reject a mismatch inside the existing gate.
+**Request existential → interpret / Refl → complete F.do workflow → evaluator.**
+The single `Command.interpret` proves the payload type, narrows the selected
+capabilities and locally lowers the request Flow. Its `expand` branches contain
+all eleven complete workflows: payout, cycle, resume, signing, broadcast, native
+rebroadcast, replacement draft/signing, retry, cancellation and owner fees.
+`Workflow` is closed syntax, with no Operation instance, existential packing or
+second interpretation. `Bind` retains deferred continuations and `Branch` retains
+its runtime choice; constructing a workflow never performs its effects.
+
+`Program` accepts only final `Flow (Action caller)` values. `Action` can perform
+an `Effect` or enclose a final Flow in a closed `Scope`. It cannot contain request
+steps or unresolved workflows. The concrete `Effect` constructors and their IO
+callbacks remain private to Critical.hs. Its runners check observation permission
+before every demanded effect, including those in later continuations, under the
+existing critical gate. `-Werror=missing-methods` checks capability implementations.
 
 Public `DomainCaps` still grants only the original high-level methods. The granular
 `CustodySteps`, `ResumeSteps`, `NativeSteps`, `SigningSteps`, `BroadcastSteps`,
@@ -182,7 +181,7 @@ first committed reservation; per-candidate freshness remains outside its narrow
 recoverable-error catch. `whenFlow` and `traverseFlow_` compose state-preserving
 branches and sequences; they cannot hide a change of checkpoint state or lift IO.
 
-Private scope instructions wrap the entire interpreted continuation, including
+Closed scope instructions wrap the entire interpreted continuation, including
 cancellation between leaves, using the already-held gate. Signing pauses with
 `signing_requires_review`; operator/broadcast retain
 `payment_requires_reconciliation`; cycle retains its specific BridgeError handling
@@ -205,11 +204,12 @@ No new API, signer path, database operation or retry policy is introduced.
 Compile checks reject hidden signing, broadcast, treasury and replacement methods
 on actual request selectors, cross-caller capability selection, and preparation
 without backup capability, and signing/broadcast without the preceding checkpoint
-state. The flow contract checks production Flow compilation and mismatched
-whole-workflow rejection. A separate test carrier implements the same capability
-methods as trace steps and exercises the same `Workflow.interpret` against an
-independent ordering oracle. Its `MethodStep` instance cannot replace the fixed
-production `Command` instance. This checks sequencing, not concrete IO; disposable
+state. They also reject unexpanded requests as executable Programs and scopes
+belonging to another caller. The core-only `operation-test` links harmless Effect
+instances and resolves actual Command requests through `interpret` against an
+independent ordering oracle. It checks nested expansion, results and lazy branches;
+production links the private Critical effects instead. This checks sequencing,
+not concrete IO; disposable
 PostgreSQL/process/HTTPS contracts supply scoped effect coverage. New branch tests
 cover all eleven workflows and every error/cancellation prefix. Real operator
 resume tests inject a synchronous boundary failure and later cancellation during

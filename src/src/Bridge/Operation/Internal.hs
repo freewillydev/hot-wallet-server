@@ -12,7 +12,7 @@ import Bridge.Wire
 import Data.Kind (Type,Constraint)
 import Data.Typeable (Typeable,eqT)
 import Data.Type.Equality ((:~:)(Refl))
-import Control.Operation
+import Control.Operation hiding (Expand)
 import Control.Operation.Severity
 import Control.Operation.Flow (Flow)
 import qualified Control.Operation.Flow as F
@@ -252,8 +252,8 @@ data QueuedPayout = QueuedPayout Text
 data BackupCovered state = BackupCovered state
 
 type PayoutCapabilities value = (WorkerObservation value, WorkerPreparation value, WorkerSigning value, WorkerRecovery value, WorkerBackup value, WorkerQueue value, WorkerBroadcast value)
--- Each workflow constructor carries only the dictionaries its branch uses.
--- Interpretation proves the complete payload type before exposing that context.
+-- Closed request syntax carries only the dictionaries each workflow uses.
+-- The enclosing Command interpreter expands it after proving the payload type.
 data Workflow value (before :: [Type]) (after :: [Type]) result where
   PayoutWorkflow :: PayoutCapabilities value => value -> Text -> Workflow value '[] '[] ()
   CycleWorkflow :: CycleSteps value => value -> Workflow value '[] '[] ()
@@ -266,114 +266,6 @@ data Workflow value (before :: [Type]) (after :: [Type]) result where
   RetryWorkflow :: (RetrySteps value, CustodySteps value) => value -> Text -> Text -> Workflow value '[] '[] ()
   CancellationWorkflow :: (CancellationSteps value, CustodySteps value) => value -> Text -> Int -> Text -> Workflow value '[] '[] ()
   OwnerFeesWorkflow :: OwnerFeeSteps value => value -> Workflow value '[] '[] ()
-
-instance (Typeable value, Typeable before, Typeable after, Typeable result, caps ~ '[])
-    => Operation (Workflow value before after result) caps where
-  type Context (Workflow value before after result) = Typeable (Workflow value before after result)
-  type Outcome (Workflow value before after result) = Method value before after result
-  data DSL (Workflow value before after result) where
-    CompileWorkflow :: Context (Workflow value before after result) => DSL (Workflow value before after result)
-  interpret (SomeOperation (payload :: actual)) CompileWorkflow =
-    case eqT @actual @(Workflow value before after result) of
-      Nothing -> Nothing
-      Just Refl -> Just $ case payload of
-        PayoutWorkflow value identifier -> F.do
-          attempts <- inspectPayout value identifier
-          case attempts of
-            [] -> F.do
-              prepareOutgoing value
-              checkpointPending value
-              signPreparedPayment value
-              F.pure ()
-            _ -> reusePayout value attempts
-          queuePayment value
-          checkpointPending value
-          broadcastPayment value
-        CycleWorkflow value -> cycleScope value $ F.do
-          recoverCycle value
-          enabled <- cycleCanPay value
-          whenFlow enabled $ F.do
-            candidates <- cycleCandidates value
-            traverseFlow_ (cyclePayout value) candidates
-            cycleOwnerFees value
-        ResumeWorkflow value -> custodyScope value $ F.do
-          checkResume value
-          recoverResume value
-          reviewed <- inspectResume value
-          refreshResume value reviewed
-          checkpointCustody value
-          observeCustody value
-          reconcileCustodyStep value
-          draft <- inspectResumeDraft value
-          case draft of
-            Nothing -> F.pure ()
-            Just work -> restoreResumeDraft value work
-          finishResume value reviewed draft
-        SigningWorkflow value -> signingScope value $ F.do
-          saved <- inspectSigning value
-          case saved of
-            Nothing -> issueSignature value
-            Just txid -> reuseSignature value txid
-        BroadcastWorkflow value -> broadcastScope value $ F.do
-          unseen <- inspectBroadcast value
-          if unseen then sendUnseenPayment value else recordObservedPayment value
-        RebroadcastWorkflow value txid anchor reason -> custodyScope value $ F.do
-          work <- inspectRebroadcast value txid anchor reason
-          checkpointCustody value
-          sendRebroadcast value work
-        ReplacementDraftWorkflow value parent fee reason -> custodyScope value $ F.do
-          previous <- inspectReplacementDraft value parent fee reason
-          case previous of
-            Left decision -> F.pure decision
-            Right work -> F.do
-              refreshReplacementDraft value work
-              reconcileCustodyStep value
-              issueReplacementDraft value work
-        ReplacementSigningWorkflow value decision -> custodyScope value $ F.do
-          previous <- inspectReplacementSigning value decision
-          case previous of
-            Left txid -> F.pure txid
-            Right work -> F.do
-              refreshReplacementSigning value work
-              checkpointCustody value
-              observeCustody value
-              reconcileCustodyStep value
-              issueReplacementSigning value work
-        RetryWorkflow value txid reason -> custodyScope value $ F.do
-          previous <- inspectRetry value txid reason
-          case previous of
-            Nothing -> F.pure ()
-            Just work -> F.do
-              refreshRetrySource value work
-              proof <- proveRetryExpired value work
-              reconcileCustodyStep value
-              commitRetryApproval value work proof
-        CancellationWorkflow value identifier generation reason -> custodyScope value $ F.do
-          previous <- inspectCancellation value identifier generation reason
-          case previous of
-            Nothing -> F.pure ()
-            Just work -> F.do
-              refreshCancellationSource value work
-              reconcileCustodyStep value
-              committed <- beginCancellation value work
-              releaseCancellation value committed
-              finishCancellation value committed
-        OwnerFeesWorkflow value -> F.do
-          candidates <- ownerFeeCandidates value
-          let reserve [] = F.pure ()
-              reserve (candidate:rest) = F.do
-                saved <- reserveOwnerFee value candidate
-                whenFlow (not saved) (reserve rest)
-          reserve candidates
-
-workflow :: forall value before after result.
-            (Typeable value, Typeable before, Typeable after, Typeable result)
-         => Workflow value before after result -> Maybe (Method value before after result)
-workflow payload = interpret (SomeOperation payload)
-  (CompileWorkflow :: Context (Workflow value before after result) => DSL (Workflow value before after result))
-
-payoutFlow :: (Typeable value, PayoutCapabilities value) => value -> Text -> Maybe (Method value '[] '[] ())
-payoutFlow value identifier = workflow (PayoutWorkflow value identifier)
 
 -- One closed payload GADT carries caller, severity and the exact result type.
 -- Family aliases retain the evaluator's caller -> family functional dependency.
@@ -398,9 +290,28 @@ type OperatorCommand = Command 'Operator
 type WorkerCommand = Command 'Worker
 type SignerCommand = Command 'Signer
 
--- Concrete action constructors exist only in the evaluator module.
-data family Action (caller :: Caller) (before :: [Type]) (after :: [Type]) a
-type instance MethodStep (Command caller severity result) = Action caller
+-- Request methods construct syntax; only interpret can turn it into a Program.
+-- Effect constructors remain private to the concrete evaluator module.
+data family Effect (caller :: Caller) (before :: [Type]) (after :: [Type]) a
+data Scope (caller :: Caller) (before :: [Type]) (after :: [Type]) a where
+  OperatorGuard :: Scope 'Operator before after a
+  SigningGuard :: Scope 'Worker before after a
+  BroadcastGuard :: Scope 'Worker before after a
+  CycleGuard :: Scope 'Worker state state ()
+
+data RequestStep caller before after a where
+  Leaf :: Effect caller before after a -> RequestStep caller before after a
+  Expand :: MethodStep value ~ RequestStep caller
+         => Workflow value before after a -> RequestStep caller before after a
+  Scoped :: Scope caller before after a -> Flow (RequestStep caller) before after a
+         -> RequestStep caller before after a
+
+data Action caller before after a where
+  Perform :: Effect caller before after a -> Action caller before after a
+  Within :: Scope caller before after a -> Flow (Action caller) before after a
+         -> Action caller before after a
+
+type instance MethodStep (Command caller severity result) = RequestStep caller
 
 -- Each constructor stores the same closed execution capability as its operation.
 -- Caller/severity cannot be weakened when the interpreter constructs the DSL.
@@ -451,23 +362,125 @@ instance (ExecutionContext caller severity a,
     Compile :: Context (Command caller severity a) => DSL (Command caller severity a)
   interpret (SomeOperation (value :: actual)) Compile =
     case eqT @actual @(Command caller severity a) of
-      Just Refl -> case value of
-        CustomerQuery op -> Just (ReadCustomer op)
-        CustomerChange op -> Just (WriteCustomer op)
-        OperatorQuery op -> Just (ReadOperator op)
-        -- Restrict re-hides the carrier; recover its exact type before returning
-        -- its associated method Flow. Both proofs stay inside interpretation.
-        OperatorChange scope select -> either (const Nothing)
-          (withCapabilities $ \(scoped :: hidden) -> case eqT @hidden @(Command caller severity a) of
-            Just Refl -> Just (OperatorDSL $ select scoped)
-            Nothing -> Nothing)
-          (pipeline (Restrict scope) (prepare @(Command caller severity a) @(PreparationCaps caller severity a) value))
-        WorkerAction scope select -> either (const Nothing)
-          (withCapabilities $ \(scoped :: hidden) -> case eqT @hidden @(Command caller severity a) of
-            Just Refl -> Just (WorkerDSL $ select scoped)
-            Nothing -> Nothing)
-          (pipeline (Restrict scope) (prepare @(Command caller severity a) @(PreparationCaps caller severity a) value))
-        SignerAction op -> Just (SigningDSL op)
+      Just Refl ->
+        let
+          -- Expand syntax once, preserving deferred value-dependent continuations.
+          -- Neither request syntax nor a second existential reaches the evaluator.
+          lower :: Flow (RequestStep c) before after result -> Flow (Action c) before after result
+          lower syntax = case syntax of
+            F.Pure result -> F.pure result
+            F.Bind first next -> lower first F.>>= (lower . next)
+            F.Branch choose yes no -> F.Branch choose (lower yes) (lower no)
+            F.Step (Leaf effect) -> F.step (Perform effect)
+            F.Step (Scoped scope nested) -> F.step (Within scope (lower nested))
+            F.Step (Expand request) -> lower (expand request)
+          expand :: Workflow value before after result -> Method value before after result
+          expand payload = case payload of
+            PayoutWorkflow value identifier -> F.do
+              attempts <- inspectPayout value identifier
+              case attempts of
+                [] -> F.do
+                  prepareOutgoing value
+                  checkpointPending value
+                  signPreparedPayment value
+                  F.pure ()
+                _ -> reusePayout value attempts
+              queuePayment value
+              checkpointPending value
+              broadcastPayment value
+            CycleWorkflow value -> cycleScope value $ F.do
+              recoverCycle value
+              enabled <- cycleCanPay value
+              whenFlow enabled $ F.do
+                candidates <- cycleCandidates value
+                traverseFlow_ (cyclePayout value) candidates
+                cycleOwnerFees value
+            ResumeWorkflow value -> custodyScope value $ F.do
+              checkResume value
+              recoverResume value
+              reviewed <- inspectResume value
+              refreshResume value reviewed
+              checkpointCustody value
+              observeCustody value
+              reconcileCustodyStep value
+              draft <- inspectResumeDraft value
+              case draft of
+                Nothing -> F.pure ()
+                Just work -> restoreResumeDraft value work
+              finishResume value reviewed draft
+            SigningWorkflow value -> signingScope value $ F.do
+              saved <- inspectSigning value
+              case saved of
+                Nothing -> issueSignature value
+                Just txid -> reuseSignature value txid
+            BroadcastWorkflow value -> broadcastScope value $ F.do
+              unseen <- inspectBroadcast value
+              if unseen then sendUnseenPayment value else recordObservedPayment value
+            RebroadcastWorkflow value txid anchor reason -> custodyScope value $ F.do
+              work <- inspectRebroadcast value txid anchor reason
+              checkpointCustody value
+              sendRebroadcast value work
+            ReplacementDraftWorkflow value parent fee reason -> custodyScope value $ F.do
+              previous <- inspectReplacementDraft value parent fee reason
+              case previous of
+                Left decision -> F.pure decision
+                Right work -> F.do
+                  refreshReplacementDraft value work
+                  reconcileCustodyStep value
+                  issueReplacementDraft value work
+            ReplacementSigningWorkflow value decision -> custodyScope value $ F.do
+              previous <- inspectReplacementSigning value decision
+              case previous of
+                Left txid -> F.pure txid
+                Right work -> F.do
+                  refreshReplacementSigning value work
+                  checkpointCustody value
+                  observeCustody value
+                  reconcileCustodyStep value
+                  issueReplacementSigning value work
+            RetryWorkflow value txid reason -> custodyScope value $ F.do
+              previous <- inspectRetry value txid reason
+              case previous of
+                Nothing -> F.pure ()
+                Just work -> F.do
+                  refreshRetrySource value work
+                  proof <- proveRetryExpired value work
+                  reconcileCustodyStep value
+                  commitRetryApproval value work proof
+            CancellationWorkflow value identifier generation reason -> custodyScope value $ F.do
+              previous <- inspectCancellation value identifier generation reason
+              case previous of
+                Nothing -> F.pure ()
+                Just work -> F.do
+                  refreshCancellationSource value work
+                  reconcileCustodyStep value
+                  committed <- beginCancellation value work
+                  releaseCancellation value committed
+                  finishCancellation value committed
+            OwnerFeesWorkflow value -> F.do
+              candidates <- ownerFeeCandidates value
+              let reserve [] = F.pure ()
+                  reserve (candidate:rest) = F.do
+                    saved <- reserveOwnerFee value candidate
+                    whenFlow (not saved) (reserve rest)
+              reserve candidates
+        in case value of
+          CustomerQuery op -> Just (ReadCustomer op)
+          CustomerChange op -> Just (WriteCustomer op)
+          OperatorQuery op -> Just (ReadOperator op)
+          -- Restrict re-hides the carrier; recover its exact type before returning
+          -- its associated method Flow. Both proofs stay inside interpretation.
+          OperatorChange scope select -> either (const Nothing)
+            (withCapabilities $ \(scoped :: hidden) -> case eqT @hidden @(Command caller severity a) of
+              Just Refl -> Just (OperatorDSL $ lower (select scoped))
+              Nothing -> Nothing)
+            (pipeline (Restrict scope) (prepare @(Command caller severity a) @(PreparationCaps caller severity a) value))
+          WorkerAction scope select -> either (const Nothing)
+            (withCapabilities $ \(scoped :: hidden) -> case eqT @hidden @(Command caller severity a) of
+              Just Refl -> Just (WorkerDSL $ lower (select scoped))
+              Nothing -> Nothing)
+            (pipeline (Restrict scope) (prepare @(Command caller severity a) @(PreparationCaps caller severity a) value))
+          SignerAction op -> Just (SigningDSL op)
       Nothing -> Nothing
 
 -- Retain caller identity through dispatch; a critical customer operation cannot
