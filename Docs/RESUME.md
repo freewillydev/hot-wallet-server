@@ -8,6 +8,12 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Current config updater checkpoint (2026-10-23)
 
+2026-10-24 Cabal follow-up: executable now explicitly depends on `network` for
+ReconfigureServices' listener probe. Clean committed-source Cabal reproduction
+failed before the one-line fix and built/linked/ran `--version` afterward. Prior
+broad-package checks missed component isolation. User should pull main and rerun
+the existing update-config.sh command; no runtime settings need changing.
+
 2026-10-24 backup-server switch implemented: update-config.sh accepts backup
 URL/password changes together with other supported operational edits. It probes
 the candidate using private journal files, stops worker/signer, publishes fixed

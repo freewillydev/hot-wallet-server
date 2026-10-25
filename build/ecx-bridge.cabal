@@ -95,7 +95,7 @@ executable ecx-bridge
   ghc-options: -threaded -rtsopts -with-rtsopts=-N2
   build-depends: base, ecx-bridge, ecx-bridge:workflow, ecx-bridge:chain,
     ecx-bridge:store, ecx-build-assets, aeson, bytestring, text,
-    postgresql-simple, http-client, unix, filepath, directory, process, crypton, ram, containers, base58-bytestring, ecx-bridge:administration, iproute >=1.7 && <1.8
+    postgresql-simple, http-client, network, unix, filepath, directory, process, crypton, ram, containers, base58-bytestring, ecx-bridge:administration, iproute >=1.7 && <1.8
 
 -- Explicitly invoked against a disposable current-schema database, never live custody.
 executable ecx-store-check

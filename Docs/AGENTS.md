@@ -46,6 +46,8 @@ From this repository root, use GHC 9.14.1 and Cabal 3.16.1.0. Build prerequisite
 and GHC JavaScript/Solana FFI setup are in Docs/LOCAL-DEVELOPMENT.md. One job only:
 
 - Build: `cabal --project-dir=build build exe:ecx-bridge -w ghc-9.14.1 -j1`.
+  Verify import/dependency changes through the actual Cabal component; a broad
+  GHC package environment can hide missing direct `build-depends` entries.
 - Test: `cabal --project-dir=build test bridge-test -w ghc-9.14.1 -j1 --test-show-details=direct`.
 - Focused wallet setup: append `--test-options=--configure-only` to that test command.
   It uses disposable fixture keys, real executable imports and terminal-driven

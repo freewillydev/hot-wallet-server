@@ -1,5 +1,15 @@
 # Production acceptance
 
+2026-10-24 executable dependency correction: actual Cabal build of a clean
+`ec8ab53` source export reproduced `Network.Socket` hidden-package failure,
+followed by `Menu` compilation and Cabal-7125. Adding the executable's missing
+`network` dependency passes the same component build/link and `--version` check
+with GHC 9.14.1/Cabal 3.16.1.0, one job. Initial local browser compiler-cache
+mismatch cleared before reproduction; no asset sources changed. This replaces
+the earlier broad-package build evidence for this dependency. No Ubuntu service
+update or funded operation was performed. Fresh read-only cabal_dependency_verifier
+PASS; logs/hashes are in the installer audit.
+
 2026-10-24 backup-server updates: scoped app/config/store builds, ConfigureCheck
 and the full disposable PostgreSQL regression PASS. Coverage includes fixed
 setup/signer credential paths, mismatched old credentials, partial-installer
