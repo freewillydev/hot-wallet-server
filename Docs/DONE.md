@@ -1,5 +1,16 @@
 # Production acceptance
 
+2026-10-25 six-area design review: PASS planning task only. See
+[REFACTOR-DESIGN.md](REFACTOR-DESIGN.md), [per-file budgets](.audit/refactor-estimates.tsv)
+and [review receipt](.audit/refactor-design.tsv). All 116 authored source hashes
+remain unchanged. Fresh separate refactor_design_verifier PASS for the final
+665-line design and 118-row budget. Central forecast 37,510→37,540 (+30), including
+helpers/new checks; possible SQL 229-line reduction remains outside the compatible
+plan. No major source reduction or 7k target is established. Compilation, tests,
+formal execution, deployment and live acceptance NOT RUN by explicit request.
+This does not change any production gate below or validate the inconsistent
+local Operation draft. Separate implementation evidence remains required.
+
 2026-10-25 architecture mapping only: [CODE-MAP.md](CODE-MAP.md) and
 [architecture-lines.tsv](.audit/architecture-lines.tsv) record the frozen working
 source at base a485cac557a63395ebb6ef294836e9b9113ff707, including the preserved

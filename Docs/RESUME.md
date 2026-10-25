@@ -1,5 +1,30 @@
 # Hot-wallet-server development checkpoint
 
+## Six-area design checkpoint (2026-10-25)
+
+[REFACTOR-DESIGN.md](REFACTOR-DESIGN.md) now specifies the six proposed refactor
+areas, exact current source spans, ownership/effect boundaries, retained safeguards,
+paid per-file forecasts and future verification. [The estimate table](.audit/refactor-estimates.tsv)
+contains all 116 original authored files plus 2 proposed helpers, without overlaps.
+Before 116 files/37,510 lines; central 118 files/37,540 lines (+30), optimistic 36,882,
+conservative 38,466. These are forecasts, not measured replacement code. Conditional
+SQL 229-line saving is excluded: exact-schema-hash compatibility remains unresolved.
+
+Fresh separate refactor_design_verifier PASS for design accuracy/feasibility and
+arithmetic/source preservation only; immutable hashes and scope are recorded in
+[refactor-design.tsv](.audit/refactor-design.tsv). No application code, services,
+keys, ledger or funds changed; no build/test/formal execution was performed.
+Existing production gates and historical evidence retain their original status.
+The two concurrent untracked maps and the dirty 459-line Operation draft remain
+untouched. This design task is complete; it does not approve implementation.
+
+Next if implementation is requested: reconcile that preserved draft with the
+existing eleven workflows and establish one coherent positive Cabal baseline,
+without a committed-file overlay. Then take the small configuration/lifecycle
+and descriptor-query slices in the report's order; do not launch a broad rewrite
+on a promised 7k line budget. Retain schema bytes, original JSON overlays, guards,
+independent expected-result oracles and later separate implementation review.
+
 ## Current architecture-map checkpoint (2026-10-25)
 
 Latest task is read-only architecture mapping for a later refactor, not more
