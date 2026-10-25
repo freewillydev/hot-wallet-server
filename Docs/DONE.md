@@ -1,5 +1,12 @@
 # Production acceptance
 
+2026-10-24 managed-node downloads: bounded retries now resume received bytes
+after connection failures. Shell syntax and four actual-curl/local-HTTPS fault
+checks PASS (incremental resume, exhaustion, rerun, HTTP refusal); fresh read-only
+node_download_review PASS. Both public download endpoints served one-byte ranges.
+Pins and installation safeguards are unchanged; full Ubuntu installation was not
+rerun. Test receipt is in `.audit/installer-update.tsv`.
+
 2026-10-24 executable dependency correction: actual Cabal build of a clean
 `ec8ab53` source export reproduced `Network.Socket` hidden-package failure,
 followed by `Menu` compilation and Cabal-7125. Adding the executable's missing

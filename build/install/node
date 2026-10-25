@@ -3,6 +3,17 @@
 set -eu
 umask 077
 fail() { echo "ECX node setup: $*" >&2; exit 1; }
+# Fresh curl calls recalculate the resume offset; internal retries discard the
+# bytes received during a failed attempt. Both callers verify the pinned hash.
+download() {
+  download_attempt=1
+  while ! curl --disable --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 20 --max-time "$3" -C - "$1" -o "$2"; do
+    [ "$download_attempt" -lt 4 ] || { echo 'ECX node download failed after four attempts; rerun setup to retry.' >&2; return 1; }
+    echo "ECX node download interrupted; resuming saved bytes (attempt $((download_attempt + 1))/4)." >&2
+    sleep "$((download_attempt * 2))"
+    download_attempt=$((download_attempt + 1))
+  done
+}
 [ "$#" = 0 ] || fail 'no arguments accepted'
 [ "$(id -u)" = 0 ] || fail 'root required'
 . /etc/os-release
@@ -25,7 +36,7 @@ trap 'rm -rf -- "$staging"' EXIT
 trap 'exit 1' HUP INT TERM
 if [ ! -d "$base/$version" ]; then
   echo 'Downloading the pinned ECX betanet node.'
-  curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 --connect-timeout 20 --max-time 600 "$url" -o "$staging/node.zip"
+  download "$url" "$staging/node.zip" 600
   printf '%s  %s\n' "$checksum" "$staging/node.zip" | sha256sum --check --status || fail 'download checksum mismatch'
   unzip -q "$staging/node.zip" -d "$staging/unpacked"
   [ -x "$staging/unpacked/$version/bitcoind" ] || fail 'unexpected node archive layout'
@@ -107,7 +118,7 @@ if [ "$sync_mode" = snapshot ] && { [ -f "$snapshot/ready" ] || { [ ! -e "$home/
     [ "$((available + retained))" -ge 28311552 ] || fail 'snapshot bootstrap needs 27 GiB total space including its cache'
     echo 'Downloading the pinned chain-only ECX snapshot (about 11 GB).'
     if [ ! -f "$snapshot/chain.tar.gz" ]; then
-      curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 --connect-timeout 20 --max-time 7200 -C - "$snapshot_url" -o "$snapshot/chain.download"
+      download "$snapshot_url" "$snapshot/chain.download" 7200
       printf '%s  %s\n' "$snapshot_hash" "$snapshot/chain.download" | sha256sum --check --status || fail 'snapshot checksum mismatch'
       mv "$snapshot/chain.download" "$snapshot/chain.tar.gz"
     fi

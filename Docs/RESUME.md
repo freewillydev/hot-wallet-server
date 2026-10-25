@@ -8,6 +8,13 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Current config updater checkpoint (2026-10-23)
 
+2026-10-24 download follow-up: user's managed-node setup encountered curl56;
+user confirmed available disk space. The node script now makes at most four
+resuming GET attempts, retaining snapshot progress on exhaustion. Four local
+HTTPS failure/recovery checks and independent review PASS; both pinned endpoints
+responded HTTP206 to one-byte probes. Pull main and rerun update-config.sh; no
+configuration or custody change required. User's Ubuntu retry remains unverified.
+
 2026-10-24 Cabal follow-up: executable now explicitly depends on `network` for
 ReconfigureServices' listener probe. Clean committed-source Cabal reproduction
 failed before the one-line fix and built/linked/ran `--version` afterward. Prior
