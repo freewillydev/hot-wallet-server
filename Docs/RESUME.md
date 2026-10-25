@@ -8,6 +8,20 @@ Do not modify/deploy original runtime or touch live custody during extraction.
 
 ## Current config updater checkpoint (2026-10-23)
 
+2026-10-24 stale helper correction: the user's retry still failed during the
+snapshot resume. Source startup selected the original setup.json sourceRoot, so
+updating the executable did not necessarily apply the previous download fix.
+NodeSetup now selects source-mode helpers from the running build's compiled
+source location, prints that path, and preserves bundle mode and setup seals.
+Actual Cabal app/test compilation and ConfigureCheck runtime PASS; test execution
+must use a protected cwd because /tmp fixture ancestors are deliberately refused.
+Fresh node_helper_verifier PASS; evidence is in the installer audit.
+User should pull main and rerun update-config.sh; retained snapshot bytes resume.
+Their actual Ubuntu download/installation remains unverified. If it fails again,
+collect the printed helper path, retry number, and final curl error only.
+Separate known scope: later source package assembly still uses saved sourceRoot;
+this patch does not claim a complete source-tooling upgrade or runtime release.
+
 2026-10-24 download follow-up: user's managed-node setup encountered curl56;
 user confirmed available disk space. The node script now makes at most four
 resuming GET attempts, retaining snapshot progress on exhaustion. Four local

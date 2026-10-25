@@ -1,6 +1,7 @@
 module ConfigureCheck (contract,walletProperty) where
 import qualified Bridge.Config as C
 import qualified NodeSetup
+import qualified SetupPaths
 import qualified Bootstrap
 import qualified InstallConfig
 import qualified ReconfigureFiles as RF
@@ -8,7 +9,7 @@ import qualified Reconfigure
 import qualified RotationFiles as RD
 import qualified Token
 import qualified Token.Operation as TO
-import Bridge.SDKBuild (sdkLibraryPath)
+import Bridge.SDKBuild (sdkLibraryPath,sdkSourceDirectory)
 import System.Environment (getEnv,setEnv,getExecutablePath)
 import System.Info (os,arch)
 import Bridge.File (hashHandle)
@@ -63,6 +64,15 @@ import System.Exit (ExitCode(..))
 -- Real executable, disposable private keys, no network/database/service changes.
 contract :: IO Bool
 contract=bracket temporary removeDirectoryRecursive $ \directory->do
+  -- A saved sourceRoot must not hide fixes in the executable's current build.
+  sourceInstaller<-SetupPaths.nodeInstaller "source" (directory</>"old-source")
+  currentRoot<-canonicalizePath (sdkSourceDirectory</>"../..")
+  bundleInstaller<-SetupPaths.nodeInstaller "bundle" (directory</>"verified-bundle")
+  unsupported<-try(SetupPaths.nodeInstaller "release" currentRoot) :: IO(Either BridgeError FilePath)
+  require (sourceInstaller==currentRoot</>"build/install/node"
+    && bundleInstaller==directory</>"verified-bundle/node"
+    && either (==BridgeError "managed_node_release_bootstrap_required") (const False) unsupported)
+    "node_installer_build_provenance_regression"
   Just executable<-findExecutable "ecx-bridge"
   let seed=B.replicate 32 7
   secret<-case Ed.secretKey seed of CryptoPassed key->pure key; _->fail "test key"

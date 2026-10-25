@@ -2,6 +2,7 @@
 module NodeSetup (credentials,checkConfig,serviceName,provision,persistRestoredWallet,signerPolicy,refreshSignerPolicy) where
 import Bridge.AdminKey (savePrivate,readPrivate,withFamily)
 import qualified ReconfigureFiles as ConfigFiles
+import qualified SetupPaths
 import Bridge.File (withHandle)
 import System.IO (hFlush)
 import Bridge.Error
@@ -85,9 +86,9 @@ provision directory=do
       endpoint<-fieldValue "nativeRpc" bootstrap :: IO String
       require (endpoint=="http://127.0.0.1:28532") "managed_node_requires_guarded_rpc"
       method<-fieldValue "method" setup :: IO String
-      require (method `elem` ["source","bundle"]) "managed_node_release_bootstrap_required"
       root<-fieldValue "sourceRoot" setup
-      let installer=if method=="bundle" then root</>"node" else root</>"build/install/node"
+      installer<-SetupPaths.nodeInstaller method root
+      putStrLn $ "Using managed ECX node installer: "<>installer
       result<-rawSystem "/bin/sh" [installer]
       require (result==ExitSuccess) "managed_node_install_failed_retry_start"
     checkConfig path

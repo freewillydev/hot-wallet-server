@@ -98,6 +98,11 @@ Downloads retry up to three times, resuming saved bytes after each failure. If
 all attempts fail, rerun setup; the partial snapshot is retained. Interrupted
 extractions can also be retried; partially promoted directories
 resume from the private journal. Unexpected existing data fails closed for review.
+For source installations, `git pull --ff-only && sudo ./build/update-config.sh`
+uses the node helper from the new build, even if setup began on an older commit.
+Startup prints `Using managed ECX node installer:` and its path. Bundled installs
+continue to use their manifest-verified helper. Neither path resets saved setup
+or discards the partial snapshot.
 The snapshot is public blockchain data in a separate bucket; custody backups and
 keys remain private. Hosting it incurs storage and download-transfer costs; monitor
 usage and configure S3 access logging or CloudTrail data events for deployment.

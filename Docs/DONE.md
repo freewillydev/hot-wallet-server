@@ -1,5 +1,16 @@
 # Production acceptance
 
+2026-10-24 snapshot retry follow-up: source updates were still selecting the node
+helper from the original sealed setup's sourceRoot. Managed source setup now uses
+the running build's helper location and prints it; bundled setup retains its
+manifest-checked helper. Setup seals and snapshot cache are unchanged. Actual
+Cabal executable/test compilation and the focused Configure contract PASS using
+the clean committed-source export plus this patch. The first test invocation
+under /tmp correctly refused its unsafe fixture parent; the same built tests
+passed from the protected repository directory without changing any guard.
+Fresh read-only node_helper_verifier PASS for the scoped helper-selection patch.
+No full Ubuntu installation or live financial operation was performed.
+
 2026-10-24 managed-node downloads: bounded retries now resume received bytes
 after connection failures. Shell syntax and four actual-curl/local-HTTPS fault
 checks PASS (incremental resume, exhaustion, rerun, HTTP refusal); fresh read-only
