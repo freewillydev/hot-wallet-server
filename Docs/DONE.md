@@ -1,5 +1,15 @@
 # Production acceptance
 
+2026-10-25 DeepSeek reconciliation: design-only source checks incorporated into
+REFACTOR-DESIGN, CODE-MAP and the active plan. Partial audit coverage and inherited
+estimates explicitly qualified; authority, parser size and journal/projection
+differences corrected. Source and budgets unchanged. No application builds/tests,
+service/deployment or financial operations. Fresh separate
+deepseek_reconciliation_verifier: PASS for planning, source preservation and
+accounting only; SQL wording corrected to distinguish deferred constraint triggers
+from foreign keys. No production acceptance change. Final reviewed hashes and
+verdict receipt: .audit/refactor-design.tsv.
+
 2026-10-25 Grok Build / Claude conclusion reconciliation: source-backed planning
 updates recorded in REFACTOR-DESIGN and CODE-MAP. The two requested audit sessions
 and their outputs are identified; unsupported savings and historical build scope

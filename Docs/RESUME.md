@@ -1,5 +1,27 @@
 # Hot-wallet-server development checkpoint
 
+## DeepSeek audit reconciliation checkpoint (2026-10-25)
+
+Latest task: incorporate the supplied DeepSeek audit into our design, without
+implementation or application testing. REFACTOR-DESIGN now distinguishes its
+unfinished coverage and inherited +30 estimate from source-checked conclusions.
+The authority map corrects signer networking, privileged root setup, the reader
+database role and post-Refl workflow location. Parser/journal/Opaleye proposals
+have explicit adopt/defer/reject decisions and preserved contracts. Separately
+cost semantic size-limit naming and removing Lifecycle's unreachable partial
+zero eliminator if worthwhile; neither earns an assumed line reduction.
+
+The bounded forecast stays 116/37,510 → 119/37,687 (+177), range 37,002–38,666.
+No source, schema, tests, build files, services, keys or funds changed. Preserve
+the dirty Operation draft and both untracked maps. The next implementation step
+remains choosing a coherent baseline and establishing the explicit acceptance
+matrix before structural cuts; implementation needs a later request. Fresh
+deepseek_reconciliation_verifier: PASS for planning/source preservation/accounting
+only, with exact hashes in .audit/refactor-design.tsv. The final wording correctly
+distinguishes eight deferred constraint triggers from additional foreign keys.
+Older verdicts below cover only their recorded artifacts; no production gate
+changes in this planning task.
+
 ## Reconciled Grok Build / Claude audit checkpoint (2026-10-25)
 
 Latest task: read the named terminal `grok` and `claude` audit conclusions and

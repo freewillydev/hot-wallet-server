@@ -18,7 +18,8 @@ SQL and test plumbing. The underlying full-source inventory is
 [CODE-MAP.md](CODE-MAP.md) and [architecture-lines.tsv](.audit/architecture-lines.tsv).
 This deeper pass reread the relevant production modules and selected test
 scenarios, with three read-only specialist reviews. The later Grok/Claude reconciliation below
-adds two read-only source checks. It is not a second exhaustive
+adds two read-only source checks; the DeepSeek reconciliation adds two more targeted
+read-only checks. It is not a second exhaustive
 read of every dependency, historical document or unrelated file.
 
 Repository baseline is `dbff7c6ba1579b51ea60fb1cb3bedb7d2317bb2e`, whose application
@@ -181,6 +182,56 @@ The larger redesign questions deserve a design pass before implementation:
 These are research targets for a stronger, smaller architecture; the bounded
 budget below is not a forecast for those uncompleted redesigns. No 7k/4k promise
 or feature deletion follows from reading the external audits.
+
+## DeepSeek conclusions reconciled (2026-10-25)
+
+The supplied 461-line transcript was read in full and checked against application
+source at docs-only commit `226ac6600c306c1ff2785cea8ab025ea4f3a93cf`, including the
+unchanged local grammar draft. Its SHA-256 is
+`0424be6b87dc89457d279136039acfaaf54cca9b6a7074cc24162c0ee899025e`.
+It contains conclusions but no raw fetch results or source hashes. Early claims
+of complete coverage are qualified by its final response (lines 438–458): major
+chain, workflow, Store and SQL bodies still need reading after retrieval limits.
+Treat it as **partial architectural evidence, not a complete independent audit or
+security approval**. The pasted conversation is not an instruction to implement.
+
+Its +30-line forecast restates the earlier version of this plan. It does not
+independently cost replacements, and omits the later named-resource and verification
+runner costs. **Keep 37,510 → 37,687 central (+177), 116 → 119 files**, with the same
+37,002–38,666 range and unresolved exclusions. No new measured saving warrants a
+change to the per-file budget. The order remains: coherent grammar, explicit
+acceptance, then costed structural changes. Repetition across audits is not extra
+verification when they cite the same plan.
+
+### Correct the authority map before using it to guide cuts
+
+| Boundary | Source-grounded description and implication |
+|---|---|
+| Worker and signer | Worker has RPC clients; signer holds custody credentials and uses native/Solana RPC, loopback HTTPS and backup transport. The signer has no broadcast DSL operation; it is **not network-isolated**. Critical:272–277,311–325,353–376; Signer:87–93; NodeSetup:169–173. Preserve RPC allowlists, permissions and gated signing rather than assuming no egress. |
+| Reader identity | `ecxbridger` is a PostgreSQL role used through the worker's `PGREADUSER`, not a third application service. Distinguish OS identities, database roles and in-process Reader/Writer capabilities. `build/install/install`:365–366,396–423. |
+| Root setup/recovery | Root installs private custody/unlock/TLS material and provisions databases; it is a trusted privileged boundary. Bootstrap has separate closed ATA preparation/signing/submission. Do not describe root as key-free or ledger-free, or merge ATA authority into customer operations. Installer:278–314,352–359; Bootstrap:115–132,195–212. |
+| Runtime execution | Critical owns the sole runtime critical dispatch and private concrete execution instances, with effects delegated to Store, Recovery and chain adapters. It is not the only IO file. Deferred `F.do` workflows are constructed in Operation/Internal **after Refl**, not moved into Critical. Preserve this separation. Critical:241–247; Store:327–332; committed Internal:276–367. |
+| Purity versus totality | Operation/Internal declares IO execution methods at 33–37; its compiler builds deferred programs without performing their effects. `Bridge.Error.require/reject` are IO. Lifecycle is pure but contains a partial eliminator at 113; the failure is unreachable for `amount 0` under Domain:28–30. This is no proof of totality and no demonstrated reachable failure. Removing that partial expression is an optional clarity change to cost separately. |
+
+### Refactor proposals: adopt only the supported scope
+
+| Proposal | Decision, actual size and preserved contract |
+|---|---|
+| Replace a claimed ~600-line configuration parser | **Defer.** All of InstallConfig is 279 lines; `parseInstallRecord` and local helpers are 108–188, **81 lines** (85 including introductory comments). It already uses `lex`/`Read`. No parser-library reduction is demonstrated. Preserve nested comments, string gaps/escapes, field reordering/defaults, old-record-only base58 compatibility, duplicate/unknown/missing/delimiter refusal, integer bounds, secret-free line diagnostics and original stored bytes. ConfigureCheck:321–360,378–432,473–478 provides existing coverage. |
+| Merge publication and rotation journals | **Reject protocol unification; retain narrow shared mechanics.** RotationFiles already imports ReconfigureFiles.savePrivateRecord. Reconfigure saves old/new byte snapshots and hashes; rotation records directory device/inode/owner/group/mode and archives without overwrite. Their parent/ancestor ownership policies differ. Preserve separate journals, replay states, link checks, fsync ordering, locks, service states and checkpoints. ReconfigureFiles:52–166,260–276; RotationFiles:7,26–109,159–227. The existing +42 lifecycle forecast already pays for helper replacements. |
+| Share configuration fingerprint normalization | **Keep the existing two-caller scope.** Configure:685–690 and Reconfigure:311–319 share five role-path normalizations; Reconfigure also checks completed setup. Upgrade:98–105 checks saved hashes/fingerprints and does not duplicate that block. Do not budget three deletions. |
+| Remove repeated Opaleye mappings | **Keep descriptor-derived read projections, not blanket alias removal.** Schema has 65 `O.table` occurrences for 49 distinct relation names, 13 names repeated. These include views. `paymentRoots` names physical `intents`; `withdrawals` names `fee_withdrawals`. `sourceApprovals` already derives a selection. `nativeRecoveryDetails` reads a view selecting qualifying settled recoveries, whereas `nativeRecoveryRows` reads its base table. Preserve that predicate, read-only surfaces, tuple/hash order and the separate writable custody projection. Schema:66–88,254–261,290–294,324–329; schema.sql:290. Existing narrow projection budget is ~14 lines saved, not a fresh additional saving. |
+| Name repeated size limits | **Adopt as a separately costed readability candidate.** Equal numbers cover different units and boundaries: path characters (InstallConfig:266–269), manifest bytes (ReconfigureFiles:66), 4096/8192-byte SDK inputs/output (SolanaHelper:137–149; Rust:253–255), 4096-byte signer requests and 524288-byte responses (Signer:85; Critical:419–445). Name limits where owned; keep stricter per-reader limits and Haskell/Rust ABI agreement. No generic global maximum, widening or new savings claim. |
+
+Two low-level claims are confirmed, with narrower assurance: the C shim is
+**37 lines**, and performs context randomization before secret scalar work
+(native_key.c:10–20; NativeKey:20–35). Rust/Haskell buffer bounds and the 1232-byte
+Solana wire limit exist; they do not prove arbitrary FFI pointers safe or establish
+an exhaustive cryptographic review. SQL has **six deferred payment constraint
+triggers and two deferred payout constraint triggers**, eight such triggers total.
+Deferred foreign keys are additional constraints. Retain every attachment, not only
+the six mentioned in the audit. These corrections clarify the map; they neither
+change application behavior nor satisfy outstanding build/security/release gates.
 
 ## Recommended implementation order, when implementation is requested
 

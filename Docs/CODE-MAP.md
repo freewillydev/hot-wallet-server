@@ -38,6 +38,17 @@ are evidence updates, not application changes:
 - Main's wrapper and the separately developed sidechain branch must be inventoried
   distinctly before a merged-product refactor. This map does not cover that branch.
 
+The later [DeepSeek reconciliation](REFACTOR-DESIGN.md#deepseek-conclusions-reconciled-2026-10-25)
+adds targeted corrections without changing this inventory. Its final transcript
+admits substantial unfinished reads; it is partial evidence. The signer uses RPC
+and backup networking, root setup handles private keys/database provisioning, and
+`ecxbridger` is a database role. Workflow construction remains after Refl in
+Operation/Internal. InstallConfig's parser is 81 of its 279 lines; rotation and
+configuration publication are different protocols; some alleged duplicate Store
+mappings are aliases, existing derived selections or distinct views. Keep the
+current costed +177-line forecast, rather than DeepSeek's repeated older +30.
+The new authority table and adopt/defer/reject decisions are planning only.
+
 ## 1. Baseline coherence comes before refactoring
 
 The local operation grammar is **not the same source as the committed version used by earlier passing checks**. Its SHA-256 is `32d6f2fe05b1fbd98a5de056f0444adc9e37aa6c414e60ec2879c2f3aca1669f`. It is preserved unchanged.

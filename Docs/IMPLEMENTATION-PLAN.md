@@ -14,7 +14,11 @@ ledger to make setup pass. `example.conf` is the sole configuration example.
 ## Current planning checkpoint (2026-10-25)
 
 The next refactor is specified in [REFACTOR-DESIGN.md](REFACTOR-DESIGN.md), updated
-with the Grok Build and Claude audit conclusions. Pin main/sidechain scope and
+with the Grok Build, Claude and supplied DeepSeek audit conclusions. DeepSeek is
+partial evidence; its parser/journal/role claims are corrected against source,
+and its older +30 estimate does not replace the paid +177 forecast. Preserve
+distinct publication/rotation protocols; cost parser and named-limit proposals
+before adopting them. Pin main/sidechain scope and
 reconcile the local grammar first, establish the complete disposable database
 acceptance batch, then choose costed configuration/Store changes. This is a design
 checkpoint only; implementation and test results are not implied. Preserve the
