@@ -94,9 +94,14 @@ its retained cache. Existing node data and wallets are never overwritten. This
 trusts the published operator snapshot; it is not validation from genesis. To
 choose full synchronization for a new installation, run the installer with
 `sudo env ECX_NODE_SYNC=full sh ./ecx-bridge-ubuntu-24.04-x86_64.run`.
-Downloads retry up to three times, resuming saved bytes after each failure. If
-all attempts fail, rerun setup; the partial snapshot is retained. Interrupted
-extractions can also be retried; partially promoted directories
+Downloads resume saved bytes while making progress. Four consecutive failures
+without new bytes stop the download; logs show the curl error and saved/gained
+byte counts. A stalled transfer reconnects after 60 seconds. Overall limits are
+40 minutes for the node ZIP and eight hours for the snapshot, with individual
+requests limited to 10 minutes and two hours respectively. If setup stops,
+rerun it; the partial snapshot is retained (temporary ZIP staging is not).
+`node.zip` identifies the binary; `chain.download` identifies the snapshot.
+Interrupted extractions can also be retried; partially promoted directories
 resume from the private journal. Unexpected existing data fails closed for review.
 For source installations, `git pull --ff-only && sudo ./build/update-config.sh`
 uses the node helper from the new build, even if setup began on an older commit.

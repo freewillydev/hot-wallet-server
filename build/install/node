@@ -3,15 +3,38 @@
 set -eu
 umask 077
 fail() { echo "ECX node setup: $*" >&2; exit 1; }
-# Fresh curl calls recalculate the resume offset; internal retries discard the
-# bytes received during a failed attempt. Both callers verify the pinned hash.
+# Fresh curl calls recalculate the resume offset. Productive interruptions do not
+# exhaust the retry budget; no progress and total time are bounded independently.
+# Both callers still verify the pinned hash before using any downloaded bytes.
 download() {
-  download_attempt=1
-  while ! curl --disable --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 20 --max-time "$3" -C - "$1" -o "$2"; do
-    [ "$download_attempt" -lt 4 ] || { echo 'ECX node download failed after four attempts; rerun setup to retry.' >&2; return 1; }
-    echo "ECX node download interrupted; resuming saved bytes (attempt $((download_attempt + 1))/4)." >&2
-    sleep "$((download_attempt * 2))"
-    download_attempt=$((download_attempt + 1))
+  download_deadline=$(($(date +%s) + 4 * $3))
+  download_failures=0
+  echo "ECX node download: $(basename -- "$2"); resuming any saved bytes."
+  while :; do
+    download_remaining=$((download_deadline - $(date +%s)))
+    [ "$download_remaining" -gt 0 ] || { echo 'ECX node download time limit reached; rerun setup to retry.' >&2; return 1; }
+    download_before=0
+    [ ! -f "$2" ] || download_before=$(wc -c < "$2")
+    [ "$download_remaining" -le "$3" ] || download_remaining=$3
+    if curl --disable --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 20 --max-time "$download_remaining" --speed-limit 1 --speed-time 60 -C - "$1" -o "$2"; then
+      return 0
+    else
+      download_status=$?
+    fi
+    download_after=0
+    [ ! -f "$2" ] || download_after=$(wc -c < "$2")
+    if [ "$download_after" -gt "$download_before" ]; then
+      download_failures=0
+    else
+      download_failures=$((download_failures + 1))
+    fi
+    echo "ECX node download interrupted (curl $download_status); saved $download_after bytes, gained $((download_after - download_before)) bytes; $download_failures/4 consecutive attempts without progress." >&2
+    [ "$download_failures" -lt 4 ] || { echo 'ECX node download made no progress four times; check the connection to the download host, then rerun setup.' >&2; return 1; }
+    download_remaining=$((download_deadline - $(date +%s)))
+    download_delay=$((download_failures * 2))
+    [ "$download_delay" -gt 0 ] || download_delay=2
+    [ "$download_delay" -le "$download_remaining" ] || download_delay=$download_remaining
+    [ "$download_delay" -le 0 ] || sleep "$download_delay"
   done
 }
 [ "$#" = 0 ] || fail 'no arguments accepted'

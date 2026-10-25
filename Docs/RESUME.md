@@ -1,5 +1,21 @@
 # Hot-wallet-server development checkpoint
 
+## Interrupted node download (2026-10-25)
+
+The shared downloader now continues after productive interruptions, stops after
+four consecutive attempts without progress, and reports curl status plus saved
+and gained bytes. Existing per-request limits remain 600/7200 seconds, with
+overall limits of four times those values; a stalled request times out after
+60 seconds. TLS, checksum pins, snapshot cache and installation guards remain.
+Six local actual-curl HTTPS cases pass on the final helper (exit 0); the old
+helper fails the repeated-interruption case (exit 1). Independent
+node_download_progress_verifier PASS covers source and documentation only.
+Next: user retries the updated source installer on their Ubuntu machine; inspect
+the new filename/progress/error output if it still fails. Public download hosts
+responded to bounded probes here, which does not prove the user's network path.
+No server, wallet or funds changed. The unrelated Operation draft and untracked
+architecture maps remain untouched. Refactor checkpoints below remain pending.
+
 ## DeepSeek audit reconciliation checkpoint (2026-10-25)
 
 Latest task: incorporate the supplied DeepSeek audit into our design, without

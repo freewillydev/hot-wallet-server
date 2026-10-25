@@ -1,5 +1,15 @@
 # Production acceptance
 
+2026-10-25 managed-node productive retry fix: scoped PASS. The old helper fails
+the repeated-interruption regression after four productive attempts; the revised
+helper passes six real-curl/local-HTTPS cases (six interruptions, four no-progress
+failures, rerun, complete-cache 416, HTTP refusal, overall deadline). Exact final
+helper test exit 0; baseline exit 1. Separate node_download_progress_verifier
+PASS for source and installation docs. TLS and SHA-256 checks are unchanged.
+No Ubuntu installation, live services, wallets or funds were changed or certified;
+the user's underlying connection failure remains unverified. Receipts:
+`.audit/installer-update.tsv`.
+
 2026-10-25 DeepSeek reconciliation: design-only source checks incorporated into
 REFACTOR-DESIGN, CODE-MAP and the active plan. Partial audit coverage and inherited
 estimates explicitly qualified; authority, parser size and journal/projection
