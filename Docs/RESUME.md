@@ -1,5 +1,28 @@
 # Hot-wallet-server development checkpoint
 
+## Current architecture-map checkpoint (2026-10-25)
+
+Latest task is read-only architecture mapping for a later refactor, not more
+installer/fund/deployment work. Read [CODE-MAP.md](CODE-MAP.md) and its
+[file/hash/range index](.audit/architecture-lines.tsv) first. Frozen scope is
+main a485cac557a63395ebb6ef294836e9b9113ff707 plus the existing 459-line
+Operation/Internal.hs draft (SHA256 32d6f2fe05b1fbd98a5de056f0444adc9e37aa6c414e60ec2879c2f3aca1669f).
+All 116 authored files /37,510 lines read; all 181 original tracked inputs classified.
+No production code, services, keys, funds or database state changed; no tests run.
+Separate architecture_map_verify PASS for the map, coverage and unchanged
+source; receipt in Docs/.audit/architecture-map.tsv. Mapping task is complete.
+Production acceptance remains as recorded in DONE. A separately authored
+ARCHITECTURE-MAP.md is outside this verdict/publication and remains untouched.
+
+For the later implementation phase, first reconcile the preserved DSL draft
+with its Critical/test consumers and verify one coherent Cabal baseline. Do not
+silently reset the draft or credit earlier committed-Operation overlay tests to
+it. Then use the ranked source-span candidates in CODE-MAP section 10, preserve
+behavior/invariants, and measure each actual replacement instead of promising
+4k/7k lines or deleting recovery coverage. Other branches and external library
+implementations are outside this map; pin and compare them before integration.
+
+
 Owner: WRAPPED ECX SOL, controller-registered extraction lane. Parent is the only
 writer; review agents are read-only. New repository path:
 `/Users/lukekensik/Documents/Codex/hot-wallet-server`, branch `main`.

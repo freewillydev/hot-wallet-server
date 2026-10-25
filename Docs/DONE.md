@@ -1,5 +1,19 @@
 # Production acceptance
 
+2026-10-25 architecture mapping only: [CODE-MAP.md](CODE-MAP.md) and
+[architecture-lines.tsv](.audit/architecture-lines.tsv) record the frozen working
+source at base a485cac557a63395ebb6ef294836e9b9113ff707, including the preserved
+Operation/Internal.hs draft. Scope checks: PASS full literal reads of all 116
+first-party code/test/build/config files (37,510 physical /36,039 nonblank lines);
+PASS 181 input files inventoried with hashes and explicit evidence categories;
+PASS source-preservation hash comparison. This is a static mapping result, not a
+build/test/security certification or production PASS. The local DSL draft is
+inconsistent with Critical.hs and tests; historical overlay builds do not verify
+it. Fresh separate architecture_map_verify verdict: PASS for static
+map/coverage/source preservation only, pinned to the artifact hashes in the
+receipt. Concurrent ARCHITECTURE-MAP.md is outside this verdict and publication.
+No production acceptance criterion below is changed. Receipt: .audit/architecture-map.tsv.
+
 2026-10-24 snapshot retry follow-up: source updates were still selecting the node
 helper from the original sealed setup's sourceRoot. Managed source setup now uses
 the running build's helper location and prints it; bundled setup retains its
