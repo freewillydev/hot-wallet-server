@@ -8,6 +8,36 @@ This is a static map for planning a later refactor, **not a refactor, test run o
 - Coverage: [architecture-lines.tsv](.audit/architecture-lines.tsv). Its `kind`, `status` and `limitations` distinguish full source reads from fixtures, lock inventories, reference material and contextual documents. The input inventory predates this map and its new audit receipts.
 - Method: parent plus three read-only reviewers partitioned the files, read all assigned physical lines and reported semantic ranges. `StoreCheck.hs` was split into contiguous 1–1900 / 1901–3900 / 3901–5982 sections. Counts include blank and comment lines; nonblank counts are also recorded. No build, test, service, deployment, RPC or financial operation was executed for this audit.
 
+## Cross-audit reconciliation (2026-10-25)
+
+The subsequent [refactor design](REFACTOR-DESIGN.md#grok-build-and-claude-conclusions-reconciled-2026-10-25)
+incorporates the conclusions of the Grok Build CLI audit and matching Claude Code
+audit. Their local maps remain separately authored and unmodified. This source
+inventory and its frozen counts remain unchanged; the following clarifications
+are evidence updates, not application changes:
+
+- Claude's historical compiler logs establish draft failure and archived-source
+  success for **lib:workflow only**. They do not establish a full executable or
+  test-suite pass. No compiler was run in this reconciliation.
+- Grok's approximately 21.4k production figure excludes the 294 inline Rust test
+  lines included in our 21,725 runtime/setup subtotal. The whole authored count
+  is still 37,510. SQL has 98 function definitions and 106 triggers; Control has
+  21 operator commands. Constructor-name occurrences are not all pattern matches.
+- Move explicit database mode coverage before structural cuts. The documented
+  recipe omitted and did not clear the early-exit gas selector; its eighteen-mode
+  correction is documentation only and was not executed. Provisioning remains a
+  separate case. The design budgets a future one-command runner.
+- Add named private CriticalEnvironment fields. Preserve nested checked grammar,
+  observation restrictions, exception scopes and the sole runtime critical gate.
+- Memo-bound deposits are unreachable for new orders but remain reachable through
+  saved bindings/refunds. Duplicate helpers may have test/export consumers; no
+  broad dead-code deletion is justified by the other maps' labels alone.
+- Weekly 10%-of-supply unwrapping and multisig in reference/Main.hs are absent,
+  unresolved historical requirements. Seeds alone do not restore liabilities or
+  signed-attempt history. Current protected restore remains necessary.
+- Main's wrapper and the separately developed sidechain branch must be inventoried
+  distinctly before a merged-product refactor. This map does not cover that branch.
+
 ## 1. Baseline coherence comes before refactoring
 
 The local operation grammar is **not the same source as the committed version used by earlier passing checks**. Its SHA-256 is `32d6f2fe05b1fbd98a5de056f0444adc9e37aa6c414e60ec2879c2f3aca1669f`. It is preserved unchanged.

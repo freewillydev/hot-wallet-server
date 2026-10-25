@@ -1,5 +1,18 @@
 # Production acceptance
 
+2026-10-25 Grok Build / Claude conclusion reconciliation: source-backed planning
+updates recorded in REFACTOR-DESIGN and CODE-MAP. The two requested audit sessions
+and their outputs are identified; unsupported savings and historical build scope
+are qualified. Database acceptance moves before refactoring; the documentation
+recipe now includes/clears gas mode and rejects unknown modes. Future named
+critical resources and a database runner are paid in the revised per-file forecast:
+116/37,510 → 119/37,687 central (+177), range 37,002–38,666. Larger redesigns and
+missing production-boundary scenarios remain separately uncosted. Source, dirty
+draft, other auditors' maps and all production gates unchanged. No application
+build/test or deployment performed. Fresh separate audit_reconciliation_verifier: PASS for planning, source
+preservation and accounting only; verdict and hashes recorded
+in .audit/refactor-design.tsv; the earlier verdict covers only its earlier hashes.
+
 2026-10-25 six-area design review: PASS planning task only. See
 [REFACTOR-DESIGN.md](REFACTOR-DESIGN.md), [per-file budgets](.audit/refactor-estimates.tsv)
 and [review receipt](.audit/refactor-design.tsv). All 116 authored source hashes

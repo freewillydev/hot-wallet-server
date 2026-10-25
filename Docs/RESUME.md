@@ -1,5 +1,37 @@
 # Hot-wallet-server development checkpoint
 
+## Reconciled Grok Build / Claude audit checkpoint (2026-10-25)
+
+Latest task: read the named terminal `grok` and `claude` audit conclusions and
+update our design, without implementing/testing the proposed refactor. See
+REFACTOR-DESIGN's reconciliation table and CODE-MAP's clarifications. Both original
+untracked maps and the dirty 459-line Operation draft remain untouched. Grok's
+session is 01a17359-0559-7673-b09e-57c3480c62ef; Claude's matching task is
+9f7e1f04-3046-4dc3-a298-e0ed545068a4. Private transcripts are not published.
+
+Changes to the future sequence: pin main/sidechain scope, reconcile the grammar,
+then establish the complete disposable DB matrix before structural cuts. Design
+larger configuration/Store simplification before spending on scattered helpers.
+Retain post-Refl Flow, Opaleye, role-specific projections, exact persisted bytes,
+recovery evidence and gate/scopes. Add named private critical resources. The
+existing documentation recipe is corrected for gas selector precedence; it has
+not been run. A future wrapper covers 18 modes plus separate provisioning.
+
+Updated bounded forecast: 116 files/37,510 lines → 119 files/37,687 (+177),
+optimistic 37,002, conservative 38,666. The increase from the prior +30 forecast
+pays +27 named-resource layout and +120 verification runner. Larger redesigns,
+new production broadcast contract cases and SQL compatibility costs are not
+included. No 7k/4k claim. Weekly supply limit/multisig remain unresolved sketch
+requirements; full-RBF acceptance and sidechain integration remain distinct work.
+
+Next action requires a later implementation request: choose/reconcile the actual
+source baseline, build without overlays, then implement the scoped acceptance
+runner before behavioral refactors. No implementation, services, keys or funds
+changed here. Historical full-product gates retain their status. The separate
+audit_reconciliation_verifier verdict is PASS for planning/source preservation/
+accounting only; hashes for this update are in .audit/refactor-design.tsv.
+The older checkpoints below describe their original artifacts and estimates.
+
 ## Six-area design checkpoint (2026-10-25)
 
 [REFACTOR-DESIGN.md](REFACTOR-DESIGN.md) now specifies the six proposed refactor

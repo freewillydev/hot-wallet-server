@@ -17,15 +17,18 @@ configuration; installation/update/recovery; Store/Opaleye; critical workflows;
 SQL and test plumbing. The underlying full-source inventory is
 [CODE-MAP.md](CODE-MAP.md) and [architecture-lines.tsv](.audit/architecture-lines.tsv).
 This deeper pass reread the relevant production modules and selected test
-scenarios, with three read-only specialist reviews. It is not a second exhaustive
+scenarios, with three read-only specialist reviews. The later Grok/Claude reconciliation below
+adds two read-only source checks. It is not a second exhaustive
 read of every dependency, historical document or unrelated file.
 
 Repository baseline is `dbff7c6ba1579b51ea60fb1cb3bedb7d2317bb2e`, whose application
 source matches the earlier mapped base `a485cac557a63395ebb6ef294836e9b9113ff707`,
 plus the preserved local `Operation/Internal.hs` draft. That file has 459 lines
 and SHA-256 `32d6f2fe05b1fbd98a5de056f0444adc9e37aa6c414e60ec2879c2f3aca1669f`.
-It has not been reset or edited. Concurrent untracked `ARCHITECTURE-MAP.md` and
-`CURRENT-ARCHITECTURE-MAP.md` are outside this deliverable and remain untouched.
+It has not been reset or edited. The untracked Claude `ARCHITECTURE-MAP.md` and Grok Build
+`CURRENT-ARCHITECTURE-MAP.md` were subsequently read as evidence; their source files
+remain untouched and outside this publication. Reconciliation starts from docs-only
+commit `b30cbc342581b05a178ca25b7bdfee1266c08541`; application hashes are unchanged.
 The original snapshot manifest hash is
 `d1fc9f7d2077bc16ff507d5328dbb18bc7ebeb387bd5f620d983d8737a29cc14`.
 
@@ -37,12 +40,13 @@ does not earn a saving. The Rust file still includes its 294 inline test lines
 in the original runtime bucket. No formatting compression is budgeted.
 
 [refactor-estimates.tsv](.audit/refactor-estimates.tsv) contains a disjoint row
-for every one of the 116 existing authored files plus the two proposed files,
+for every one of the 116 existing authored files plus the three proposed files,
 with before hashes and three target budgets. Unchanged files remain in the total.
 Each shared helper is charged once at its destination. Proposed counts are not
 statistical confidence intervals; exact sums make the accounting inspectable,
-not the forecast certain. A sensible verbal estimate is **about 37.5k lines,
-with a planning range of 36.9k–38.5k**.
+not the forecast certain. A sensible verbal estimate is **about 37.7k lines,
+with a planning range of 37.0k–38.7k**. This is the bounded six-area plan plus
+the verification runner; broader configuration/Store redesigns remain uncosted.
 
 ## Before and proposed after
 
@@ -52,24 +56,26 @@ with a planning range of 36.9k–38.5k**.
 | 2. Typed configuration projections | 5 → 5 | 1,919 | 1,869 | 1,929 | 2,036 | +10 |
 | 3. Setup/update/recovery mechanics | 9 → 9 | 2,123 | 2,115 | 2,165 | 2,273 | +42 |
 | 4. Store, projections and evidence | 3 → 4 | 4,534 | 4,485 | 4,589 | 4,720 | +55 |
-| 5. Critical evaluator clarity | 1 → 1 | 1,260 | 1,246 | 1,250 | 1,260 | −10 |
+| 5. Critical evaluator clarity | 1 → 1 | 1,260 | 1,266 | 1,277 | 1,300 | +17 |
 | 6a. Schema, existing update contract | 1 → 1 | 936 | 936 | 936 | 936 | 0 |
 | 6b. Tests/formal, assertions retained | 14 → 15 | 13,056 | 12,494 | 12,934 | 13,504 | −122 |
+| 6c. One-command database verification | 0 → 1 | 0 | 100 | 120 | 160 | +120 |
 | Cabal registration, new helpers paid | 1 → 1 | 111 | 115 | 115 | 115 | +4 |
 | Unchanged remainder | 81 → 81 | 13,112 | 13,112 | 13,112 | 13,112 | 0 |
-| **Whole authored scope** | **116 → 118** | **37,510** | **36,882** | **37,540** | **38,466** | **+30** |
+| **Whole authored scope** | **116 → 119** | **37,510** | **37,002** | **37,687** | **38,666** | **+177** |
 
-The central forecast adds **30 lines**: 122 fewer in tests and 152 more outside
-that test/formal bucket. Optimistic reduction is 628; the conservative design
-adds 956. These six areas do not justify a major size-reduction claim. The two
-extra files are a private pure evidence decoder and test-only helpers, not extra
-processes, services, executables or dependencies. Two scoped setup modules remain
-unchanged. File splitting alone has no saving.
+The revised central forecast adds **177 lines**: 122 fewer in the test/formal
+bucket and 299 more elsewhere, including a 120-line verification script. The
+previous +30 forecast rises by 27 for named critical resources and 120 for the
+runner; those costs must not disappear from a reduction claim. Optimistic reduction
+is 508; the conservative design adds 1,156. New files are a private pure evidence
+decoder, test-only helpers and one development verification script. There is no
+new application service or Haskell executable. File splitting alone saves nothing.
 
 SQL offers a separately measured **approximately 229-line** reduction, from
 936 to 707. It changes the exact schema hash used by install, retry, archive and
 upgrade checks. It is excluded above because a compatible rollout is unresolved.
-Subtracting it gives a source-only central number of 37,311, **before any unknown
+Subtracting it gives a source-only central number of 37,458, **before any unknown
 compatibility-policy implementation cost**. That is not a shippable forecast.
 No migration, reset or weakened hash check is implicitly included.
 
@@ -88,7 +94,7 @@ these numbers into a promised 7k target.
 | 2 | One validated operator input and typed projection; explicit runtime, role, public and hosting outputs. Updates apply a closed set of field edits. | Original secret bytes, legacy syntax, supplied-key import, interactive-only key generation, runtime role separation, saved quotes, immutable identities and staged replay evidence. | Typed defaults may be longer; decode/reencode can alter legacy fields or seals. Compare exact representations as well as values. |
 | 3 | Small fixed-purpose file/service helpers, with each lifecycle procedure still visibly ordered. | Distinct ordinary-update and backup-switch checkpoints; stopped signer and fence checks; immutable journals; secure old-wallet archives; unknown-outcome restore refusal; reboot interlocks. | Do not merge protocols just because their subprocess/file calls resemble each other. Real systemd and interruption acceptance remains necessary. |
 | 4 | Table mappings declared once; named pure selections; local load → decision → explicit writes; small typed views over saved evidence. | Closed Opaleye operations; separate reader/writer roles; transactions, all locks/fences; integer accounting; exact hashes/bytes; full liabilities; independent signer rereads. | Typed records cost lines. Query scoping and error precedence must be compared before calling them equivalent. Keep evidence records from becoming authority tokens. |
-| 5 | Keep existing F.do design; optionally replace indirection with visible constructor cases and share one exact paused-state check. | Entire continuation inside gate/scope; exception/cancellation semantics; fresh pause reads; asymmetric replay order; no nested gate acquisition or extra signer path. | Savings are only about ten lines. Retain current form if the replacement adds harder type machinery or makes authority less visible. |
+| 5 | Keep existing F.do design; name private environment fields, optionally make constructor cases visible and share one exact paused-state check. | Entire continuation inside gate/scope; exception/cancellation semantics; fresh pause reads; asymmetric replay order; no nested gate acquisition or extra signer path. | Named resources cost more lines than the small helper savings. Retain current form if the replacement adds harder type machinery or makes authority less visible. |
 | 6 | Test plumbing shared narrowly; independent arrangements/expectations explicit. Identical SQL bodies may be considered separately. | All refusal cases, shrinkers, financial snapshots, concurrent sessions, failure prefixes, negative type cases, TLA model and all 106 SQL trigger attachments. | Smaller tests are not fewer assertions. SQL compatibility is unresolved. Do not declare an expected compile failure a success if the whole baseline is broken. |
 
 The runtime architecture remains: Servant handlers construct typed existential
@@ -110,44 +116,113 @@ decode an old Config and generically reencode it: that could normalize legacy
 Fresh configuration may encode a newly constructed record. Replay compares the
 same immutable original/staged bytes. Golden checks must cover these differences.
 
+## Grok Build and Claude conclusions reconciled (2026-10-25)
+
+The requested Grok Build CLI chat is **“Hot-wallet ECX SOL wrapper architecture
+audit”**, session `01a17359-0559-7673-b09e-57c3480c62ef`. Its final conclusion
+(14:26:07 UTC) identifies `CURRENT-ARCHITECTURE-MAP.md` and explicitly reports no
+builds/tests. The matching Claude Code audit is session
+`9f7e1f04-3046-4dc3-a298-e0ed545068a4`; its final substantive conclusion at
+14:12:28 UTC identifies `ARCHITECTURE-MAP.md`. Claude's saved title is absent;
+its original request, repository and named output establish the match. The
+local transcript locations and artifact hashes are recorded in the audit receipt;
+private full chat logs are not copied into Git.
+
+Both maps describe committed application source plus a separately identified
+inconsistent local grammar. Our inventory counts that local draft. Claude's actual
+compiler logs show **lib:workflow only** failing on the draft and passing on an
+archived HEAD copy. That strengthens the baseline diagnosis; it is not a full
+executable build, a test-suite pass or new execution by this review.
+
+| Conclusion | Revised decision and source-grounded limit |
+|---|---|
+| Coherent baseline and feature branch first | Preserve the draft; reconcile all eleven workflows before cuts. Pin main and `codex/sidechain-fast-withdrawals` separately: the latter is at `1ede7fb3541fa4aed34b29d97ab89e54abf187a3`. Main's four-route wrapper does not contain those sidechain features. No silent merge or claim that one map covers both. |
+| Database checks should be automatic before refactoring | **Adopt and move earlier.** The previous LOCAL-DEVELOPMENT recipe had seventeen modes but omitted `ECX_GAS_TOP_UP_ONLY` from both matrix and reset. Its early exit at StoreCheck:110–111 could mask other modes. Correct the recipe now; plan eighteen explicit modes plus the separate provisioning contract, with isolated state and source-bound receipts. |
+| One canonical settings model | **Adopt semantic ownership; design the physical consolidation before promising cuts.** Reconfigure:142–168 orders backup probes, service stops, publication and target backup; 246–284 emits different role/public/secret/seal artifacts. They are not nineteen interchangeable copies. Preserve those boundaries and replay, even if later generated projections reduce files. |
+| Make Critical readable | **Adopt named private resources.** Keep the existing post-Refl Flow. Direct calls require proof that `checkedOperation`, observation-only restrictions and all continuation failure scopes (Critical:396–414,482–506) survive. They are not blanket-authorized bypasses. Retain one runtime critical dispatch and no exported signer/connection selectors. |
+| One table mapping and typed evidence | **Adopt the bounded Store design.** Each evalRead already opens a read-only RepeatableRead transaction (Store:327–332). Combine facts only within a specified closed operation; no snapshot spans RPC/backup or replaces the signer's fresh before/after reads. The proposed 800–1,200-line saving has no paid replacement design yet. |
+| One home for each financial rule | **Adopt an ownership map.** Lifecycle owns pure decisions, Store supplies locked facts and commits, signer independently validates authorization, SQL guards persisted integrity. Similar checks across those boundaries are not redundant. Centralize formulas/policy representation; retain independent enforcement and expected-result oracles. |
+| Consolidate SQL triggers | Keep the measured conditional ~229-line opportunity. There are **98 function definitions and 106 triggers**, not ~194 functions. Exact schema hashes govern install/upgrade/restore; a passing dump restore alone cannot authorize changed schema bytes. |
+| Delete dead and legacy paths | First prove call/export/persisted-state reachability. New orders reject memo owners, but PaymentSource:57–70, SolanaObservation:75–84 and Store:2810–2819 still process saved memo bindings/refunds. `hints`, old key syntax and setup transitions also have consumers. Schema 23 alone does not make those states obsolete. |
+| Cut optional features/toolchains | Treat as separate product proposals. Cohorts, refunds/retries, source-loss cover, fee sweeps, wallet rotation, public status, interactive setup and test profiles have requested behavior. Plain JS conflicts with the Haskell-JS instruction; Rust currently fits the permitted FFI exception. Moving source builds off a production host does not remove repository lines. |
+| Full-RBF compatibility is uncertain | Record a focused acceptance question: NativePayment:75,163,504–508 preserves non-BIP125-signalling sequences. Verify the pinned ECX node's replacement policy later. Static source does not establish that replacement works or fails on a running node. Preserve pending families meanwhile. |
+
+**Correct scope comparisons:** runtime/setup source is 21,725 lines including
+294 Rust inline test lines; excluding those tests gives 21,431, explaining the
+other maps' “about 21.4k.” Whole authored source/test/build/config is 37,510.
+The 95 mentions of CriticalEnvironment occur on 94 lines; that is not 94
+constructor matches. The source has 21 operator commands. Larger savings quoted
+by the other audits overlap features/modules and are hypotheses, not additive
+reductions from our disjoint budget.
+
+Claude also found two unimplemented notes in the original Main.hs sketch:
+**weekly unwrapping limited to 10% of supply** and **multisig coordination**.
+Record them as unresolved historical requirements. A supply definition, rolling
+window/reorg rules and signer quorum/recovery protocol would need specification;
+they are not silently added to this simplification. The later explicit approvals
+for a hot wallet and a 10,000-ECX payout cap do not prove those sketch ideas exist.
+Simple reinstall remains a usability goal; wallet seeds alone do not recover
+orders, liabilities or signed attempts. Preserve verified ledger/custody restore
+and fencing rather than interpreting “wipe” as permission to delete that evidence.
+
+The larger redesign questions deserve a design pass before implementation:
+
+- **Configuration:** one immutable validated input generation plus explicit
+  role-specific secret/public projections; enumerate required artifacts, service
+  readers, replay checkpoints and old-wallet retention. Decide which copies can
+  disappear only after mapping every current consumer and interruption point.
+- **Store:** one descriptor per table; closed typed fact loaders → pure decisions
+  → explicit atomic writes. Compare SQL predicates, lock/freshness boundaries and
+  error precedence, with old/new accounting expectations kept independent.
+- **Critical:** one visible entry, named resources, small private concrete effects
+  and orchestration in interpret after Refl. Do not replace a smaller file with
+  more dispatch layers or a generic IO capability.
+
+These are research targets for a stronger, smaller architecture; the bounded
+budget below is not a forecast for those uncompleted redesigns. No 7k/4k promise
+or feature deletion follows from reading the external audits.
+
 ## Recommended implementation order, when implementation is requested
 
-1. **Repair only the incomplete grammar first.** Intentionally reconcile the
-   preserved draft with the existing eleven workflows and consumers. Record that
-   diff separately. Build the actual coherent tree, without a committed-file
-   overlay. Keep a known passing baseline before subsequent changes.
-2. **Introduce one narrow projection at a time.** Start with repeated policy and
-   role fields in configuration. Keep old/new JSON and raw-byte expectations
-   independent. Update its two consumers together; do not leave parallel encoders.
-3. **Share app-only publication mechanics before changing their callers.** Retain
-   caller-visible lifecycle phases. Batch the related configuration/update files
-   into a single reviewable slice so expensive setup checks need not be repeated
-   after every helper. Backup switching and wallet rotation retain distinct paths.
-4. **Do the small database wins first.** Descriptor-derived selections and the
-   exact generation-attempt predicate are bounded. Then try typed loaded facts
-   and evidence records as a separate clarity slice. Query-scoping experiments
-   follow only with an explicit semantic comparison; keep schema bytes fixed.
-5. **Leave the critical workflow structure largely intact.** Evaluate the two
-   tiny readability changes only after the grammar is coherent. Do not refactor
-   signing, retry or cancellation merely to obtain a smaller evaluator file.
-6. **Improve the test harness alongside each affected slice.** Freeze the scenario
-   and assertion inventory first. Never refactor the implementation and its
-   expected-result oracle into the same shared code. Keep SQL consolidation out
-   of this phase until exact-schema compatibility has a separately reviewed answer.
-7. **Run expensive evidence in deliberate batches later.** One component build
-   and the affected focused checks per coherent slice; then one complete regression
-   batch after interacting changes settle. PostgreSQL/TLS modes run separately
-   with one task-owned cluster and one build job, not many redundant builds or VMs.
-   A demonstrated failure or further source change can justify repetition.
-8. **Measure and independently review the real result.** Report files/physical
-   lines/nonblank lines, introduced helpers/dependencies, all moved code, removed
-   assertions and changed failure ordering. A readable improvement may be accepted
-   with growth; do not disguise it as a size reduction. Retain rollback/backups
-   before any future deployment and keep deployment approval separate.
+1. **Pin the product and source baseline.** Keep main's wrapper and the sidechain
+   branch inventory distinct. Intentionally reconcile the preserved grammar with
+   all eleven workflows. Establish positive compilation of the actual tree before
+   using negative type checks; no committed-file overlay may stand in for it.
+2. **Make the financial acceptance batch explicit before structural cuts.** Freeze
+   the scenario/assertion inventory and implement the single-command disposable
+   runner described below. Run every selected mode with selectors cleared, a fresh
+   database and a labelled receipt. Keep production worker/signing/broadcast
+   acceptance distinct from pure Flow traces and direct Store contracts.
+3. **Specify the larger configuration/Store alternatives before spending on tiny
+   helpers.** Map consumers, authority, persisted bytes and failure points; budget
+   every removed block and replacement. Choose the stronger coherent option. The
+   costed small changes below are a fallback, not evidence that all larger cuts
+   are impossible or already designed.
+4. **Implement one configuration/lifecycle slice together.** Use validated typed
+   projections; preserve original JSON overlays, role boundaries, key import and
+   service/backup ordering. Share fixed-purpose mechanics only. Keep distinct
+   backup-switch, wallet-rotation and restore protocols visible.
+5. **Consolidate Store representation and then Critical readability.** Derive
+   selections from descriptors; use narrow typed evidence/facts. Introduce named
+   CriticalEnvironment fields and keep all authorizations/scopes. Prove a proposed
+   direct-leaf change separately before removing any grammar traversal.
+6. **Prove each dead-code deletion; keep policy choices separate.** Search actual
+   callers, exports, tests, saved rows and restore formats at the selected commit.
+   Preserve historical memo handling until its obligations are accounted for.
+   Keep SQL consolidation conditional on an explicit exact-hash compatibility plan.
+7. **Batch expensive verification by coherent slice.** One component build and
+   affected focused checks, then the complete matrix after interacting changes
+   settle. One build job and one task-owned cluster at a time; no live/funded modes
+   in the default runner. Re-run for demonstrated failures or changed source.
+8. **Measure and independently review the actual result.** Publish physical and
+   nonblank counts, moved code, introduced helpers, assertions and failure-order
+   changes. Passing design review does not certify implementation or production.
+   Keep backups and deployment review separate.
 
 This ordering reduces repeated integration work; it cannot guarantee bug-free
 implementation. The highest-value first changes are coherent baseline and
-configuration/lifecycle clarity. The largest definite duplicate body is SQL,
+explicit financial acceptance and configuration/lifecycle clarity. The largest
+definite duplicate body is SQL,
 whose deployment constraints currently outweigh the line-count benefit.
 
 ## Build, tests and independent review
@@ -180,15 +255,15 @@ this repository. Line references refer to the frozen baseline, not future files.
 
 ## Conclusion and ownership
 
-The target is the existing small closed authority architecture with one coherent eleven-workflow grammar. Reconciliation costs 51 production lines before any simplification. Critical already contains most of the desired separation; a credible local reduction is only 0–14 lines, centrally 10. Across these two files the result is therefore a **37–51-line increase**, centrally 41. This is a prerequisite and auditability improvement, not a source of large line reductions.
+The target is the existing small closed authority architecture with one coherent eleven-workflow grammar. Reconciliation costs 51 production lines before any simplification. Critical already contains most of the desired separation; its two local cleanup candidates save only 0–14 lines, centrally 10. Named private resources add a separately paid 20–40 lines, centrally 27. Across these two files the revised result is therefore a **57–91-line increase**, centrally 68. This is a prerequisite and auditability improvement, not a source of large line reductions.
 
 These budget rows own exactly two existing files:
 
 | Area | File | Current | Central after | Optimistic after | Conservative after |
 |---|---|---:|---:|---:|---:|
 | 1 | `src/src/Bridge/Operation/Internal.hs` | 459 | 510 | 510 | 510 |
-| 5 | `src/workflow/Bridge/Critical.hs` | 1,260 | 1,250 | 1,246 | 1,260 |
-| Total | Two files; no new production files | 1,719 | 1,760 | 1,756 | 1,770 |
+| 5 | `src/workflow/Bridge/Critical.hs` | 1,260 | 1,277 | 1,266 | 1,300 |
+| Total | Two files; no new production files | 1,719 | 1,787 | 1,776 | 1,810 |
 
 The four-line customer facade `src/src/Bridge/Operation.hs`, API (25 lines), Signer (93 lines), ATA `Token.Operation`, Cabal manifests and pinned operation-capabilities source stay outside these reduction rows. Their boundaries must be reviewed and their consumers validated, but moving or relabeling their lines is not savings. The consolidated test section owns all test budgets; allowance suggestions below must not be added twice.
 
@@ -247,9 +322,23 @@ The runtime gate does not cover the separate ATA setup DSL or root lifecycle ope
 
 Source checks supporting the nonuniform rules: Critical 585–606 (retry),608–639 (cancellation),648–717 (native replay and fresh issue),962–990 (signing),1004–1030 (broadcast),1050–1097 (owner candidates and catch). Restoring the missing grammar must not shift those concrete leaf checks.
 
-## Area 5: two small replacements, no new framework
+## Area 5: named resources and two bounded replacements
 
 The module is long because it houses concrete effect and recovery policies. The production Flow extraction already happened; moving the signer transport, resource records or effect instances into new files would create navigation changes, not substantial line savings. Do not budget the whole 531–1097 capability region as removable boilerplate.
+
+### Named private resources
+
+Replace the positional seven-field CriticalEnvironment with named fields for RPC
+manager, observer settings, Solana policy, customer settings, signing endpoint,
+Reader and Writer. Keep constructor/selectors private to Critical.hs and the safe
+evaluator's separate narrower environment. Use explicit construction and field
+puns at existing use sites; no new class, shared process state or generic effect.
+
+Declaration 2→9 and construction 1→9 plus two explanatory lines cost about 17
+lines before wrapping; budget **20/27/40 added lines** for optimistic/central/
+conservative layout. The observed 67 constructor-pattern sites can initially be
+same-length substitutions, not 67 credited deletions. This improves resource
+readability without claiming a source reduction.
 
 ### Optional direct dictionary recovery
 
@@ -268,9 +357,11 @@ Keep every call at its original point. In particular, retry checks replay first;
 | Proof/view-pattern layer,75–92; same-length known-constructor case substitutions at119,266,409,414 plus allocated new local cases | 18 | 12 | 10 | Keep 18 |
 | Ten ReadState/paused pairs above | 20 | 10 calls +6 helper =16 | 10 calls +4 helper =14 | Keep 20 |
 | All other Critical lines | 1,222 | 1,222 | 1,222 | 1,222 |
-| Critical total | 1,260 | 1,250 | 1,246 | 1,260 |
+| Named resources, incremental cost within retained bodies | 0 | +27 | +20 | +40 |
+| Critical total | 1,260 | 1,277 | 1,266 | 1,300 |
 
-The two proposed replacements are disjoint. Their additions are included. There is no dependency/library reduction, generated-code exclusion, new module, schema change or hidden replacement implementation in this budget.
+The two cleanup replacements are disjoint; the named-resource layout is an
+additional incremental cost within otherwise retained code. Their additions are included. There is no dependency/library reduction, generated-code exclusion, new module, schema change or hidden replacement implementation in this budget.
 
 ## Gate, errors and cancellation preservation checklist
 
@@ -550,6 +641,47 @@ local helpers. Keep all application/test fixture row access Opaleye. Retain
 infrastructure DDL fault injection, separate reader/writer connections, exact
 financial snapshots and real transaction interleavings. Root recovery/live modes
 stay separately opt-in; default mode must never start funded/network work.
+
+## Single-command database acceptance, before cuts
+
+Proposed **build/verify-contracts.sh**, 0→100/120/160 lines (optimistic/central/
+conservative), wraps existing Cabal-built components; it is not a new test or
+application executable. The original 63-line LOCAL-DEVELOPMENT recipe supplies
+most of its core. Budget ~25 lines for bounded ownership/cleanup, ~20 for selector
+and labelled-result bookkeeping, ~12 for provisioning/source identity and reuse
+of built binaries: central 120. No documentation deletion is credited as code
+savings. Future implementation must:
+
+- Refuse root, live credentials/config selectors and existing fixture resources;
+  acquire a task-owned private cluster, no network listener, no existing ledger.
+- Build once with the pinned compiler and one job; resolve exact binary/SDK paths
+  and set ecx_bridge_datadir to the package data when invoking binaries directly.
+  Clear every mode selector in an isolated child environment before each case.
+- Run the eighteen recipe modes, including gas top-up, each against a fresh
+  schema-23 database; explicit default/case handling must reject unknown modes.
+- Stop that cluster before running ProvisionCheck's separately owned private
+  cluster. Count it as a nineteenth logical case with its own result, not a mode
+  accidentally skipped by gas/provision environment precedence.
+- Retain per-case source hash, selector, exit/result and diagnostic log; missing
+  cases or prerequisites fail the batch. Trap cleanup stops only owned processes.
+  Retain the eighteen matrix databases/logs for review. ProvisionCheck currently
+  removes its own private root even on failure (ProvisionCheck:40); retain its
+  stdout/stderr, not a promised surviving database. Changing that cleanup requires
+  a separately budgeted change. Avoid concurrent builds or clusters.
+- Keep funded recovery, real node/wallet and external RPC modes explicitly opt-in
+  and outside this safe local batch. Negative-compile and TLA checks remain
+  distinct required evidence; this database command does not claim to run them.
+
+The existing recipe is corrected in documentation now, but the wrapper is **not
+implemented or executed**. Add future checks for real sendUnseenPayment through
+runProcess/dispatch and the signer transport: exact saved bytes, unknown send
+response, restart and duplicate suppression. Pure Flow traces and direct Store
+calls do not by themselves cover that composition. Existing tests launch real worker/control and signer processes and cover
+scheduling, preparation, transport failure and upgrade checkpoints (StoreCheck:
+3899–3915,4855–4914,4925–4939,4951–4983,5192ff). Their presence is not proof
+of the full worker broadcast continuation. Inventory them first, add only missing
+cases, and budget any new
+scenarios separately before calling the entire acceptance plan costed.
 
 ## Specific evidence and rough deletion/replacement arithmetic
 

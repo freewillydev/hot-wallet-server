@@ -11,6 +11,15 @@ schema conversion/backfill and migration tests below are superseded. Fresh setup
 uses `src/schema.sql`; only schema 23 may run or be restored. Never reset an old
 ledger to make setup pass. `example.conf` is the sole configuration example.
 
+## Current planning checkpoint (2026-10-25)
+
+The next refactor is specified in [REFACTOR-DESIGN.md](REFACTOR-DESIGN.md), updated
+with the Grok Build and Claude audit conclusions. Pin main/sidechain scope and
+reconcile the local grammar first, establish the complete disposable database
+acceptance batch, then choose costed configuration/Store changes. This is a design
+checkpoint only; implementation and test results are not implied. Preserve the
+historical evidence below under its original source/scope.
+
 ## Optional sidechain node policy (2026-10-15)
 
 Wrap/unwrap-only remains the default and supports the managed pruned ECX node
