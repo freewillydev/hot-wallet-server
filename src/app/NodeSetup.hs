@@ -1,10 +1,11 @@
 -- One-time local node provisioning, never a worker/signer runtime capability.
-module NodeSetup (credentials,checkConfig,serviceName,provision,persistRestoredWallet,signerPolicy,refreshSignerPolicy) where
+module NodeSetup (credentials,checkConfig,withConfig,serviceName,provision,persistRestoredWallet,signerPolicy,refreshSignerPolicy) where
 import Bridge.AdminKey (savePrivate,readPrivate,withFamily)
 import qualified ReconfigureFiles as ConfigFiles
 import qualified SetupPaths
-import Bridge.File (withHandle)
+import Bridge.File (withHandle,readBounded)
 import System.IO (hFlush)
+import System.IO.Error (catchIOError,isDoesNotExistError)
 import Bridge.Error
 import Bridge.RPC (fieldValue)
 import Bridge.SolanaMessage (base58)
@@ -17,12 +18,17 @@ import qualified Data.ByteString.Char8 as B8
 import qualified Data.Text as T
 import Data.Aeson (Value,eitherDecodeStrict',withObject,(.:?),(.!=))
 import Data.Aeson.Types (parseEither)
-import Control.Exception (bracket)
-import System.Posix.IO (openFd,closeFd,OpenMode(ReadOnly,WriteOnly),defaultFileFlags,OpenFileFlags(..))
+import Control.Exception (bracket,onException)
+import System.Posix.IO (openFdAt,closeFd,OpenMode(ReadOnly,WriteOnly),defaultFileFlags,OpenFileFlags(..))
+import System.Posix.Types (Fd(..))
+import System.Posix.User (getEffectiveUserID)
+import Foreign.C.String (CString,withCString)
+import Foreign.C.Types (CInt(..))
+import Foreign.C.Error (throwErrnoIfMinus1_)
 import System.Posix.Unistd (fileSynchronise)
 import Control.Monad (forM,forM_,unless,when)
-import System.Directory (doesFileExist,renameFile)
-import System.FilePath ((</>),takeDirectory)
+import System.Directory (doesFileExist)
+import System.FilePath ((</>),takeDirectory,takeFileName,splitDirectories,normalise,isAbsolute)
 import System.Posix.Files
 import System.Process (readProcessWithExitCode,rawSystem)
 import System.Exit (ExitCode(..))
@@ -35,11 +41,54 @@ serviceName name=do
   pure name
 
 checkConfig :: FilePath -> IO ()
-checkConfig path=do
-  status<-getSymbolicLinkStatus path
-  parent<-getFileStatus (takeDirectory path)
-  require (isRegularFile status && linkCount status==1 && fileMode status .&. 0o022==0
-    && isDirectory parent && fileMode parent .&. 0o022==0 && fileSize status<=8192) "unsafe_node_configuration"
+checkConfig path=withConfig path (\_ _->pure ())
+
+-- Pin every directory and the source file. Node-owned directories are allowed,
+-- but symlink substitution cannot redirect root's read or publication. Bytes
+-- and publication metadata come from the SAME descriptor, never a later stat.
+withConfig :: FilePath -> (B.ByteString -> (B.ByteString -> IO ()) -> IO a) -> IO a
+withConfig path action=do
+  require (isAbsolute path && normalise path==path) "unsafe_node_configuration"
+  uid<-getEffectiveUserID
+  directories uid Nothing Nothing (splitDirectories $ takeDirectory path) $ \parent owner->
+    bracket (openFdAt (Just parent) name ReadOnly flags) closeFd $ \fd->do
+      status<-getFdStatus fd
+      require (isRegularFile status && linkCount status==1 && fileMode status .&. 0o022==0
+        && maybe True (==fileOwner status) owner && fileSize status<=8192) "unsafe_node_configuration"
+      bytes<-withHandle fd (readBounded 8192) >>= maybe (reject "unsafe_node_configuration") pure
+      action bytes $ \next->do
+        nonce<-base58 <$> getRandomBytes 8
+        let staging=name<>".ecx-bridge-"<>T.unpack nonce
+            cleanup=relative "unlink node staging" c_unlinkat parent staging `catchIOError` \e->
+              unless (isDoesNotExistError e) (ioError e)
+        bracket (openFdAt (Just parent) staging WriteOnly flags {creat=Just 0o600,exclusive=True}) closeFd $ \out->do
+          (do
+            withHandle out $ \handle->B.hPut handle next >> hFlush handle
+            setFdOwnerAndGroup out (fileOwner status) (fileGroup status)
+            setFdMode out (fileMode status .&. 0o777)
+            fileSynchronise out
+            withCString staging $ \old->withCString name $ \new->
+              let Fd dir=parent in throwErrnoIfMinus1_ "rename node configuration" (c_renameat dir old dir new)
+            fileSynchronise parent) `onException` cleanup
+ where
+  name=takeFileName path
+  flags=defaultFileFlags {nofollow=True,nonBlock=True,cloexec=True}
+  -- Once a service user controls an ancestor, only that user's descendants are
+  -- trusted. Moving a root-owned secret directory under it cannot elevate access.
+  directories uid owner parent (part:rest) done=bracket
+    (openFdAt parent part ReadOnly flags {directory=True}) closeFd $ \fd->do
+      status<-getFdStatus fd
+      require (isDirectory status && fileMode status .&. 0o022==0
+        && maybe True (==fileOwner status) owner) "unsafe_node_configuration_parent"
+      let next=case owner of
+            Nothing | fileOwner status `notElem` [0,uid]->Just(fileOwner status)
+            _->owner
+      if null rest then done fd next else directories uid next (Just fd) rest done
+  directories _ _ _ [] _=reject "unsafe_node_configuration"
+  relative label call (Fd dir) name=withCString name $ \leaf->throwErrnoIfMinus1_ label (call dir leaf 0)
+
+foreign import ccall unsafe "renameat" c_renameat :: CInt -> CString -> CInt -> CString -> IO CInt
+foreign import ccall unsafe "unlinkat" c_unlinkat :: CInt -> CString -> CInt -> IO CInt
 
 credentials :: FilePath -> IO (FilePath,FilePath,FilePath)
 credentials directory=do
@@ -91,67 +140,54 @@ provision directory=do
       putStrLn $ "Using managed ECX node installer: "<>installer
       result<-rawSystem "/bin/sh" [installer]
       require (result==ExitSuccess) "managed_node_install_failed_retry_start"
-    checkConfig path
     (loaded,_,_)<-readProcessWithExitCode "systemctl" ["cat",service] ""
     require (loaded==ExitSuccess) "node_service_not_found_edit_setup_before_start"
-    let original=directory</>"node-config.before"
-    saved<-doesFileExist original
-    unless saved $ do
-      bytes<-B.readFile path
-      require (not $ any ((=="includeconf") . option) $ B8.lines bytes) "node_include_tree_requires_advanced_configuration"
-      savePrivate original bytes
-    before<-readPrivate original
-    originalRules<-readPrivate (directory</>"native-rpc.conf")
-    signerAuth<-readPrivate (directory</>"native-signer.auth")
-    (migrating,rules)<-either reject pure (signerPolicy signerAuth originalRules)
-    current<-B.readFile path
-    let settings=map option $ B8.lines before
-        priorWhitelist="rpcwhitelist" `elem` settings
-        explicitDefault="rpcwhitelistdefault" `elem` settings
-        -- Without any prior whitelist the old node allowed authenticated users;
-        -- preserve that default while explicitly restricting all three new users.
-        preserve=if not priorWhitelist && not explicitDefault then "rpcwhitelistdefault=0\n" else ""
-        header="# Generated ECX bridge RPC roles\n"<>preserve
-        updated=header<>rules<>"\n"<>before
-        legacyExpected=header<>originalRules<>"\n"<>before
-        -- Recovery may have appended one wallet autoload line after provisioning.
-        -- Preserve that existing line; never invent a wallet or accept other edits.
-        retained=case [extra | prefix<-[legacyExpected,updated],Just extra<-[B.stripPrefix prefix current]
-          ,Just line<-[B.stripPrefix "\nwallet=" extra],Just wallet<-[B.stripSuffix "\n" line]
-          ,not(B.null wallet),B8.all (`elem` ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"::String)) wallet] of
-            extra:_->extra
-            []->B.empty
-        expected=updated<>retained
-        suffix=if migrating then "-signer-validation" else ""
-        marker=directory</>("node-rpc-installed"<>suffix)
-    require (current `elem` [before,legacyExpected<>retained,expected]) "node_configuration_changed_review_before_retry"
-    restarted<-doesFileExist marker
-    when (migrating && (current/=expected || not restarted)) $ forM_ ["ecx-bridge-worker","ecx-bridge-signer"] $ \unit->do
-      (result,state,_)<-readProcessWithExitCode "systemctl" ["show",unit,"--property=MainPID,ActiveState,LoadState"] ""
-      require (result==ExitSuccess && ("LoadState=not-found" `elem` lines state ||
-        ("MainPID=0" `elem` lines state && any (`elem` lines state) ["ActiveState=inactive","ActiveState=failed"]))) "stop_custody_before_native_policy_refresh"
-    let candidate=directory</>("node-config.after"<>suffix)
-    candidateExists<-doesFileExist candidate
-    if candidateExists then readPrivate candidate >>= \bytes->require (bytes==expected) "node_configuration_candidate_changed"
-      else savePrivate candidate expected
-    when (current/=expected) $ do
-      status<-getFileStatus path
-      nonce<-base58 <$> getRandomBytes 8
-      let staging=path<>".ecx-bridge-"<>T.unpack nonce
-      bracket (openFd staging WriteOnly defaultFileFlags {creat=Just 0o600,exclusive=True,nofollow=True,cloexec=True}) closeFd $ \fd->do
-        withHandle fd $ \handle->B.hPut handle expected >> hFlush handle
-        setFdOwnerAndGroup fd (fileOwner status) (fileGroup status)
-        setFdMode fd (fileMode status .&. 0o777)
-        fileSynchronise fd
-      renameFile staging path
-      sync (takeDirectory path)
-    unless (restarted && current==expected) $ do
-      putStrLn "Installing distinct node RPC roles; restarting the configured ECX node service."
-      (result,_,_)<-readProcessWithExitCode "systemctl" ["restart",service] ""
-      require (result==ExitSuccess) "node_restart_failed_original_configuration_preserved"
-      unless restarted $ savePrivate marker "installed\n"
+    withConfig path $ \current publish->do
+      let original=directory</>"node-config.before"
+      saved<-doesFileExist original
+      unless saved $ do
+        require (not $ any ((=="includeconf") . option) $ B8.lines current) "node_include_tree_requires_advanced_configuration"
+        savePrivate original current
+      before<-readPrivate original
+      originalRules<-readPrivate (directory</>"native-rpc.conf")
+      signerAuth<-readPrivate (directory</>"native-signer.auth")
+      (migrating,rules)<-either reject pure (signerPolicy signerAuth originalRules)
+      let settings=map option $ B8.lines before
+          priorWhitelist="rpcwhitelist" `elem` settings
+          explicitDefault="rpcwhitelistdefault" `elem` settings
+          -- Without any prior whitelist the old node allowed authenticated users;
+          -- preserve that default while explicitly restricting all three new users.
+          preserve=if not priorWhitelist && not explicitDefault then "rpcwhitelistdefault=0\n" else ""
+          header="# Generated ECX bridge RPC roles\n"<>preserve
+          updated=header<>rules<>"\n"<>before
+          legacyExpected=header<>originalRules<>"\n"<>before
+          -- Recovery may have appended one wallet autoload line after provisioning.
+          -- Preserve that existing line; never invent a wallet or accept other edits.
+          retained=case [extra | prefix<-[legacyExpected,updated],Just extra<-[B.stripPrefix prefix current]
+            ,Just line<-[B.stripPrefix "\nwallet=" extra],Just wallet<-[B.stripSuffix "\n" line]
+            ,not(B.null wallet),B8.all (`elem` ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"::String)) wallet] of
+              extra:_->extra
+              []->B.empty
+          expected=updated<>retained
+          suffix=if migrating then "-signer-validation" else ""
+          marker=directory</>("node-rpc-installed"<>suffix)
+      require (current `elem` [before,legacyExpected<>retained,expected]) "node_configuration_changed_review_before_retry"
+      restarted<-doesFileExist marker
+      when (migrating && (current/=expected || not restarted)) $ forM_ ["ecx-bridge-worker","ecx-bridge-signer"] $ \unit->do
+        (result,state,_)<-readProcessWithExitCode "systemctl" ["show",unit,"--property=MainPID,ActiveState,LoadState"] ""
+        require (result==ExitSuccess && ("LoadState=not-found" `elem` lines state ||
+          ("MainPID=0" `elem` lines state && any (`elem` lines state) ["ActiveState=inactive","ActiveState=failed"]))) "stop_custody_before_native_policy_refresh"
+      let candidate=directory</>("node-config.after"<>suffix)
+      candidateExists<-doesFileExist candidate
+      if candidateExists then readPrivate candidate >>= \bytes->require (bytes==expected) "node_configuration_candidate_changed"
+        else savePrivate candidate expected
+      when (current/=expected) (publish expected)
+      unless (restarted && current==expected) $ do
+        putStrLn "Installing distinct node RPC roles; restarting the configured ECX node service."
+        (result,_,_)<-readProcessWithExitCode "systemctl" ["restart",service] ""
+        require (result==ExitSuccess) "node_restart_failed_original_configuration_preserved"
+        unless restarted $ savePrivate marker "installed\n"
  where
-  sync path=bracket (openFd path ReadOnly defaultFileFlags) closeFd fileSynchronise
   option=B8.strip . B8.takeWhile (/='=')
   decode bytes=either (const $ reject "invalid_setup_json") pure (eitherDecodeStrict' bytes::Either String Value)
 
@@ -194,20 +230,10 @@ persistRestoredWallet wallet=do
   let path="/var/lib/ecx-betanet/bitcoin.conf"
       record=B8.pack $ "wallet="<>T.unpack wallet
   require (not(T.null wallet) && T.all (`elem` ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"::String)) wallet) "invalid_recovered_wallet_name"
-  checkConfig path
-  bytes<-B.readFile path
-  require (not $ any (B8.isPrefixOf "[" . B8.strip) $ B8.lines bytes) "scoped_node_configuration_requires_review"
-  unless (record `elem` map B8.strip (B8.lines bytes)) $ do
-    let candidate=bytes<>"\n"<>record<>"\n"
-    status<-getFileStatus path
-    suffix<-base58 <$> getRandomBytes 8
-    let staging=path<>".recover-"<>T.unpack suffix
-    bracket (openFd staging WriteOnly defaultFileFlags {creat=Just 0o600,exclusive=True,nofollow=True,cloexec=True}) closeFd $ \fd->do
-      withHandle fd $ \h->B.hPut h candidate >> hFlush h
-      setFdOwnerAndGroup fd (fileOwner status) (fileGroup status)
-      setFdMode fd (fileMode status .&. 0o777)
-      fileSynchronise fd
-    renameFile staging path
-    bracket (openFd (takeDirectory path) ReadOnly defaultFileFlags) closeFd fileSynchronise
+  withConfig path $ \bytes publish->do
+    require (not $ any (B8.isPrefixOf "[" . B8.strip) $ B8.lines bytes) "scoped_node_configuration_requires_review"
+    unless (record `elem` map B8.strip (B8.lines bytes)) $ do
+      let candidate=bytes<>"\n"<>record<>"\n"
+      publish candidate
   (code,_,_)<-readProcessWithExitCode "systemctl" ["restart","ecx-betanet.service"] ""
   require (code==ExitSuccess) "recovered_node_restart_failed"

@@ -380,10 +380,12 @@ orderCostReservations direction costs gas = do
   pure [(if wrapping then "refund" else "conversion",Native,W.savedNativeFee costs)
        ,(if wrapping then "conversion" else "refund",Sol,total)]
 
-shouldExpireQuote :: Int64 -> Int64 -> Bool -> Either Text Bool
-shouldExpireQuote now grace hasReceipt = do
+-- This expires only the conversion promise. Recorded source funds and their
+-- refund allowance remain liabilities regardless of the quote's deadline.
+shouldExpireQuote :: Int64 -> Int64 -> Either Text Bool
+shouldExpireQuote now grace = do
   ensure (now>=0) "invalid_order_time"
-  pure (now>grace && not hasReceipt)
+  pure (now>grace)
 
 decideOrder :: OrderLimits -> CostLimits -> W.OrderRequest -> OrderAdmissionFacts -> Either Text OrderAdmission
 decideOrder limits costs request facts = do

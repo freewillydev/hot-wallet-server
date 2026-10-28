@@ -37,7 +37,7 @@ createCustomerOrderWith :: OrderTransport -> N.NativeSettings -> Bool -> Reader 
 createCustomerOrderWith transport native remote reader writer header requested = do
   previous<-evalRead reader (FindOrder header requested)
   now<-orderClock transport
-  evalWrite writer (ExpireQuotes now)
+  -- Expiration belongs to worker recovery, not customer-triggered history work.
   identifier<-case previous of
     Just oid->pure oid
     Nothing->do

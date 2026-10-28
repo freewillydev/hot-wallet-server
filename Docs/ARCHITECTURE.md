@@ -793,8 +793,10 @@ runtime signer. Worker and signer workflow libraries do not depend on the
 `NodeSetup` generates random per-role credentials and HMAC-SHA256 `rpcauth` hashes,
 installs fixed method allowlists while retaining existing users' default behavior,
 preserves the original configuration, and restarts the selected local node service.
-Config updates use exclusive staging, preserved ownership/mode, fsync and atomic
-rename. Changed settings/configuration refuse replay. This is privileged local
+Config reads pin every real directory and the opened regular single-link file,
+with an 8 KiB bounded read. Updates use descriptor-relative exclusive staging and
+rename in that same pinned directory, preserve descriptor ownership/mode, and
+fsync the file and directory. Symlinks or writable ancestors are rejected. Changed settings/configuration refuse replay. This is privileged local
 installation, not an operator/customer runtime capability. Unknown configuration
 include trees require advanced setup. Full Ubuntu/service and funded bootstrap
 acceptance remains separate from the local terminal/provisioning contracts.
@@ -908,7 +910,7 @@ in the adapters. There is no caller-supplied query, patch or commit callback.
 | --- | --- | --- |
 | New order / customer | `quoteOrder`, `decideOrder`, `orderCostReservations` | Immutable terms/capability/idempotency; journal float and both operating allowances reserved atomically. Replays retain old terms. |
 | Deposit instructions / customer and worker | `decideNativeClaim`, `decideInstruction`, `decideInstructionIssue` | Persist unique allocation claim before RPC; recover the same owned label/address; backup before exposure. |
-| Deposit promotion / worker | `decidePromotion` | Exact qualifying receipt and both holds precede once-only conversion funding. Partial/late/shallow receipts retain liabilities and provisional holds. |
+| Deposit promotion / worker | `decidePromotion` | Exact qualifying receipt and both holds precede once-only conversion funding. Partial/late/shallow receipts retain liabilities and refund holds; unused conversion holds expire after the grace period. |
 | Refund / operator | `decideRefund` | Full principal to verified refund owner; receipt cancellation, new funding and hold transfer are atomic. Earlier paid conversion/link survives. |
 | Earned withdrawal / operator | `decideWithdrawal`, `decideWithdrawalCancellation` | Exact replay terms, earned-only reservation and verified unsigned cleanup before cancellation. |
 | Allocation or spend classification / operator | `decideTreasury`, `decideTreasurySpend` | Paused, fresh custody and verified unbound receipt/ownership; balanced postings from eligible free capital only. |
@@ -932,8 +934,18 @@ already released hold twice. The durable operating clock controls the rolling
 window. Exact preparation replay need not refresh admission because it grants no
 new signing/send authority. Later stages recheck readiness independently.
 
-A quote expires unfunded only when no receipt was observed. Funding, signing or
-cleanup cannot silently release customer liability. Generation readers fetch nine
+An unpromoted quote releases conversion inventory and conversion costs after its
+grace period, even with a receipt. Such receipts stay in review with their full
+principal and refund allowance. Cleanup selects at most 100 live quote reservations
+per call, ordered by grace deadline and order ID; terminal history creates no
+per-order cleanup work. Only the worker/recovery path runs this maintenance;
+public order creation and replay never trigger it. SQL selection still depends on
+ledger size and planner choices; the batch bound is not a constant-time query claim.
+Admission counts live quotes and unfinished payment roots;
+recovery/archive checks still include unresolved reviewed receipts. A new receipt
+for an expired unfunded order moves it into review and can acquire a refund budget.
+Accepted obligations, signed work and cleanup retain their protection; expiry cannot
+silently release customer liability. Generation readers fetch nine
 rows to detect the eight-generation limit. Completed unsigned cleanup and proved,
 separately approved expiry are different successor evidence. Partial history and
 timeouts never become absence or permission to send.
@@ -1082,12 +1094,20 @@ scan-start time; customer receipt observation time remains the classification ti
 A complete scan never automatically resumes the ledger.
 
 Pending independent verification has a reserved 500-entry share; remaining entries
-stay queued and suppress readiness. Expiry/absence proofs continue to use the strict
-all-or-error collector, never these partial results. An older binary can advance
-coverage while ignoring auxiliary rows. On re-upgrade, scratch bound to a different
-real checkpoint is obsolete and ignored; only a subsequent closed write replaces
-it, with no rewind or replay of accounting. Backups include the ordinary checkpoints
-table, including these records; final acceptance must verify their restoration.
+stay queued and suppress readiness. Expiry/absence proofs use separate attempt-bound progress, never these partial
+observation results. Each provider scans both histories to the immutable origins
+in bounded batches, saving cursors, counts and hash commitments under reserved
+`expiry-progress-v1:` checkpoint keys. These rows grant no retry authority and
+never advance scan coverage. Exact signed work, origins and provider configuration
+bind the progress. An expired blockhash and finalized horizon anchor the walk;
+every invocation rechecks genesis, height, hash validity and transaction/status
+absence. Only complete history on every provider produces expiry evidence; a
+separate paused approval is still required before a new generation. Ordinary
+observation scratch is distinct: an older binary can advance observation coverage
+while ignoring it; on re-upgrade, scratch bound to a different real checkpoint is
+obsolete. Only a closed write replaces it, with no rewind or replay of accounting.
+Backups include all these checkpoint records; the database contract verifies their
+restoration.
 
 ### Durable payout rounds
 

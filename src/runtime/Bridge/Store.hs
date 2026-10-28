@@ -8,6 +8,7 @@ module Bridge.Store
   , withReader, withWriter, withFencedWriter, evalRead, evalWrite ) where
 
 import qualified Bridge.Solana as Solana
+import Bridge.PaymentObservation (ExpiryProgress(..),expiryProgressValid)
 import qualified Bridge.SolanaDeposit as SD
 import qualified Bridge.NativePayment as N
 import Bridge.Error
@@ -235,6 +236,7 @@ data StoreRead a where
   MaximumNativeDepth :: Int -> StoreRead Int
   ReadSourceWorkHash :: Text -> StoreRead Text
   ReadCheckpoint :: Text -> StoreRead (Maybe Text)
+  ReadExpiryProgress :: Text -> StoreRead (Maybe ExpiryProgress)
   ReadHistoryProgress :: Text -> StoreRead (Maybe Solana.HistoryProgress)
   ReadSource :: Text -> StoreRead W.Deposit
   ReadSourceEvidence :: Text -> StoreRead (Text,Text)
@@ -271,6 +273,7 @@ data StoreWrite a where
   SaveDraft :: Text -> Int -> Text -> StoreWrite ()
   CommitScan :: W.ScanBatch -> StoreWrite ()
   CommitNativePage :: W.ScanBatch -> StoreWrite ()
+  RecordExpiryProgress :: Text -> Maybe ExpiryProgress -> ExpiryProgress -> StoreWrite ()
   RecordHistoryProgress :: Text -> Maybe Solana.HistoryProgress -> Solana.HistoryProgress -> StoreWrite ()
   CommitHistoryScan :: Maybe Solana.HistoryProgress -> W.ScanBatch -> Bool -> StoreWrite ()
   ScanFailed :: Text -> Int64 -> Text -> StoreWrite ()
@@ -442,6 +445,7 @@ evalRead (Reader settings identity remote) operation = bracket connect PG.close 
       MaximumNativeDepth minimumDepth -> maximumNativeDepth c minimumDepth
       ReadSourceWorkHash identifier -> sourceWorkHash c identifier
       ReadCheckpoint chain -> readCheckpoint c chain
+      ReadExpiryProgress binding -> readExpiryProgress c binding
       ReadHistoryProgress chain -> readHistoryProgress c chain
       ReadSource identifier -> readSource c identifier >>= asDeposit
       ReadSourceEvidence txid -> sourceEvidence c txid
@@ -512,6 +516,14 @@ evalWrite writer@(Writer _ config _) operation = transaction writer $ \c ->
   CommitNativePage batch -> do
     require (W.scanChain batch=="Native") "invalid_native_scan_page"
     commitObservation c False batch
+  RecordExpiryProgress binding expected next -> do
+    actual<-readExpiryProgress c binding
+    require (actual==expected) "stale_expiry_progress"
+    require (expiryProgressValid next && expiryBinding next==binding) "invalid_solana_expiry_progress"
+    let raw=encodeSaved next; key="expiry-progress-v1:"<>binding
+    require (T.length raw<=131072) "expiry_progress_too_large"
+    void $ O.runDelete c O.Delete {O.dTable=S.checkpoints,O.dWhere= \(name,_)->name O..== O.sqlStrictText key,O.dReturning=O.rCount}
+    void $ O.runInsert c O.Insert {O.iTable=S.checkpoints,O.iRows=[(O.sqlStrictText key,O.sqlStrictText raw)],O.iReturning=O.rCount,O.iOnConflict=Nothing}
   RecordHistoryProgress chain expected next -> do
     require (Solana.historyProgressValid next) "invalid_solana_history_progress"
     checkHistoryProgress c chain expected (Solana.progressOrigin next) (Solana.progressPrevious next)
@@ -1004,7 +1016,7 @@ readAdmissionFunds :: PG.Connection -> StorePolicy -> IntakeFacts -> Asset -> IO
 readAdmissionFunds c config readiness destination = do
   let limits=admissionLimits config
   counts<-O.runSelect c $ O.aggregate O.count $
-    O.unionAll (fmap S.orderId P.openOrders) (do
+    O.unionAll (fmap S.orderId P.queuedOrders) (do
       root<-O.selectTable S.paymentRoots
       O.where_ (O.not (O.isNull $ S.rootWithdrawal root)
         O..&& O.not (O.in_ (map O.sqlStrictText ["settled","cancelled"]) $ S.rootPhase root))
@@ -1303,9 +1315,13 @@ issueInstruction c config now header identifier = do
 expireQuotes :: PG.Connection -> Int64 -> IO ()
 expireQuotes c now = do
   require (now>=0) "invalid_order_time"
-  expired <- O.runSelect c $ do
+  -- Only outstanding conversion promises consume cleanup work. Each call retires
+  -- at most 100; released/accepted history can never refill this batch.
+  expired <- O.runSelect c $ O.limit 100 $ O.orderBy (O.asc snd <> O.asc fst) $ do
     row <- O.selectTable S.orders
-    O.where_ (S.graceDeadline row O..< O.sqlInt8 now)
+    (key,_,_,phase) <- O.selectTable S.reservations
+    O.where_ (S.graceDeadline row O..< O.sqlInt8 now O..&& key O..== S.orderId row
+      O..&& phase O..== O.sqlStrictText "quote")
     pure (S.orderId row,S.graceDeadline row)
     :: IO [(Text,Int64)]
   forM_ expired $ \(identifier,grace) -> do
@@ -1314,15 +1330,18 @@ expireQuotes c now = do
       O.where_ (O.matchNullable (O.sqlBool False) (O..== O.sqlStrictText identifier) order)
       pure key
       :: IO [Text]
-    expire<-checked (shouldExpireQuote now grace $ not $ null deposits)
+    let received=not(null deposits)
+    expire<-checked (shouldExpireQuote now grace)
     when expire $ do
       _ <- O.runUpdate c O.Update {O.uTable=S.reservations,
         O.uUpdateWith= \(key,asset,n,_)->(key,asset,n,O.sqlStrictText "released"),
         O.uWhere= \(key,_,_,phase)->key O..== O.sqlStrictText identifier O..&& phase O..== O.sqlStrictText "quote",O.uReturning=O.rCount}
       _ <- O.runUpdate c O.Update {O.uTable=S.operatingReservations,
         O.uUpdateWith= \(key,kind,asset,n,_)->(key,kind,asset,n,O.sqlStrictText "released"),
-        O.uWhere= \(key,_,_,_,phase)->key O..== O.sqlStrictText identifier O..&& phase O..== O.sqlStrictText "quote",O.uReturning=O.rCount}
-      _ <- O.runUpdate c O.Update {O.uTable=S.orders,O.uUpdateWith= \r->r {S.admissionState=O.sqlStrictText "ExpiredUnfunded"},
+        O.uWhere= \(key,kind,_,_,phase)->key O..== O.sqlStrictText identifier O..&& phase O..== O.sqlStrictText "quote"
+          O..&& (O.sqlBool(not received) O..|| kind O..== O.sqlStrictText "conversion"),O.uReturning=O.rCount}
+      _ <- O.runUpdate c O.Update {O.uTable=S.orders,O.uUpdateWith= \r->r
+          {S.admissionState=O.sqlStrictText $ if received then "NeedsReview" else "ExpiredUnfunded"},
         O.uWhere= \r->S.orderId r O..== O.sqlStrictText identifier O..&& O.in_ (map O.sqlStrictText ["Provisioning","AwaitingDeposit"]) (S.admissionState r),O.uReturning=O.rCount}
       pure ()
 
@@ -1543,6 +1562,23 @@ readCheckpoint c chain = do
     pure anchor
   case rows of []->pure Nothing; [anchor]->pure(Just anchor); _->reject "duplicate_checkpoint"
 
+-- Per-attempt scratch rows never advance scan coverage or authorize a retry.
+readExpiryProgress :: PG.Connection -> Text -> IO (Maybe ExpiryProgress)
+readExpiryProgress c binding=do
+  require (T.length binding==64 && T.all (`elem` ("0123456789abcdef"::String)) binding) "invalid_expiry_binding"
+  rows<-O.runSelect c $ do
+    (key,value)<-O.selectTable S.checkpoints
+    O.where_ (key O..== O.sqlStrictText ("expiry-progress-v1:"<>binding))
+    pure value
+  case rows of
+    []->pure Nothing
+    [raw]->do
+      require (T.length raw<=131072) "expiry_progress_too_large"
+      p<-decodeSaved raw
+      require (expiryBinding p==binding && expiryProgressValid p) "invalid_solana_expiry_progress"
+      pure(Just p)
+    _->reject "duplicate_expiry_progress"
+
 -- Two reserved, versioned checkpoint records; never real coverage heads.
 -- All access is through the closed history operations, under the existing writer
 -- transaction. Old readers join only real scan_health streams. Old observers
@@ -1615,6 +1651,10 @@ observeDeposit c deposit = do
           (num $ units quantity) (text anchor) (num seen) (num $ fromIntegral depth) (num bit) (num 0) (text "observed")],O.iReturning=O.rCount,O.iOnConflict=Nothing}
       post c ("deposit:"<>did) "observed customer value"
         [Posting currency (maybe Unallocated (const Principal) oid) (toInteger $ units quantity),Posting currency External (negate $ toInteger $ units quantity)]
+      forM_ oid $ \order->void $ O.runUpdate c O.Update
+        {O.uTable=S.orders,O.uUpdateWith= \r->r {S.admissionState=text "NeedsReview"}
+        ,O.uWhere= \r->S.orderId r O..== text order O..&& S.admissionState r O..== text "ExpiredUnfunded"
+        ,O.uReturning=O.rCount}
     [previous] -> do
       reviewed<-if S.depositEligible previous==1 && not eligible then O.runSelect c (do
         (key,_,receipt,state)<-P.orderObligations

@@ -56,7 +56,7 @@ import Data.Bits ((.&.),shiftR)
 import System.Directory
 import System.FilePath ((</>))
 import System.IO (openTempFile,hClose,hPutStrLn,hFlush,hGetChar,hGetContents,withBinaryFile,stdin,IOMode(ReadMode))
-import System.Posix.Files (setFileMode,getFileStatus,fileMode,linkCount,createLink,createSymbolicLink)
+import System.Posix.Files (setFileMode,getFileStatus,fileMode,linkCount,createLink,createSymbolicLink,createNamedPipe,getSymbolicLinkStatus,isRegularFile,fileOwner,fileGroup)
 import System.Posix.User (getEffectiveUserID,getEffectiveGroupID)
 import System.Process
 import System.Exit (ExitCode(..))
@@ -64,6 +64,7 @@ import System.Exit (ExitCode(..))
 -- Real executable, disposable private keys, no network/database/service changes.
 contract :: IO Bool
 contract=bracket temporary removeDirectoryRecursive $ \directory->do
+  nodeConfigDescriptorContract directory
   -- A saved sourceRoot must not hide fixes in the executable's current build.
   sourceInstaller<-SetupPaths.nodeInstaller "source" (directory</>"old-source")
   currentRoot<-canonicalizePath (sdkSourceDirectory</>"../..")
@@ -1212,3 +1213,54 @@ privateRecordCrashContract=bracket temporary removeDirectoryRecursive $ \directo
     (path,handle)<-openTempFile parent ".private-record-test"
     hClose handle;removeFile path;createDirectory path;setFileMode path 0o700
     pure path
+
+-- Deterministic substitutions at the exact old check/read boundary. Fixture
+-- secrets stand in for root-only files; no real key or service is accessed.
+nodeConfigDescriptorContract :: FilePath -> IO ()
+nodeConfigDescriptorContract root=do
+  let parent=root</>"node-config-descriptors"; path=parent</>"bitcoin.conf"
+      secretDir=root</>"protected-config"; secret=secretDir</>"bitcoin.conf"
+      original="server=1\n"; hidden="fixture secret; must never be copied\n"
+      requireCheck ok=require ok "node_config_descriptor_regression"
+      rejectsFile file=do
+        result<-try(NodeSetup.checkConfig file) :: IO(Either SomeException ())
+        requireCheck(either (const True) (const False) result)
+  createDirectory parent
+  createDirectory secretDir
+  mapM_ (`setFileMode` 0o700) [parent,secretDir]
+  B.writeFile path original
+  setFileMode path 0o640
+  B.writeFile secret hidden
+  setFileMode secret 0o600
+  metadata<-getFileStatus path
+  NodeSetup.withConfig path $ \bytes publish->do
+    requireCheck(bytes==original)
+    renameFile path (parent</>"before")
+    createSymbolicLink secret path
+    publish ("# safe update\n"<>bytes)
+  after<-getSymbolicLinkStatus path
+  actual<-B.readFile path
+  protected<-B.readFile secret
+  requireCheck(isRegularFile after && fileMode after .&. 0o777==0o640
+    && fileOwner after==fileOwner metadata && fileGroup after==fileGroup metadata
+    && actual=="# safe update\n"<>original && protected==hidden)
+  let moved=root</>"node-config-moved"
+  NodeSetup.withConfig path $ \bytes publish->do
+    renameDirectory parent moved
+    createSymbolicLink secretDir parent
+    publish (bytes<>"# pinned parent\n")
+  protectedAgain<-B.readFile secret
+  movedBytes<-B.readFile(moved</>"bitcoin.conf")
+  requireCheck(protectedAgain==hidden && movedBytes==actual<>"# pinned parent\n")
+  rejectsFile path -- substituted ancestor
+  let leaf=moved</>"link"; hard=moved</>"hard"; fifo=moved</>"fifo"; huge=moved</>"huge"
+  createSymbolicLink secret leaf
+  rejectsFile leaf
+  createLink secret hard
+  rejectsFile hard
+  createNamedPipe fifo 0o600
+  completed<-timeout 1000000 (rejectsFile fifo)
+  requireCheck(completed==Just ())
+  B.writeFile huge (B.replicate 8193 120)
+  setFileMode huge 0o600
+  rejectsFile huge

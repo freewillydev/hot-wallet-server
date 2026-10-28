@@ -10,6 +10,7 @@ import qualified Data.ByteString.Lazy as BL
 import Bridge.Error
 import Bridge.RPC (fieldValue)
 import Bridge.Solana (tokenProgram,solanaGenesis)
+import Bridge.Identity (digest)
 import Bridge.SolanaHelper
 import Bridge.SolanaMessage
 import Bridge.SolanaPayment
@@ -125,7 +126,7 @@ checks=do
               "getSignatureStatuses"->pure $ response (toJSON [Null])
               _->fail "unexpected expiry RPC"
             primary=base W.L2LSignetDevnet
-            prove a b profile=solanaExpiryEvidence a b profile config (origin,origin) boundSigned
+            prove a b profile=fmap snd $ solanaExpiryEvidence a b profile config (origin,origin) boundSigned (T.replicate 64 "a") Nothing
             changed method value name args=if name==method then pure value else primary name args
         valid<-prove primary (Just primary) W.L2LSignetDevnet
         waiting<-prove (changed "getBlockHeight" (Number 1000)) Nothing W.L2LSignetDevnet
@@ -141,6 +142,54 @@ checks=do
            ("getTransaction",object [],"expired_transaction_observed"),
            ("getSignatureStatuses",response $ toJSON [object []],"expired_signature_observed")]
         pure (valid/=Nothing && waiting==Nothing && absentVerifier && and failures)
+    , check "expiry resumes deep history after restart without treating partial coverage as absence" $ once $ ioProperty $ do
+        let sig :: Int -> Text
+            sig n=base58(BS.pack [fromIntegral(n `div` 256),fromIntegral n]<>BS.replicate 62 7)
+            origin=sig (0::Int)
+            binding=digest "fixture attempt and providers"
+            response value=object ["context" .= object ["slot" .= (4000::Int)],"value" .= value]
+            row n=object ["signature" .= sig n,"slot" .= (100+n `div` 2),"confirmationStatus" .= ("finalized"::Text),"err" .= Null]
+            prove rpc saved=solanaExpiryEvidence rpc (Just rpc) W.L2LSignetDevnet config
+              (origin,origin) boundSigned binding saved
+        headCalls<-newIORef (0::Int)
+        chainHead<-newIORef (1501::Int)
+        let rpc method args=case method of
+              "getGenesisHash"->pure $ toJSON(solanaGenesis W.L2LSignetDevnet)
+              "getBlockHeight"->pure(Number 1001)
+              "getSlot"->pure(Number 4000)
+              "isBlockhashValid"->pure(response $ Bool False)
+              "getTransaction"->pure Null
+              "getSignatureStatuses"->pure(response $ toJSON [Null])
+              "getSignaturesForAddress"->case args of
+                [_,Object opts]->do
+                  before<-case KM.lookup "before" opts of
+                    Nothing->modifyIORef' headCalls (+1) >> readIORef chainHead
+                    Just(String cursor)->maybe (fail "unexpected expiry cursor") pure (lookup cursor [(sig n,n) | n<-[0..1500]])
+                    _->fail "invalid expiry cursor"
+                  pure $ toJSON $ map row $ take 100 [before-1,before-2..0]
+                _->fail "invalid history request"
+              _->fail "unexpected expiry RPC"
+        (partial,absent)<-prove rpc Nothing
+        writeIORef chainHead 2501 -- new transactions must not restart the old walk
+        saved<-either fail pure (eitherDecode $ encode partial)
+        (finished,proof)<-prove rpc saved
+        (replayed,again)<-prove rpc finished
+        starts<-readIORef headCalls
+        let complete=maybe False (all expiryComplete.expiryHistories) finished
+            compact=maybe False ((<20000).T.length) proof
+        wrongBinding<-rejects "solana_expiry_progress_changed" $
+          solanaExpiryEvidence rpc (Just rpc) W.L2LSignetDevnet config (origin,origin) boundSigned (digest "another provider") saved
+        signature<-maybe (fail "missing signature") pure(replySignature $ signedSolanaReply boundSigned)
+        let poisoned method args=if method=="getSignaturesForAddress" then
+              pure $ toJSON [object ["signature" .= signature,"slot" .= (350::Int),"confirmationStatus" .= ("finalized"::Text),"err" .= Null]]
+              else rpc method args
+        detected<-rejects "expired_signature_in_history" (prove poisoned saved)
+        let gap method args=if method=="getSignaturesForAddress" then pure(toJSON ([]::[Value])) else rpc method args
+        gapRejected<-rejects "solana_history_gap" (prove gap saved)
+        changedStatus<-rejects "expired_signature_observed" $ prove (\method args->
+          if method=="getSignatureStatuses" then pure(response $ toJSON [object []]) else rpc method args) finished
+        pure(partial/=Nothing && absent==Nothing && complete && compact && starts==4
+          && proof/=Nothing && proof==again && finished==replayed && wrongBinding && detected && gapRejected && changedStatus)
     , check "Solana uses confirmed blockhashes and retains the 40-block window through preparation" $ once $ ioProperty $ do
         let recentRPC height method args=case method of
               "getLatestBlockhash"->do

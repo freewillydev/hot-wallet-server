@@ -668,11 +668,11 @@ checks = (++) <$> (concat <$> sequence [gasTopUpChecks,payoutSafetyChecks,payout
                 {refundBudget=Just(FeeBudget (toInteger allowance) (toInteger allowance) 0 $ money 1000)
                 ,refundReleasedFees=toInteger allowance,refundClosingFees=100}===Right refunded
              ,decideWithdrawal withdrawn (PaymentTerms (W.policy order) customerCosts) "earned" Nothing (Just(readyOperator,0))===Left "insufficient_earned_fees"]
-  , check "expiry cannot free a received deposit or extend grace on clock rollback" $
+  , check "conversion quotes expire at grace without extending on clock rollback" $
       forAll (chooseInteger (0,toInteger(maxBound::Int64)-1)) $ \time ->
         let grace=fromInteger time in conjoin
-          [shouldExpireQuote grace grace False===Right False,shouldExpireQuote (grace+1) grace False===Right True
-          ,shouldExpireQuote (grace+1) grace True===Right False,shouldExpireQuote 0 grace False===Right False]
+          [shouldExpireQuote grace grace===Right False,shouldExpireQuote (grace+1) grace===Right True
+          ,shouldExpireQuote 0 grace===Right False,shouldExpireQuote (-1) grace===Left "invalid_order_time"]
   , check "earned cancellation requires unsigned cleanup and exact replay reason" $ once $
       let outgoing=good $ withdrawalInput (money 1000) 100 (T.replicate 64 "a") Native (money 10) "owner" "earned"
           terms=PaymentTerms (PolicySnapshot 2 "finalized" "fixture") customerCosts

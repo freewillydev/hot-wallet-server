@@ -1203,11 +1203,18 @@ recordOutcome environment@(CriticalEnvironment _ _ _ _ _ _ writer) recorded obse
   PaymentFailed fee proof->evalWrite writer (FailSolana recorded fee proof)
 
 expiry :: CriticalEnvironment -> SolanaSigned -> IO (Maybe Text)
-expiry (CriticalEnvironment rpc settings config _ _ reader _) signed=do
+expiry (CriticalEnvironment rpc settings config _ _ reader writer) signed=do
   let origins=(tokenOrigin settings,operatingOrigin settings)
   evalRead reader (CheckExpiryOrigins origins)
-  solanaExpiryEvidence (S.solanaCall rpc solana)
-    (fmap (\url->RPC.rpc rpc url Nothing) $ S.solanaVerifierRpc solana) (N.profile native) config origins signed
+  -- Bind scratch to exact signed policy/bytes, origins and both provider URLs.
+  -- Only their hash is persisted; credentials are never included in evidence.
+  let binding=digest(BL.toStrict $ encode (signed,origins,S.solanaRpc solana,S.solanaVerifierRpc solana))
+  previous<-evalRead reader (ReadExpiryProgress binding)
+  (next,proof)<-solanaExpiryEvidence (S.solanaCall rpc solana)
+    (fmap (\url->RPC.rpc rpc url Nothing) $ S.solanaVerifierRpc solana) (N.profile native) config origins signed binding previous
+  forM_ next $ \progress->when (Just progress/=previous) $
+    evalWrite writer (RecordExpiryProgress binding previous progress)
+  pure proof
  where
   native=nativeSettings settings; solana=solanaSettings settings
 

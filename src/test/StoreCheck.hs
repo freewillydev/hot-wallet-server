@@ -34,6 +34,7 @@ import qualified Data.Text.Encoding as TE
 import Bridge.Domain
 import Bridge.Wire (PaymentTerms(..),CostLimits(..),PolicySnapshot(..))
 import Bridge.Store hiding (evalWrite)
+import Bridge.PaymentObservation (ExpiryProgress(..),ExpiryHistory(..))
 import qualified Bridge.Store as Store
 import Bridge.Signer
 import Bridge.Recovery
@@ -109,6 +110,8 @@ contractMain = do
   historyOnly<-lookupEnv "ECX_REBUILD_HISTORY_ONLY"
   gasOnly<-lookupEnv "ECX_GAS_TOP_UP_ONLY"
   when (gasOnly==Just "1") (gasTopUpMain >> exitSuccess)
+  expiryOnly<-lookupEnv "ECX_QUOTE_EXPIRY_ONLY"
+  when (expiryOnly==Just "1") (quoteExpiryMain >> exitSuccess)
   payoutsOnly<-lookupEnv "ECX_REBUILD_PAYOUT_ONLY"
   cacheOnly<-lookupEnv "ECX_REPORT_CACHE_ONLY"
   live<-lookupEnv "ECX_REBUILD_LIVE_OBSERVER_CONFIG"
@@ -842,6 +845,42 @@ initialFundingMain=do
 
   when (scenario/=Just "customer") $ putStrLn "PASS initial SOL accounting: cycle reproduced, stale refusal, allocation rollback, exact replay, reconciliable balance, remains paused"
 
+-- More expired quotes than one cleanup batch, followed by a second no-op pass.
+-- Fixture writes are closed Opaleye operations in a disposable ledger.
+quoteExpiryMain :: IO ()
+quoteExpiryMain=do
+  database<-getEnv "ECX_REBUILD_CONTRACT_DATABASE"
+  unless ("ecx_rebuild_contract_" `T.isPrefixOf` T.pack database) (fail "disposable database required")
+  user<-getEnv "USER"
+  let settings=PG.defaultConnectInfo {PG.connectHost="/tmp/ecx-pg-seam",PG.connectPort=29436,PG.connectUser=user,PG.connectDatabase=database}
+      terms=PaymentTerms (PolicySnapshot 2 "finalized" "contract") (CostLimits (money 10) (money 10) (money 10))
+      policy=StorePolicy terms (OrderLimits (money 1000) 100 100 1000 (money 100000) (money 100000) Nothing) "contract" True immediatePayouts
+      check ok=unless ok (fail "bounded quote expiration contract failed")
+  bracket (PG.connect settings) PG.close $ \fixtures->do
+    fixture fixtures Initialize
+    fixture fixtures SeedExpiredQuotes
+    fixture fixtures (SeedReceipt "expired-underpayment" (Just "expiry:1") Native 1 2 True 100)
+    withWriter settings policy (const $ pure ()) $ \writer->do
+      forM_ [101,1,0,0] $ \remaining->do
+        evalWrite writer (ExpireQuotes 301)
+        fixture fixtures OpenOrderIds >>= check . ((==remaining).length)
+      fixture fixtures (CheckExpiredReceiptHolds "expiry:1") >>= check
+      role<-getEnv "ECX_REBUILD_CONTRACT_READER"
+      withReader settings {PG.connectUser=role} "contract" True $ \reader->do
+        let auth="Bearer "<>T.replicate 64 "0"
+            receipt=W.Deposit ("native:"<>T.replicate 64 "d"<>":0") (Just "expiry:2") Native (money 1) "late-block" 2 True 301
+        evalRead reader (ReadOrder auth "expiry:2") >>= check . ((=="ExpiredUnfunded").W.status)
+        before<-evalRead reader ReadBalances
+        evalWrite writer $ CommitScan $ W.ScanBatch "Native" "expiry-origin" Nothing "late-block" 301 [receipt] []
+        evalRead reader (ReadOrder auth "expiry:2") >>= check . ((=="NeedsReview").W.status)
+        after<-evalRead reader ReadBalances
+        check (M.findWithDefault 0 (Native,Principal) after==M.findWithDefault 0 (Native,Principal) before+1)
+        fixture fixtures OpenOrderIds >>= check . null
+        fixture fixtures (FreshAt 301)
+        void $ evalWrite writer (AuthorizeRefund 301 $ W.depositId receipt)
+        fixture fixtures OpenOrderIds >>= check . (==["expiry:2"])
+  putStrLn "PASS: bounded expiration; terminal history excluded; late receipt stays refundable and authorized refund queues"
+
 ledgerMain :: IO ()
 ledgerMain = do
   database <- getEnv "ECX_REBUILD_CONTRACT_DATABASE"
@@ -1301,12 +1340,24 @@ ledgerMain = do
           view<-evalRead reader (ReadOrder auth oid)
           check (W.status view=="NeedsReview")
           evalWrite writer (ExpireQuotes 301)
-          fixture fixtures (CheckPhases oid "quote") >>= check
+          fixture fixtures (CheckExpiredReceiptHolds oid) >>= check
+          fixture fixtures PayoutCohort >>= check . all (\(key,_,_,_)->key/=oid)
+          evalRead reader (ReadOrder auth oid) >>= check . ((=="NeedsReview") . W.status)
         waiting<-make "unconfirmed" NativeToWrapped
         seed "unconfirmed" waiting Native 10 0 False 100
         evalWrite writer (PromoteDeposit 100 "unconfirmed") >>= check . not
         waitView<-evalRead reader (ReadOrder auth waiting)
         check (W.status waitView=="AwaitingDeposit")
+        evalWrite writer (ExpireQuotes 301)
+        fixture fixtures (CheckExpiredReceiptHolds waiting) >>= check
+        fixture fixtures (CheckPhases native "obligation") >>= check
+        wrongWrapped<-make "expired-wrapped-underpayment" WrappedToNative
+        seed "expired-wrapped-underpayment" wrongWrapped Wrapped 1 1 True 100
+        evalWrite writer (PromoteDeposit 100 "expired-wrapped-underpayment") >>= check . not
+        balancesBeforeExpiry<-evalRead reader ReadBalances
+        evalWrite writer (ExpireQuotes 301)
+        fixture fixtures (CheckExpiredReceiptHolds wrongWrapped) >>= check
+        evalRead reader ReadBalances >>= check . (==balancesBeforeExpiry)
         unwrap<-make "promote-unwrap" WrappedToNative
         seed "wrapped-source" unwrap Wrapped 10 1 True 100
         evalWrite writer (PromoteDeposit 100 "wrapped-source") >>= check
@@ -1925,6 +1976,9 @@ payoutRoundsMain=do
         check (case result of Left e->PG.sqlState e=="23514" && PG.sqlErrorMsg e==message; _->False)
   bracket (PG.connect settings) PG.close $ \fixtures->do
     fixture fixtures Initialize
+    -- No-op snapshots include the monotonic budget clock. Pin this disposable
+    -- fixture ahead of wall time so crossing a second cannot change snapshots.
+    fixture fixtures StabilizeOperatingClock
     fixture fixtures SeedIntake
     withReader settings {PG.connectUser=role} "contract" True $ \reader->do
       let ready now=fixture fixtures ReadyIntake >> fixture fixtures (FreshAt now)
@@ -2098,6 +2152,17 @@ payoutRoundsMain=do
         -- A terminal refund removes the unresolved conversion promise. Refund
         -- remains independently payable and cannot advance the conversion clock.
         fixture fixtures (SeedReceipt "zz-pending-cohort" (Just pending) Native 9 2 True 100)
+        beforeExpiry<-evalRead reader ReadBalances
+        evalWrite writer (ExpireQuotes 301)
+        fixture fixtures (CheckExpiredReceiptHolds pending) >>= check
+        evalRead reader ReadBalances >>= check . (==beforeExpiry)
+        fixture fixtures PayoutCohort >>= check . all (\(key,_,_,_)->key/=pending)
+        -- Funded peers retain their exact assignment and remain ready; an
+        -- expired underpayment cannot hold up their already funded cohort.
+        fixture fixtures AssignedPayouts >>= check . (\rows->all
+          (\key->(firstGroup,key,"Wrapped",if key==first then 49 else 50,True) `elem` rows) [first,second])
+        evalWrite writer (ExpireQuotes 301)
+        fixture fixtures (CheckExpiredReceiptHolds pending) >>= check
         evalWrite writer (Pause "refund unresolved cohort member")
         fixture fixtures RefreshCustody
         void $ evalWrite writer (AuthorizeRefund 100 "zz-pending-cohort")
@@ -2317,6 +2382,8 @@ gasTopUpMain=do
         claim<-evalWrite writer (ClaimNative 100 header refundOrder)
         void $ evalWrite writer (RecordNative header refundOrder (allocationLabel claim) "gas-refund-native")
         fixture fixtures (SeedReceipt "gas-wrong-amount" (Just refundOrder) Native 9 2 True 100)
+        evalWrite writer (ExpireQuotes 301)
+        fixture fixtures (CheckExpiredReceiptHolds refundOrder) >>= check
         evalWrite writer (Pause "gas refund contract")
         fixture fixtures RefreshCustody
         void $ evalWrite writer (AuthorizeRefund 100 "gas-wrong-amount")
@@ -2516,6 +2583,8 @@ data Fixture a where
   InitializeIdentity :: T.Text -> Fixture ()
   RefreshCustody :: Fixture ()
   SeedOrders :: Fixture ()
+  SeedExpiredQuotes :: Fixture ()
+  StabilizeOperatingClock :: Fixture ()
   CoverBackup :: Fixture ()
   SeedReview :: Fixture ()
   SeedIntake :: Fixture ()
@@ -2525,8 +2594,10 @@ data Fixture a where
   LargeBalances :: Fixture ()
   CheckHolds :: T.Text -> Direction -> Int64 -> Fixture Bool
   ProtectHolds :: T.Text -> Fixture ()
+  OpenOrderIds :: Fixture [T.Text]
   HistoricalCancelledDraft :: T.Text -> Fixture ()
   CheckPhases :: T.Text -> T.Text -> Fixture Bool
+  CheckExpiredReceiptHolds :: T.Text -> Fixture Bool
 fixture :: PG.Connection -> Fixture a -> IO a
 fixture c (HistoricalCancelledDraft key) = PG.withTransaction c $ do
   let text=O.sqlStrictText; num=O.sqlInt8
@@ -2768,6 +2839,7 @@ fixture c CurrentCustomerOrders = do
     O.where_ (S.capabilityHash o O..== O.sqlStrictText cap
       O..&& O.not (O.in_ (map O.sqlStrictText ["mismatch","corrupt"]) (S.orderId o)))
     pure (S.orderId o)
+fixture c OpenOrderIds = O.runSelect c (S.orderId <$> Projection.queuedOrders)
 fixture c (SetPause paused) = void $ O.runUpdate c O.Update {O.uTable=S.deployment,
   O.uUpdateWith= \row->row {S.paused=O.sqlInt8 (if paused then 1 else 0)},
   O.uWhere= \row->S.singleton row O..== O.sqlInt8 1,O.uReturning=O.rCount}
@@ -2893,6 +2965,29 @@ fixture c RefreshCustody = do
   n <- O.runUpdate c O.Update {O.uTable=S.custody,O.uUpdateWith= \(key,revision,_,_,_)->(key,revision,O.toNullable revision,O.toNullable $ O.sqlInt8 100,O.null),O.uWhere= \(key,_,_,_,_)->key O..== O.sqlInt8 1,O.uReturning=O.rCount}
   unless (n==1) (fail "custody fixture missing")
 
+fixture c StabilizeOperatingClock = do
+  now<-floor <$> getPOSIXTime
+  void $ O.runUpdate c O.Update {O.uTable=S.operatingClock
+    ,O.uUpdateWith= \(key,_)->(key,O.sqlInt8 (now+3600)),O.uWhere=const $ O.sqlBool True,O.uReturning=O.rCount}
+fixture c SeedExpiredQuotes = PG.withTransaction c $ do
+  let text=O.sqlStrictText; num=O.sqlInt8
+      cap=either (error . T.unpack) id (capabilityHash $ T.replicate 64 "0")
+      raw value=TE.decodeUtf8 (BL.toStrict $ encode value)
+      request=W.OrderRequest NativeToWrapped (money 100) "recipient" "refund" Nothing "expiry" Nothing
+      quote=either (error . T.unpack) id (historicalQuote (money 100) (money 1))
+  forM_ [1..201::Int] $ \n->do
+    let key=text("expiry:"<>T.pack(show n))
+    void $ O.runInsert c O.Insert {O.iTable=S.orders
+      ,O.iRows=[S.Order key (text cap) key (text "fixture") (text $ raw request) (text $ raw quote)
+        (text $ raw $ PolicySnapshot 2 "finalized" "contract") (text "AwaitingDeposit") (num 200) (num 300) O.null O.null (num 0)]
+      ,O.iReturning=O.rCount,O.iOnConflict=Nothing}
+    void $ O.runInsert c O.Insert {O.iTable=S.reservations,O.iRows=[(key,text "Wrapped",num 99,text "quote")]
+      ,O.iReturning=O.rCount,O.iOnConflict=Nothing}
+    void $ O.runInsert c O.Insert {O.iTable=S.orderCosts,O.iRows=[(key,num 10,num 10,num 10)]
+      ,O.iReturning=O.rCount,O.iOnConflict=Nothing}
+    void $ O.runInsert c O.Insert {O.iTable=S.operatingReservations
+      ,O.iRows=[(key,text kind,text asset,num 10,text "quote") | (kind,asset)<-[("refund","Native"),("conversion","Sol")]]
+      ,O.iReturning=O.rCount,O.iOnConflict=Nothing}
 fixture c SeedOrders = PG.withTransaction c $ do
   sequences <- O.runSelect c (fmap S.criticalSequence $ O.selectTable S.deployment)
   sequenceNumber <- case sequences of [n]->pure n; _->fail "fixture deployment missing"
@@ -2992,6 +3087,20 @@ fixture c (ProtectHolds identifier) = PG.withTransaction c $ do
   void $ O.runUpdate c O.Update {O.uTable=S.operatingReservations,
     O.uUpdateWith= \(key,kind,asset,n,_)->(key,kind,asset,n,O.sqlStrictText "obligation"),
     O.uWhere= \(key,_,_,_,_)->key O..== O.sqlStrictText identifier,O.uReturning=O.rCount}
+fixture c (CheckExpiredReceiptHolds identifier) = do
+  inventory<-O.runSelect c $ do
+    (key,_,_,phase)<-O.selectTable S.reservations
+    O.where_ (key O..== O.sqlStrictText identifier)
+    pure phase
+    :: IO [T.Text]
+  operating<-O.runSelect c $ do
+    (key,kind,_,_,phase)<-O.selectTable S.operatingReservations
+    O.where_ (key O..== O.sqlStrictText identifier)
+    pure (kind,phase)
+    :: IO [(T.Text,T.Text)]
+  queued<-fixture c OpenOrderIds
+  pure (inventory==["released"] && sort operating==[("conversion","released"),("refund","quote")]
+    && identifier `notElem` queued)
 fixture c (CheckPhases identifier expected) = do
   inventory <- O.runSelect c $ do
     (key,_,_,phase) <- O.selectTable S.reservations
@@ -3678,6 +3787,12 @@ orderWorkflowContract fixtures reader writer storePolicy = do
   replay<-create unwrap
   afterCounts<-(,) <$> readIORef admissions <*> readIORef identities
   check (replay==issued && counts==afterCounts && fst counts==1)
+  -- Public replay must not sweep expired history while holding the critical gate.
+  -- Worker recovery owns cleanup; all payment-instruction deadline checks remain.
+  beforeReplay<-fixture fixtures FinancialRecords
+  lateReplay<-createCustomerOrderWith transport {orderClock=pure 311} native True reader writer header unwrap
+  fixture fixtures FinancialRecords >>= check . (==beforeReplay)
+  check (lateReplay==issued)
   expectStore "idempotency_conflict" (create unwrap {W.input=money 11})
   expectStore "order_not_found" (evalRead reader $ ReadProvisioning ("Bearer "<>T.replicate 64 "f") oid)
   fixture fixtures ReadyIntake
@@ -4486,6 +4601,16 @@ expiryContract fixtures reader writer=do
   first<-sign prepared
   evalRead reader (CheckExpiryOrigins ("sol-origin","opening-signature"))
   expectStore "expiry_scan_origin_mismatch" (evalRead reader $ CheckExpiryOrigins ("wrong","opening-signature"))
+  -- Scratch is read durably, uses CAS, and grants no attempt transition.
+  let binding=T.replicate 64 "a"
+      sig=Solana.SignatureInfo (T.replicate 64 "1") 100 False
+      progress=ExpiryProgress binding [ExpiryHistory (T.replicate 64 "b") (T.replicate 64 "1") 200 [sig] 1 (T.replicate 64 "c") True]
+  evalRead reader (ReadExpiryProgress binding) >>= check . (==Nothing)
+  evalWrite writer (RecordExpiryProgress binding Nothing progress)
+  evalRead reader (ReadExpiryProgress binding) >>= check . (==Just progress)
+  expectStore "stale_expiry_progress" (evalWrite writer $ RecordExpiryProgress binding Nothing progress)
+  expectStore "invalid_solana_expiry_progress" (evalWrite writer $ RecordExpiryProgress binding (Just progress) progress {expiryBinding=T.replicate 64 "d"})
+  evalRead reader (ReadAttempt "expiry-signed-0") >>= check . (==first)
   before<-evalRead reader ReadBalances
   expectStore "expiry_attempt_changed" (evalWrite writer $ RecordSolanaExpiry first {recordedGeneration=1} proof)
   evalWrite writer (RecordSolanaExpiry first proof)
@@ -5925,10 +6050,15 @@ historyProgressMain=do
         [W.Deposit ("solana:"<>sig 1) Nothing Wrapped (money 10) "1" 1 True 100] []
       check condition=unless condition (fail "history progress contract failed")
       writing=withWriter settings policy (const $ pure ())
+      expiryKey=digest "durable expiry restart fixture"
+      expiryProgress=ExpiryProgress expiryKey [ExpiryHistory (digest "primary token history") (sig 0) 3
+        [Solana.SignatureInfo (sig 2) 2 False,Solana.SignatureInfo (sig 1) 1 False] 2 (digest "pages") False]
   bracket (PG.connect settings) PG.close $ \c->fixture c Initialize
   withReader (settings {PG.connectUser=role}) "contract" True $ \reader->do
     initial<-evalRead reader ReadBalances
     writing $ \writer->do
+      evalWrite writer (RecordExpiryProgress expiryKey Nothing expiryProgress)
+      evalRead reader (ReadExpiryProgress expiryKey) >>= check . (==Just expiryProgress)
       evalWrite writer (RecordHistoryProgress "Solana" Nothing progress)
       evalRead reader (ReadHistoryProgress "Solana") >>= check . (==Just progress)
       evalRead reader (ReadCheckpoint "Solana") >>= check . (==Nothing)
@@ -5945,6 +6075,8 @@ historyProgressMain=do
     originalRows<-bracket (PG.connect settings) PG.close (\c->fixture c HistoryCheckpointRows)
     restoredRows<-bracket (PG.connect settings {PG.connectDatabase=T.unpack restored}) PG.close (\c->fixture c HistoryCheckpointRows)
     check(sort originalRows==sort restoredRows)
+    withReader (settings {PG.connectUser=role}) "contract" True $ \reopened->
+      evalRead reopened (ReadExpiryProgress expiryKey) >>= check . (==Just expiryProgress)
     putStrLn $ "History restore fixture retained: "<>T.unpack restored<>"; "<>directory
     -- Reopen both writer and its transaction resources, retaining database state.
     writing $ \writer->do

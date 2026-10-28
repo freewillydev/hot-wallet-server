@@ -1,6 +1,6 @@
 -- Relational facts for specific closed Store/migration operations. No connection,
 -- evaluator or write capability is exported. Phase and restrictions stay distinct.
-module Bridge.Store.Projection (paymentStates, paymentAmounts, immediateRefunds, payoutCohort, assignedPayouts, unassignedPayments, activePayments, readyPayments, orderObligations, openOrders, workIntents, sourceRestricted, successorReady) where
+module Bridge.Store.Projection (paymentStates, paymentAmounts, immediateRefunds, payoutCohort, assignedPayouts, unassignedPayments, activePayments, readyPayments, orderObligations, openOrders, queuedOrders, workIntents, sourceRestricted, successorReady) where
 
 import qualified Bridge.Store.Schema as S
 import qualified Opaleye as O
@@ -79,10 +79,28 @@ orderObligations = do
   O.where_ (S.rootId root O..== S.obligationId ob)
   pure (S.obligationId ob,S.obligationOrder ob,S.obligationDeposit ob,state)
 
--- Admission counts unfinished liability as well as orders awaiting a receipt.
--- A settled conversion with an additional unpaid refund is still open.
+-- Keep recovery/archive checks broader than admission: an expired reviewed
+-- receipt is still unresolved even though its conversion no longer queues.
 openOrders :: O.Select S.OrderFields
 openOrders = do
+  (order,unpaid,settled)<-ordersWithPayments
+  O.where_ (unpaid O..|| (O.not settled O..&& S.admissionState order O../= O.sqlStrictText "ExpiredUnfunded"))
+  pure order
+
+-- Queue slots belong to live quotes and authorized payments. Reviewed receipts
+-- retain Principal/refund reserves independently of their expired quote.
+queuedOrders :: O.Select S.OrderFields
+queuedOrders = do
+  (order,unpaid,_)<-ordersWithPayments
+  quoted<-E.exists $ do
+    (key,_,_,phase)<-O.selectTable S.reservations
+    O.where_ (key O..== S.orderId order O..&& phase O..== O.sqlStrictText "quote")
+    pure ()
+  O.where_ (unpaid O..|| quoted)
+  pure order
+
+ordersWithPayments :: O.Select (S.OrderFields,O.Field O.SqlBool,O.Field O.SqlBool)
+ordersWithPayments = do
   order<-O.selectTable S.orders
   let work=do
         ob<-O.selectTable S.obligations
@@ -97,8 +115,7 @@ openOrders = do
     root<-work
     O.where_ (S.rootPhase root O..== O.sqlStrictText "settled")
     pure ()
-  O.where_ (unpaid O..|| (O.not settled O..&& S.admissionState order O../= O.sqlStrictText "ExpiredUnfunded"))
-  pure order
+  pure (order,unpaid,settled)
 
 -- Compatibility preimage for existing work-bound recovery approvals only.
 -- Newly materialized roots with no preparation never contributed an old intent.

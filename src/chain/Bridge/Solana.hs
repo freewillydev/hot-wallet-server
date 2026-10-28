@@ -196,7 +196,8 @@ collectSignatures origin previous fetch = go Nothing [] Set.empty 0
       (prefix,anchor:_) -> pure (reverse $ accumulated<>prefix<>[anchor])
       (_,[]) -> go (Just $ last ids) combined (Set.union seen $ Set.fromList ids) (pages+1::Int)
 
--- Observation catch-up only. Absence/expiry proofs MUST retain collectSignatures.
+-- Observation catch-up only. Absence proofs use their own attempt-bound history
+-- collector in PaymentObservation, never this truncated observation window.
 -- The bounded oldest window trades refetching for constant memory and storage.
 -- It is never eligible for accounting until the exact previous anchor is found.
 data HistoryProgress = HistoryProgress

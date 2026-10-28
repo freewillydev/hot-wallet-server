@@ -185,12 +185,13 @@ SQL
     unset ECX_REBUILD_CANONICAL ECX_REBUILD_FENCE_ONLY ECX_REBUILD_NATIVE_RECOVERY_ONLY
     unset ECX_REBUILD_ENCRYPTED_NATIVE_ONLY ECX_REBUILD_CUSTODY_ONLY ECX_REPORT_CACHE_ONLY
     unset ECX_REBUILD_HISTORY_ONLY ECX_REBUILD_HISTORY_COUNT ECX_PROVISION_TEST ECX_PROVISION_CHILD ECX_FUNDED_RECOVERY_CONFIG
-    unset ECX_REBUILD_PAYOUT_ONLY ECX_REBUILD_COMPLETE_RESUME_ONLY ECX_REBUILD_ACTIVE_NATIVE_ONLY ECX_GAS_TOP_UP_ONLY
+    unset ECX_REBUILD_PAYOUT_ONLY ECX_REBUILD_COMPLETE_RESUME_ONLY ECX_REBUILD_ACTIVE_NATIVE_ONLY ECX_GAS_TOP_UP_ONLY ECX_QUOTE_EXPIRY_ONLY
     case "$mode" in
       initial_funding) export ECX_INITIAL_FUNDING_ONLY=1;;
       initial_customer) export ECX_INITIAL_FUNDING_ONLY=1 ECX_INITIAL_FUNDING_CASE=customer;;
       default) :;;
       payout) export ECX_REBUILD_PAYOUT_ONLY=1;;
+      quote_expiry) export ECX_QUOTE_EXPIRY_ONLY=1;;
       gas) export ECX_GAS_TOP_UP_ONLY=1;;
       complete_resume) export ECX_REBUILD_COMPLETE_RESUME_ONLY=1;;
       fence) export ECX_REBUILD_FENCE_ONLY=1;;
@@ -239,6 +240,7 @@ binary invocation needs `ecx_bridge_datadir` pointing to the server package.
 | `ECX_REBUILD_TLS_ONLY=1` | `ECX_REBUILD_TEST_SDK`; actual HTTPS saved-decision signing |
 | `ECX_REBUILD_CANONICAL=1` | With server/TLS mode: canonical Mainnet profile using offline RPC fixtures; no Mainnet sends |
 | `ECX_REBUILD_ACTIVE_NATIVE_ONLY=1` | With canonical TLS mode: pending Native work does not starve Wrapped scheduling; exits before HTTPS signer checks |
+| `ECX_QUOTE_EXPIRY_ONLY=1` | 201 expired quotes in bounded batches, retained refund liability, post-expiration receipt and authorized-refund queueing. |
 | `ECX_REBUILD_PAYOUT_ONLY=1` | Durable cohort, threshold, interval, refund bypass and owner reservation contracts |
 | `ECX_REBUILD_COMPLETE_RESUME_ONLY=1` | Complete-draft recovery/refusal; separate fresh database, not a substitute for default mode |
 | `ECX_REBUILD_FENCE_ONLY=1` | Database/filesystem ownership and sequence fencing |
